@@ -1,0 +1,15 @@
+[package]
+name = "kerosene-vault"
+version = "0.1.0"
+edition = "2021"
+description = "Kerosene vault mesh node (Clean Architecture skeleton — F0/F1)"
+license = "UNLICENSED"
+publish = false
+
+[features]
+default = []
+production = []
+
+[[bin]]
+name = "kerosene-vault"
+path = "src/main.rs"
