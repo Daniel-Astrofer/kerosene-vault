@@ -133,6 +133,9 @@ pub struct SettlementIntent {
 }
 
 impl SettlementIntent {
+    pub const MAX_ID_LEN: usize = 128;
+    pub const MAX_DEST_LEN: usize = 256;
+
     pub fn new(
         intent_id: impl Into<String>,
         bucket: BucketKind,
@@ -141,15 +144,39 @@ impl SettlementIntent {
         policy_hash: impl Into<String>,
     ) -> Result<Self, DomainError> {
         let intent_id = intent_id.into();
+        let destination = destination.into();
+        let policy_hash = policy_hash.into();
         if intent_id.trim().is_empty() {
             return Err(DomainError::InvalidIntent("empty intent_id".into()));
+        }
+        if intent_id.len() > Self::MAX_ID_LEN {
+            return Err(DomainError::InvalidIntent("intent_id too long".into()));
+        }
+        if intent_id.chars().any(|c| c.is_control() || c == '/' || c == '\\') {
+            return Err(DomainError::InvalidIntent(
+                "intent_id contains illegal characters".into(),
+            ));
+        }
+        if destination.trim().is_empty() {
+            return Err(DomainError::InvalidIntent("empty destination".into()));
+        }
+        if destination.len() > Self::MAX_DEST_LEN {
+            return Err(DomainError::InvalidIntent("destination too long".into()));
+        }
+        if destination.contains("..") || destination.contains('/') || destination.contains('\\') {
+            return Err(DomainError::InvalidIntent(
+                "destination path traversal rejected".into(),
+            ));
+        }
+        if policy_hash.len() > 128 {
+            return Err(DomainError::InvalidIntent("policy_hash too long".into()));
         }
         Ok(Self {
             intent_id,
             bucket,
-            destination: destination.into(),
+            destination,
             amount_sats,
-            policy_hash: policy_hash.into(),
+            policy_hash,
         })
     }
 }

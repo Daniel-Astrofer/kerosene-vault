@@ -25,14 +25,15 @@ fn main() {
 
     let group = runtime.threshold.group();
     eprintln!(
-        "kerosene-vault F6 buckets node={} listen={} attestation={} n={} t={} online={} timelock_scale={}",
+        "kerosene-vault F7 harden node={} listen={} attestation={} n={} t={} online={} timelock_scale={} hardened={}",
         runtime.config.node_id,
         runtime.config.listen_addr,
         runtime.config.attestation_mode.as_str(),
         group.n,
         group.t,
         runtime.online.count,
-        runtime.config.lab_timelock_scale
+        runtime.config.effective_lab_timelock_scale(),
+        runtime.config.hardened
     );
 
     let listener = match TcpListener::bind(&runtime.config.listen_addr) {
@@ -67,6 +68,19 @@ fn handle_request(runtime: &VaultRuntime, req: &str) -> (&'static str, String) {
     let mut parts = line.split_whitespace();
     let method = parts.next().unwrap_or("GET");
     let path = parts.next().unwrap_or("/");
+
+    if path.len() > 512 {
+        return (
+            "414 URI Too Long",
+            r#"{"error":"request rejected: path too long"}"#.into(),
+        );
+    }
+    if path.contains("..") {
+        return (
+            "400 Bad Request",
+            r#"{"error":"request rejected: path traversal"}"#.into(),
+        );
+    }
 
     match (method, path) {
         ("GET", "/") | ("GET", "/health") => match runtime.get_health.execute() {
@@ -174,8 +188,14 @@ fn handle_request(runtime: &VaultRuntime, req: &str) -> (&'static str, String) {
                 Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
             }
         }
-        // /release/propose-tampered/{id}/{source_label}/{evil_hb}/{council_csv}
+        // /release/propose-tampered/... — lab pentest only
         ("POST", path) if path.starts_with("/release/propose-tampered/") => {
+            if !runtime.config.lab_endpoints_enabled() {
+                return (
+                    "403 Forbidden",
+                    r#"{"error":"lab flag forbidden outside lab: propose-tampered"}"#.into(),
+                );
+            }
             let rest = path.trim_start_matches("/release/propose-tampered/");
             let mut segs = rest.splitn(4, '/');
             let id = segs.next().unwrap_or("");

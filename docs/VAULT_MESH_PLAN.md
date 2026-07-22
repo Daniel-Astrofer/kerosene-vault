@@ -533,6 +533,8 @@ docker compose -f infra/docker/compose/vault-mesh-lab.compose.yaml up --build
 
 ### Fase 7 — Pentest e hardening (2–3 semanas)
 
+**Status (lab):** hygiene §13.5 (`hardened` / `KEROSENE_ENV=production` / `--features production`) recusa `ATTESTATION_MODE=sim` e `LAB_TIMELOCK_SCALE`; endpoints lab (`propose-tampered`) off; Intent sanidade (tamanho, path traversal); harness `tests/pentest_harness.rs` + `scripts/lab_pentest.sh`.
+
 **Entrega**
 
 - Pentest interno/externo no lab (rede, quorum, release, Intent abusivo).  
@@ -540,6 +542,19 @@ docker compose -f infra/docker/compose/vault-mesh-lab.compose.yaml up --build
 - Travar flags perigosas fora do lab.
 
 **Critério de pronto:** achados críticos fechados ou aceitos por escrito no threat model.
+
+**Threat model — residual aceito (lab, pré-F8)**
+
+| Achado | Severidade | Tratamento |
+| --- | --- | --- |
+| Fingerprint / FROST lab placeholders (não SHA-256/secp real) | Alta em prod | Aceito no lab; **obrigatório** vender crypto real antes de F8 go-live |
+| HTTP std-only sem mTLS/Tor | Alta em prod | Aceito no lab; F8+ transporte hardened |
+| `propose-tampered` disponível só com `hardened=false` | Baixa | Mitigado: 403 fora do lab |
+| Cap/replay/council/rebuild predicados | — | Cobertos pelo harness F7 + suite F6 |
+
+```bash
+cd backend/kerosene-vault && ./scripts/lab_pentest.sh
+```
 
 ### Fase 8 — Staging TEE + go-live prod (corte limpo) (3–6 semanas)
 

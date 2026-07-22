@@ -40,6 +40,7 @@ pub struct VaultRuntime {
 impl VaultRuntime {
     pub fn build(config: VaultConfig) -> Result<Self, DomainError> {
         config.validate_attestation_policy()?;
+        config.validate_hygiene()?;
 
         let peers = Arc::new(InMemoryPeerDirectory::new());
         for (id, addr) in &config.seed_peers {
@@ -114,7 +115,7 @@ impl VaultRuntime {
         let ledger_port: Arc<dyn crate::application::LedgerPort> = ledger.clone();
 
         let mut release_policy = ReleasePolicy::lab_default(n);
-        release_policy.lab_timelock_scale = config.lab_timelock_scale;
+        release_policy.lab_timelock_scale = config.effective_lab_timelock_scale();
         release_policy.council_n = config.lab_council_n.max(2);
         release_policy.min_rebuilds = config.lab_min_rebuilds.max(1);
         let release_mesh = Arc::new(InMemoryReleaseMesh::new(release_policy));

@@ -65,13 +65,16 @@ fn sim_forbidden_when_refuse_sim() {
         genesis_n: None,
         online_count: None,
         lab_timelock_scale: 0,
+        lab_timelock_env_set: false,
         lab_council_n: 3,
         lab_min_rebuilds: 3,
+        hardened: true,
     };
     assert_eq!(
         cfg.validate_attestation_policy(),
         Err(DomainError::SimAttestationForbidden)
     );
     cfg.refuse_sim = false;
+    cfg.hardened = false;
     assert!(cfg.validate_attestation_policy().is_ok());
 }

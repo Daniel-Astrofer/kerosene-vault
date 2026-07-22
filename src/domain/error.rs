@@ -38,6 +38,8 @@ pub enum DomainError {
     DestinationNotAllowed(String),
     IntentReplay(String),
     UsersOmnibusProtected,
+    LabFlagForbidden(String),
+    RequestRejected(String),
 }
 
 impl fmt::Display for DomainError {
@@ -93,6 +95,10 @@ impl fmt::Display for DomainError {
             Self::UsersOmnibusProtected => {
                 write!(f, "USERS omnibus protected: operational bucket cannot debit USERS")
             }
+            Self::LabFlagForbidden(flag) => {
+                write!(f, "lab flag forbidden outside lab: {flag}")
+            }
+            Self::RequestRejected(r) => write!(f, "request rejected: {r}"),
         }
     }
 }
