@@ -8,6 +8,8 @@ pub struct VaultConfig {
     pub lab_root: String,
     pub seed_peers: Vec<(String, String)>,
     pub refuse_sim: bool,
+    /// Explicit genesis n; defaults to len(local+seeds) when unset.
+    pub genesis_n: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -47,6 +49,10 @@ impl VaultConfig {
             }
         }
 
+        let genesis_n = std::env::var("VAULT_GENESIS_N")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok());
+
         Ok(Self {
             node_id,
             attestation_mode,
@@ -54,6 +60,7 @@ impl VaultConfig {
             lab_root,
             seed_peers,
             refuse_sim,
+            genesis_n,
         })
     }
 

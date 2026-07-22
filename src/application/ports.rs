@@ -1,5 +1,6 @@
 use crate::domain::{
-    AttestationMode, AttestationQuote, DomainError, Measurement, NodeId, PeerInfo,
+    AttestationMode, AttestationQuote, Constitution, DomainError, Epoch, EpochAdvanceProposal,
+    LedgerEntry, Measurement, NodeId, PeerInfo,
 };
 
 pub trait PeerDirectoryPort {
@@ -16,4 +17,17 @@ pub trait AttestationPort {
 
 pub trait ClockPort {
     fn unix_now_secs(&self) -> u64;
+}
+
+/// Permissioned append-only governance ledger.
+pub trait LedgerPort {
+    fn constitution(&self) -> Result<Constitution, DomainError>;
+    fn epoch(&self) -> Result<Epoch, DomainError>;
+    fn set_epoch(&self, epoch: Epoch) -> Result<(), DomainError>;
+    fn head(&self) -> Result<Option<LedgerEntry>, DomainError>;
+    fn entries(&self) -> Result<Vec<LedgerEntry>, DomainError>;
+    fn append(&self, entry: LedgerEntry) -> Result<(), DomainError>;
+    fn put_proposal(&self, proposal: EpochAdvanceProposal) -> Result<(), DomainError>;
+    fn get_proposal(&self, id: &str) -> Result<EpochAdvanceProposal, DomainError>;
+    fn save_proposal(&self, proposal: EpochAdvanceProposal) -> Result<(), DomainError>;
 }
