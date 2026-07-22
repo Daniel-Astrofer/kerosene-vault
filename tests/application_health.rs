@@ -64,6 +64,9 @@ fn sim_forbidden_when_refuse_sim() {
         refuse_sim: true,
         genesis_n: None,
         online_count: None,
+        lab_timelock_scale: 0,
+        lab_council_n: 3,
+        lab_min_rebuilds: 3,
     };
     assert_eq!(
         cfg.validate_attestation_policy(),

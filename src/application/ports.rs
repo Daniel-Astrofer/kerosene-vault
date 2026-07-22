@@ -1,6 +1,7 @@
 use crate::domain::{
     AttestationMode, AttestationQuote, Constitution, DomainError, Epoch, EpochAdvanceProposal,
-    LedgerEntry, Measurement, NodeId, PeerInfo,
+    LedgerEntry, Measurement, NodeId, PeerInfo, AllowlistEntry, ContentHash, ReleaseCandidate,
+    ReleasePolicy,
 };
 
 pub trait PeerDirectoryPort {
@@ -30,4 +31,21 @@ pub trait LedgerPort {
     fn put_proposal(&self, proposal: EpochAdvanceProposal) -> Result<(), DomainError>;
     fn get_proposal(&self, id: &str) -> Result<EpochAdvanceProposal, DomainError>;
     fn save_proposal(&self, proposal: EpochAdvanceProposal) -> Result<(), DomainError>;
+}
+
+/// Content-addressed blob store for Hs/Hb artifacts.
+pub trait BlobStorePort {
+    fn put(&self, hash: &ContentHash, bytes: &[u8]) -> Result<(), DomainError>;
+    fn get(&self, hash: &ContentHash) -> Result<Vec<u8>, DomainError>;
+}
+
+/// Release candidate + allowlist state shared across vaults in the lab mesh.
+pub trait ReleaseStorePort {
+    fn policy(&self) -> Result<ReleasePolicy, DomainError>;
+    fn put_candidate(&self, candidate: ReleaseCandidate) -> Result<(), DomainError>;
+    fn get_candidate(&self, id: &str) -> Result<ReleaseCandidate, DomainError>;
+    fn save_candidate(&self, candidate: ReleaseCandidate) -> Result<(), DomainError>;
+    fn put_allowlist(&self, entry: AllowlistEntry) -> Result<(), DomainError>;
+    fn allowlist(&self) -> Result<Vec<AllowlistEntry>, DomainError>;
+    fn is_allowlisted_hb(&self, hb: &ContentHash) -> Result<bool, DomainError>;
 }

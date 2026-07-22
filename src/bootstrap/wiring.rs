@@ -1,15 +1,17 @@
 use std::sync::Arc;
 
 use crate::adapters::{
-    InMemoryLedger, InMemoryPeerDirectory, SimAttestationAdapter, SystemClock, ThresholdVaultState,
+    InMemoryLedger, InMemoryPeerDirectory, InMemoryReleaseMesh, SimAttestationAdapter, SystemClock,
+    ThresholdVaultState,
 };
 use crate::application::{
-    GetHealth, GetLedgerSnapshot, PingPeer, ProposeEpochAdvance, SignMessage, StaticOnlineCount,
+    ActivateRelease, CosignRelease, GetAllowlist, GetHealth, GetLedgerSnapshot, PingPeer,
+    ProposeEpochAdvance, ProposeRelease, RebuildRelease, SignMessage, StaticOnlineCount,
     VoteEpochAdvance,
 };
 use crate::bootstrap::VaultConfig;
 use crate::domain::{
-    run_dkg, Constitution, DomainError, Measurement, NodeId, PeerEndpoint, PeerInfo,
+    run_dkg, Constitution, DomainError, Measurement, NodeId, PeerEndpoint, PeerInfo, ReleasePolicy,
 };
 
 pub struct VaultRuntime {
@@ -20,10 +22,16 @@ pub struct VaultRuntime {
     pub propose_epoch: ProposeEpochAdvance,
     pub vote_epoch: VoteEpochAdvance,
     pub sign_message: SignMessage,
+    pub propose_release: ProposeRelease,
+    pub rebuild_release: RebuildRelease,
+    pub cosign_release: CosignRelease,
+    pub activate_release: ActivateRelease,
+    pub get_allowlist: GetAllowlist,
     pub peers: Arc<InMemoryPeerDirectory>,
     pub ledger: Arc<InMemoryLedger>,
     pub threshold: Arc<ThresholdVaultState>,
     pub online: Arc<StaticOnlineCount>,
+    pub release_mesh: Arc<InMemoryReleaseMesh>,
 }
 
 impl VaultRuntime {
@@ -95,20 +103,43 @@ impl VaultRuntime {
                 }
             };
 
-        let measurement = Measurement::from_bytes(b"kerosene-vault-f3-threshold");
+        let measurement = Measurement::from_bytes(b"kerosene-vault-f5-release");
         let clock: Arc<dyn crate::application::ClockPort> = Arc::new(SystemClock);
         let peers_port: Arc<dyn crate::application::PeerDirectoryPort> = peers.clone();
         let ledger_port: Arc<dyn crate::application::LedgerPort> = ledger.clone();
+
+        let mut release_policy = ReleasePolicy::lab_default(n);
+        release_policy.lab_timelock_scale = config.lab_timelock_scale;
+        release_policy.council_n = config.lab_council_n.max(2);
+        release_policy.min_rebuilds = config.lab_min_rebuilds.max(1);
+        let release_mesh = Arc::new(InMemoryReleaseMesh::new(release_policy));
+        let release_port: Arc<dyn crate::application::ReleaseStorePort> = release_mesh.clone();
+        let blob_port: Arc<dyn crate::application::BlobStorePort> = release_mesh.clone();
 
         let get_health = GetHealth::new(
             config.node_id.clone(),
             peers_port.clone(),
             attestation.clone(),
         );
-        let ping_peer = PingPeer::new(peers_port, attestation, clock, measurement);
+        let ping_peer = PingPeer::new(peers_port, attestation, clock.clone(), measurement);
         let get_ledger = GetLedgerSnapshot::new(ledger_port.clone());
         let propose_epoch = ProposeEpochAdvance::new(ledger_port.clone(), config.node_id.clone());
-        let vote_epoch = VoteEpochAdvance::new(ledger_port, config.node_id.clone());
+        let vote_epoch = VoteEpochAdvance::new(ledger_port.clone(), config.node_id.clone());
+        let propose_release = ProposeRelease::new(
+            release_port.clone(),
+            blob_port.clone(),
+            ledger_port.clone(),
+            clock.clone(),
+        );
+        let rebuild_release = RebuildRelease::new(release_port.clone(), blob_port);
+        let cosign_release = CosignRelease::new(
+            release_port.clone(),
+            ledger_port.clone(),
+            clock.clone(),
+            config.node_id.clone(),
+        );
+        let activate_release = ActivateRelease::new(release_port.clone(), ledger_port, clock);
+        let get_allowlist = GetAllowlist::new(release_port);
 
         Ok(Self {
             config,
@@ -118,10 +149,16 @@ impl VaultRuntime {
             propose_epoch,
             vote_epoch,
             sign_message,
+            propose_release,
+            rebuild_release,
+            cosign_release,
+            activate_release,
+            get_allowlist,
             peers,
             ledger,
             threshold,
             online,
+            release_mesh,
         })
     }
 }

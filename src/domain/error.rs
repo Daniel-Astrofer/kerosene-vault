@@ -20,6 +20,14 @@ pub enum DomainError {
     FailStop { online: usize, need: usize },
     SessionConsumed(String),
     BadSigningPhase { session_id: String, phase: String },
+    InvalidRelease(String),
+    UnknownBlob(String),
+    UnknownRelease(String),
+    RebuildMismatch { expected: String, got: String },
+    ReleasePredicate(String),
+    TimelockNotElapsed { age_secs: u64, need_secs: u64 },
+    ReleaseClosed(String),
+    NotAllowlisted(String),
 }
 
 impl fmt::Display for DomainError {
@@ -53,6 +61,18 @@ impl fmt::Display for DomainError {
             Self::BadSigningPhase { session_id, phase } => {
                 write!(f, "bad signing phase for {session_id}: {phase}")
             }
+            Self::InvalidRelease(r) => write!(f, "invalid release: {r}"),
+            Self::UnknownBlob(h) => write!(f, "unknown blob: {h}"),
+            Self::UnknownRelease(id) => write!(f, "unknown release: {id}"),
+            Self::RebuildMismatch { expected, got } => {
+                write!(f, "rebuild mismatch: expected {expected}, got {got}")
+            }
+            Self::ReleasePredicate(r) => write!(f, "release predicate failed: {r}"),
+            Self::TimelockNotElapsed { age_secs, need_secs } => {
+                write!(f, "timelock not elapsed: age {age_secs} < need {need_secs}")
+            }
+            Self::ReleaseClosed(id) => write!(f, "release closed: {id}"),
+            Self::NotAllowlisted(h) => write!(f, "artifact not allowlisted: {h}"),
         }
     }
 }

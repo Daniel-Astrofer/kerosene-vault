@@ -12,6 +12,12 @@ pub struct VaultConfig {
     pub genesis_n: Option<usize>,
     /// Online vaults for fail-stop (lab). Defaults to genesis_n.
     pub online_count: Option<usize>,
+    /// Lab: scales NORMAL release timelock (`0` = immediate).
+    pub lab_timelock_scale: u64,
+    /// Lab council size for release personal quorum.
+    pub lab_council_n: usize,
+    /// Minimum independent rebuilds before cosign.
+    pub lab_min_rebuilds: usize,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -57,6 +63,18 @@ impl VaultConfig {
         let online_count = std::env::var("VAULT_ONLINE_COUNT")
             .ok()
             .and_then(|s| s.parse::<usize>().ok());
+        let lab_timelock_scale = std::env::var("LAB_TIMELOCK_SCALE")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        let lab_council_n = std::env::var("LAB_COUNCIL_N")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(3);
+        let lab_min_rebuilds = std::env::var("LAB_MIN_REBUILDS")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(3);
 
         Ok(Self {
             node_id,
@@ -67,6 +85,9 @@ impl VaultConfig {
             refuse_sim,
             genesis_n,
             online_count,
+            lab_timelock_scale,
+            lab_council_n,
+            lab_min_rebuilds,
         })
     }
 

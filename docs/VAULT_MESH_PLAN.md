@@ -496,6 +496,8 @@ F0 spec ──► F1 vault skeleton + lab N nós
 
 ### Fase 5 — Release mesh real (3–4 semanas)
 
+**Status (lab):** content-addressed `Hs`/`Hb` blob store; council quorum `⌈2n/3⌉`; rebuild independente ≥3; predicados + cosign vaults `⌈n/2⌉+`; allowlist; `LAB_TIMELOCK_SCALE` (default `0` = imediato no lab). Tamper de `Hb` falha no rebuild. HTTP: `/release/*`.
+
 **Entrega**
 
 - Repo content-addressed `Hs`/`Hb` entre vaults.  
