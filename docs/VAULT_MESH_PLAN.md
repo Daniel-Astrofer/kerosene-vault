@@ -558,6 +558,8 @@ cd backend/kerosene-vault && ./scripts/lab_pentest.sh
 
 ### Fase 8 — Staging TEE + go-live prod (corte limpo) (3–6 semanas)
 
+**Status (staging scaffold):** adapters TEE `sev|sgx` (`TeeAttestationAdapter`) com stub de staging (`ATTESTATION_STAGING_STUB`); produção ceremonial **recusa** stub; compose `vault-mesh-staging.compose.yaml`; checklist `scripts/genesis_ceremony_checklist.sh`; kfe `mesh-only` + `kfe.mpc.signing-enabled=false` + `KfeVaultMeshGoLiveGuard`. HW quote real ainda fail-closed sem stub.
+
 **Entrega**
 
 - 1–N nós com `ATTESTATION_MODE=sev|sgx` (decisão TEE).  
@@ -567,6 +569,22 @@ cd backend/kerosene-vault && ./scripts/lab_pentest.sh
 - Monitoramento/audit keys separadas.
 
 **Critério de pronto:** saque real testnet/mainnet conforme política; legado de signing off; rollback = só fail-stop + runbook (não “voltar mpc” silencioso).
+
+**Cutover (limpo)**
+
+```bash
+# Staging TEE stub mesh
+docker compose -f infra/docker/compose/vault-mesh-staging.compose.yaml up --build
+
+# Ceremony gate
+VAULT_CEREMONY_MODE=staging ATTESTATION_MODE=sev \
+  ./backend/kerosene-vault/scripts/genesis_ceremony_checklist.sh
+
+# kfe go-live props (mesh-only, mpc off)
+# --spring.config.additional-location=classpath:kfe-service-vaultmesh-go-live.properties
+```
+
+Rollback permitido: fail-stop + runbook operacional. **Proibido:** religar mpc-sidecar em silêncio.
 
 ### Fase 9 — Economia aberta + resiliência do banco (contínuo)
 

@@ -1,5 +1,31 @@
 use crate::domain::{AttestationMode, DomainError, NodeId};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CeremonyMode {
+    Lab,
+    Staging,
+    Production,
+}
+
+impl CeremonyMode {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "lab" => Some(Self::Lab),
+            "staging" => Some(Self::Staging),
+            "production" | "prod" => Some(Self::Production),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Lab => "lab",
+            Self::Staging => "staging",
+            Self::Production => "production",
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct VaultConfig {
     pub node_id: NodeId,
@@ -20,13 +46,11 @@ pub struct VaultConfig {
     pub lab_council_n: usize,
     /// Minimum independent rebuilds before cosign.
     pub lab_min_rebuilds: usize,
-    /// Production / refuse-sim: lock lab-only HTTP and flags (§13.5).
+    /// Production / staging / refuse-sim: lock lab-only HTTP and flags (§13.5 / F8).
     pub hardened: bool,
-}
-
-#[derive(Debug, Clone, Copy)]
-pub struct AttestationPolicy {
-    pub refuse_sim: bool,
+    /// Staging-only TEE stub quotes (never for production ceremony).
+    pub attestation_staging_stub: bool,
+    pub ceremony_mode: CeremonyMode,
 }
 
 impl VaultConfig {
@@ -42,14 +66,23 @@ impl VaultConfig {
             std::env::var("VAULT_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:7701".into());
         let lab_root =
             std::env::var("LAB_ATTESTATION_ROOT").unwrap_or_else(|_| "kerosene-lab-root".into());
-        let refuse_sim = env_flag("KEROSENE_VAULT_REFUSE_SIM")
-            || cfg!(feature = "production")
-            || std::env::var("KEROSENE_ENV").as_deref() == Ok("production");
+
+        let kerosene_env = std::env::var("KEROSENE_ENV").unwrap_or_else(|_| "lab".into());
+        let is_production = cfg!(feature = "production")
+            || kerosene_env.eq_ignore_ascii_case("production");
+        let is_staging = kerosene_env.eq_ignore_ascii_case("staging");
+        let refuse_sim = env_flag("KEROSENE_VAULT_REFUSE_SIM") || is_production || is_staging;
         let hardened = refuse_sim;
+        let attestation_staging_stub = env_flag("ATTESTATION_STAGING_STUB");
+
+        let ceremony_raw =
+            std::env::var("VAULT_CEREMONY_MODE").unwrap_or_else(|_| kerosene_env.clone());
+        let ceremony_mode = CeremonyMode::parse(&ceremony_raw).ok_or_else(|| {
+            DomainError::AttestationRejected(format!("unknown VAULT_CEREMONY_MODE={ceremony_raw}"))
+        })?;
 
         let mut seed_peers = Vec::new();
         if let Ok(raw) = std::env::var("VAULT_SEED_PEERS") {
-            // format: id=host:port,id2=host2:port
             for part in raw.split(',') {
                 let part = part.trim();
                 if part.is_empty() {
@@ -96,6 +129,8 @@ impl VaultConfig {
             lab_council_n,
             lab_min_rebuilds,
             hardened,
+            attestation_staging_stub,
+            ceremony_mode,
         };
         cfg.validate_hygiene()?;
         Ok(cfg)
@@ -108,7 +143,8 @@ impl VaultConfig {
         Ok(())
     }
 
-    /// §13.5: prod image must not boot with sim attestation or LAB_TIMELOCK_SCALE.
+    /// §13.5 + F8: prod/staging must not boot with sim or LAB_TIMELOCK_SCALE;
+    /// production ceremony forbids staging TEE stubs.
     pub fn validate_hygiene(&self) -> Result<(), DomainError> {
         self.validate_attestation_policy()?;
         if self.hardened {
@@ -122,11 +158,20 @@ impl VaultConfig {
                     "LAB_TIMELOCK_SCALE".into(),
                 ));
             }
-            if self.lab_timelock_scale != 1 {
-                // Hardened builds always use real-scale timelock (no accel / no zero).
-                // Default when unset is 0 in lab; hardened path forbids env and forces scale=1
-                // at runtime via `effective_lab_timelock_scale()`.
-            }
+        }
+        if self.ceremony_mode == CeremonyMode::Production && self.attestation_staging_stub {
+            return Err(DomainError::LabFlagForbidden(
+                "ATTESTATION_STAGING_STUB in production ceremony".into(),
+            ));
+        }
+        if matches!(
+            self.ceremony_mode,
+            CeremonyMode::Staging | CeremonyMode::Production
+        ) && self.attestation_mode.is_lab_only()
+        {
+            return Err(DomainError::LabFlagForbidden(
+                "ATTESTATION_MODE=sim".into(),
+            ));
         }
         Ok(())
     }
@@ -154,7 +199,6 @@ fn env_flag(name: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::AttestationMode;
 
     fn base() -> VaultConfig {
         VaultConfig {
@@ -171,6 +215,8 @@ mod tests {
             lab_council_n: 3,
             lab_min_rebuilds: 3,
             hardened: false,
+            attestation_staging_stub: false,
+            ceremony_mode: CeremonyMode::Lab,
         }
     }
 
@@ -206,5 +252,32 @@ mod tests {
         assert!(cfg.validate_hygiene().is_ok());
         assert_eq!(cfg.effective_lab_timelock_scale(), 0);
         assert!(cfg.lab_endpoints_enabled());
+    }
+
+    #[test]
+    fn production_ceremony_rejects_staging_stub() {
+        let mut cfg = base();
+        cfg.attestation_mode = AttestationMode::Sev;
+        cfg.ceremony_mode = CeremonyMode::Production;
+        cfg.attestation_staging_stub = true;
+        cfg.refuse_sim = true;
+        cfg.hardened = true;
+        assert_eq!(
+            cfg.validate_hygiene(),
+            Err(DomainError::LabFlagForbidden(
+                "ATTESTATION_STAGING_STUB in production ceremony".into()
+            ))
+        );
+    }
+
+    #[test]
+    fn staging_allows_sev_with_stub() {
+        let mut cfg = base();
+        cfg.attestation_mode = AttestationMode::Sev;
+        cfg.ceremony_mode = CeremonyMode::Staging;
+        cfg.attestation_staging_stub = true;
+        cfg.refuse_sim = true;
+        cfg.hardened = true;
+        assert!(cfg.validate_hygiene().is_ok());
     }
 }

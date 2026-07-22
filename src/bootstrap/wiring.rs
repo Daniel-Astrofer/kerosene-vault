@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use crate::adapters::{
     InMemoryBucketLedger, InMemoryLedger, InMemoryPeerDirectory, InMemoryReleaseMesh,
-    SimAttestationAdapter, SystemClock, ThresholdVaultState,
+    SimAttestationAdapter, SystemClock, TeeAttestationAdapter, ThresholdVaultState,
 };
 use crate::application::{
     ActivateRelease, AllocateProfit, CosignRelease, GateIntent, GetAllowlist, GetHealth,
@@ -103,13 +103,15 @@ impl VaultRuntime {
                     Arc::new(SimAttestationAdapter::new(config.lab_root.as_bytes()))
                 }
                 crate::domain::AttestationMode::Sev | crate::domain::AttestationMode::Sgx => {
-                    return Err(DomainError::AttestationRejected(
-                        "SEV/SGX adapters not implemented yet (F3 uses sim only)".into(),
-                    ));
+                    Arc::new(TeeAttestationAdapter::new(
+                        config.attestation_mode,
+                        config.attestation_staging_stub,
+                        config.lab_root.as_bytes(),
+                    )?)
                 }
             };
 
-        let measurement = Measurement::from_bytes(b"kerosene-vault-f6-buckets");
+        let measurement = Measurement::from_bytes(b"kerosene-vault-f8-tee");
         let clock: Arc<dyn crate::application::ClockPort> = Arc::new(SystemClock);
         let peers_port: Arc<dyn crate::application::PeerDirectoryPort> = peers.clone();
         let ledger_port: Arc<dyn crate::application::LedgerPort> = ledger.clone();

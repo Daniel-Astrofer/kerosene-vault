@@ -69,6 +69,8 @@ fn sim_forbidden_when_refuse_sim() {
         lab_council_n: 3,
         lab_min_rebuilds: 3,
         hardened: true,
+        attestation_staging_stub: false,
+        ceremony_mode: kerosene_vault::bootstrap::CeremonyMode::Lab,
     };
     assert_eq!(
         cfg.validate_attestation_policy(),

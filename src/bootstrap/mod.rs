@@ -3,5 +3,5 @@
 mod config;
 mod wiring;
 
-pub use config::{AttestationPolicy, VaultConfig};
+pub use config::{CeremonyMode, VaultConfig};
 pub use wiring::VaultRuntime;

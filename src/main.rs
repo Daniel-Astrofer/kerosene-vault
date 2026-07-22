@@ -25,10 +25,12 @@ fn main() {
 
     let group = runtime.threshold.group();
     eprintln!(
-        "kerosene-vault F7 harden node={} listen={} attestation={} n={} t={} online={} timelock_scale={} hardened={}",
+        "kerosene-vault F8 tee node={} listen={} attestation={} ceremony={} stub={} n={} t={} online={} timelock_scale={} hardened={}",
         runtime.config.node_id,
         runtime.config.listen_addr,
         runtime.config.attestation_mode.as_str(),
+        runtime.config.ceremony_mode.as_str(),
+        runtime.config.attestation_staging_stub,
         group.n,
         group.t,
         runtime.online.count,
