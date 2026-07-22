@@ -483,6 +483,8 @@ F0 spec ──► F1 vault skeleton + lab N nós
 
 ### Fase 4 — Integração banco: Intent / Receipt (2–4 semanas)
 
+**Status (lab):** ports em `kerosene-contracts`; client HTTP `KfeVaultMeshSettlementClient` + fallback `MESH_DISABLED` (`KfeVaultMeshConfiguration`); endpoint interno `POST /internal/kfe/vault-mesh/intent`; flags `kfe.vaultmesh.*` (default off). Rails/mpc intactos. Hook opt-in no submit outbound via `KfeVaultMeshIntentService` (`submit-on-outbound`).
+
 **Entrega**
 
 - Ports em `kerosene-contracts`; client na mesh a partir de `kfe-service`.  
