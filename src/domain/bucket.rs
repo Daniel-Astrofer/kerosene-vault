@@ -1,0 +1,232 @@
+//! Treasury buckets: USERS / PROFIT / MINERS / CHANNELS / INFRA (F6).
+
+use std::collections::BTreeSet;
+
+use crate::domain::DomainError;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum BucketKind {
+    Users,
+    Profit,
+    Miners,
+    Channels,
+    Infra,
+}
+
+impl BucketKind {
+    pub fn parse(raw: &str) -> Result<Self, DomainError> {
+        match raw.trim().to_ascii_uppercase().as_str() {
+            "USERS" => Ok(Self::Users),
+            "PROFIT" => Ok(Self::Profit),
+            "MINERS" => Ok(Self::Miners),
+            "CHANNELS" => Ok(Self::Channels),
+            "INFRA" => Ok(Self::Infra),
+            _ => Err(DomainError::InvalidBucket(raw.to_string())),
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Users => "USERS",
+            Self::Profit => "PROFIT",
+            Self::Miners => "MINERS",
+            Self::Channels => "CHANNELS",
+            Self::Infra => "INFRA",
+        }
+    }
+
+    /// Operational buckets must never debit the USERS omnibus.
+    pub fn may_debit_users(self) -> bool {
+        matches!(self, Self::Users)
+    }
+}
+
+/// How PROFIT is split across child buckets (basis points, sum = 10_000).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfitSplits {
+    pub miners_bps: u32,
+    pub channels_bps: u32,
+    pub infra_bps: u32,
+}
+
+impl ProfitSplits {
+    /// Lab dry-run: miners payout `p%=0`; channels/infra split the rest evenly.
+    pub fn lab_dry_run() -> Self {
+        Self {
+            miners_bps: 0,
+            channels_bps: 5_000,
+            infra_bps: 5_000,
+        }
+    }
+
+    pub fn validate(&self) -> Result<(), DomainError> {
+        let sum = self
+            .miners_bps
+            .saturating_add(self.channels_bps)
+            .saturating_add(self.infra_bps);
+        if sum != 10_000 {
+            return Err(DomainError::InvalidConstitution(format!(
+                "profit splits must sum to 10000 bps, got {sum}"
+            )));
+        }
+        Ok(())
+    }
+
+    pub fn allocate(&self, profit_sats: u64) -> (u64, u64, u64) {
+        let miners = profit_sats.saturating_mul(self.miners_bps as u64) / 10_000;
+        let channels = profit_sats.saturating_mul(self.channels_bps as u64) / 10_000;
+        let infra = profit_sats.saturating_sub(miners).saturating_sub(channels);
+        (miners, channels, infra)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BucketPolicy {
+    pub kind: BucketKind,
+    pub max_per_tx_sats: u64,
+    pub max_per_day_sats: u64,
+    pub destination_allowlist: BTreeSet<String>,
+}
+
+impl BucketPolicy {
+    pub fn lab_defaults(kind: BucketKind, max_tx: u64, max_day: u64) -> Self {
+        let mut destination_allowlist = BTreeSet::new();
+        match kind {
+            BucketKind::Users => {
+                destination_allowlist.insert("bc1q-users-withdraw".into());
+                destination_allowlist.insert("ln-users-withdraw".into());
+            }
+            BucketKind::Profit => {
+                destination_allowlist.insert("internal-profit-split".into());
+            }
+            BucketKind::Miners => {
+                destination_allowlist.insert("bc1q-miner-payout".into());
+            }
+            BucketKind::Channels => {
+                destination_allowlist.insert("ln-channel-rebalance".into());
+            }
+            BucketKind::Infra => {
+                destination_allowlist.insert("bc1q-infra-ops".into());
+            }
+        }
+        Self {
+            kind,
+            max_per_tx_sats: max_tx,
+            max_per_day_sats: max_day,
+            destination_allowlist,
+        }
+    }
+
+    pub fn allows_destination(&self, dest: &str) -> bool {
+        self.destination_allowlist.contains(dest)
+    }
+}
+
+/// Settlement intent as seen by the vault enclave (mirrors contracts Intent fields).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SettlementIntent {
+    pub intent_id: String,
+    pub bucket: BucketKind,
+    pub destination: String,
+    pub amount_sats: u64,
+    pub policy_hash: String,
+}
+
+impl SettlementIntent {
+    pub fn new(
+        intent_id: impl Into<String>,
+        bucket: BucketKind,
+        destination: impl Into<String>,
+        amount_sats: u64,
+        policy_hash: impl Into<String>,
+    ) -> Result<Self, DomainError> {
+        let intent_id = intent_id.into();
+        if intent_id.trim().is_empty() {
+            return Err(DomainError::InvalidIntent("empty intent_id".into()));
+        }
+        Ok(Self {
+            intent_id,
+            bucket,
+            destination: destination.into(),
+            amount_sats,
+            policy_hash: policy_hash.into(),
+        })
+    }
+}
+
+/// Pure gate: caps, allowlist, bucket isolation (no I/O).
+pub fn evaluate_intent(
+    intent: &SettlementIntent,
+    policy: &BucketPolicy,
+    spent_today_sats: u64,
+    active_policy_hash: &str,
+) -> Result<(), DomainError> {
+    if policy.kind != intent.bucket {
+        return Err(DomainError::InvalidIntent("bucket/policy mismatch".into()));
+    }
+    if intent.policy_hash != active_policy_hash {
+        return Err(DomainError::InvalidIntent(
+            "policy_hash mismatch with active constitution".into(),
+        ));
+    }
+    if !intent.bucket.may_debit_users() && intent.bucket == BucketKind::Users {
+        unreachable!();
+    }
+    // Cross-bucket isolation: operational buckets never use USERS policy.
+    if !intent.bucket.may_debit_users() && policy.kind == BucketKind::Users {
+        return Err(DomainError::UsersOmnibusProtected);
+    }
+    if intent.amount_sats == 0 {
+        return Err(DomainError::InvalidIntent("amount must be > 0".into()));
+    }
+    if intent.amount_sats > policy.max_per_tx_sats {
+        return Err(DomainError::CapExceeded {
+            amount: intent.amount_sats,
+            cap: policy.max_per_tx_sats,
+            scope: "per_tx".into(),
+        });
+    }
+    let day_total = spent_today_sats.saturating_add(intent.amount_sats);
+    if day_total > policy.max_per_day_sats {
+        return Err(DomainError::CapExceeded {
+            amount: day_total,
+            cap: policy.max_per_day_sats,
+            scope: "per_day".into(),
+        });
+    }
+    if !policy.allows_destination(&intent.destination) {
+        return Err(DomainError::DestinationNotAllowed(
+            intent.destination.clone(),
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn users_cap_rejects_oversize_tx() {
+        let policy = BucketPolicy::lab_defaults(BucketKind::Users, 100, 1_000);
+        let intent = SettlementIntent::new(
+            "i1",
+            BucketKind::Users,
+            "bc1q-users-withdraw",
+            101,
+            "ph",
+        )
+        .unwrap();
+        assert!(evaluate_intent(&intent, &policy, 0, "ph").is_err());
+    }
+
+    #[test]
+    fn profit_split_lab_dry_run_miners_zero() {
+        let s = ProfitSplits::lab_dry_run();
+        s.validate().unwrap();
+        let (m, c, i) = s.allocate(10_000);
+        assert_eq!(m, 0);
+        assert_eq!(c, 5_000);
+        assert_eq!(i, 5_000);
+    }
+}

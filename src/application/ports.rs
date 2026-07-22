@@ -1,7 +1,7 @@
 use crate::domain::{
-    AttestationMode, AttestationQuote, Constitution, DomainError, Epoch, EpochAdvanceProposal,
-    LedgerEntry, Measurement, NodeId, PeerInfo, AllowlistEntry, ContentHash, ReleaseCandidate,
-    ReleasePolicy,
+    AttestationMode, AttestationQuote, AllowlistEntry, BucketKind, BucketPolicy, Constitution,
+    ContentHash, DomainError, Epoch, EpochAdvanceProposal, LedgerEntry, Measurement, NodeId,
+    PeerInfo, ReleaseCandidate, ReleasePolicy,
 };
 
 pub trait PeerDirectoryPort {
@@ -48,4 +48,13 @@ pub trait ReleaseStorePort {
     fn put_allowlist(&self, entry: AllowlistEntry) -> Result<(), DomainError>;
     fn allowlist(&self) -> Result<Vec<AllowlistEntry>, DomainError>;
     fn is_allowlisted_hb(&self, hb: &ContentHash) -> Result<bool, DomainError>;
+}
+
+/// Per-bucket spend tracking + destination policies (enclave side).
+pub trait BucketLedgerPort {
+    fn policy(&self, kind: BucketKind) -> Result<BucketPolicy, DomainError>;
+    fn spent_today(&self, kind: BucketKind) -> Result<u64, DomainError>;
+    fn record_spend(&self, kind: BucketKind, amount_sats: u64) -> Result<(), DomainError>;
+    fn is_consumed(&self, intent_id: &str) -> Result<bool, DomainError>;
+    fn mark_consumed(&self, intent_id: &str) -> Result<(), DomainError>;
 }

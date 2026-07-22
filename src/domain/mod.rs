@@ -1,6 +1,7 @@
 //! Domain layer: entities and pure policy. No Tor, disk, or network.
 
 mod attestation;
+mod bucket;
 mod constitution;
 mod dkg;
 mod error;
@@ -11,6 +12,9 @@ mod release;
 mod threshold;
 
 pub use attestation::{AttestationMode, AttestationQuote, Measurement};
+pub use bucket::{
+    evaluate_intent, BucketKind, BucketPolicy, ProfitSplits, SettlementIntent,
+};
 pub use constitution::{quorum_two_thirds, Constitution};
 pub use dkg::run_dkg;
 pub use error::DomainError;

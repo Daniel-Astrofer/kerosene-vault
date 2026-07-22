@@ -509,6 +509,8 @@ F0 spec ──► F1 vault skeleton + lab N nós
 
 ### Fase 6 — Buckets PROFIT + E2E lab “produção simulada” (2–3 semanas)
 
+**Status (lab):** buckets USERS/PROFIT/MINERS/CHANNELS/INFRA com caps + allowlist de destino; splits PROFIT dry-run (`miners_bps=0`); gate de Intent (cap/replay); suite `tests/lab_e2e_suite.rs` + `scripts/lab_e2e.sh` (§13.4). Compose com `LAB_TIMELOCK_SCALE=0`.
+
 **Entrega**
 
 - Policies USERS / PROFIT / MINERS / CHANNELS / INFRA (payout miners pode ser dry-run/`p%=0`).  
@@ -516,6 +518,18 @@ F0 spec ──► F1 vault skeleton + lab N nós
 - Documentação runbook lab (subir N VMs, genesis, intent smoke).
 
 **Critério de pronto:** um comando/script sobe lab completo; suite verde.
+
+**Runbook rápido**
+
+```bash
+# Suite §13.4
+cd backend/kerosene-vault && ./scripts/lab_e2e.sh
+
+# Mesh 3 nós (Docker)
+docker compose -f infra/docker/compose/vault-mesh-lab.compose.yaml up --build
+# Intent gate smoke: POST /intent/gate/{id}/USERS/bc1q-users-withdraw/1000
+# Profit dry-run:   POST /profit/allocate/1000000
+```
 
 ### Fase 7 — Pentest e hardening (2–3 semanas)
 

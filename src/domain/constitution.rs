@@ -1,4 +1,4 @@
-use crate::domain::DomainError;
+use crate::domain::{DomainError, ProfitSplits};
 
 /// Active security/economic constitution anchored on the vault ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -11,6 +11,7 @@ pub struct Constitution {
     pub governance_t: usize,
     pub p_reward_bps: u32,
     pub p_reward_max_bps: u32,
+    pub profit_splits: ProfitSplits,
     pub crypto_suite_id: String,
     pub hash: String,
 }
@@ -24,6 +25,8 @@ impl Constitution {
         }
         let signing_t = quorum_two_thirds(n);
         let governance_t = (signing_t + 1).min(n);
+        let profit_splits = ProfitSplits::lab_dry_run();
+        profit_splits.validate()?;
         let mut c = Self {
             version: 1,
             max_withdraw_per_day_sats: 1_000_000,
@@ -31,8 +34,9 @@ impl Constitution {
             signing_n: n,
             signing_t,
             governance_t,
-            p_reward_bps: 100, // 1%
+            p_reward_bps: 100, // 1% target; lab dry-run uses profit_splits.miners_bps=0
             p_reward_max_bps: 800,
+            profit_splits,
             crypto_suite_id: "hybrid-v1-placeholder".into(),
             hash: String::new(),
         };
@@ -42,7 +46,7 @@ impl Constitution {
 
     pub fn compute_hash(&self) -> String {
         let material = format!(
-            "v{}|day{}|tx{}|n{}|t{}|gt{}|p{}|max{}|{}",
+            "v{}|day{}|tx{}|n{}|t{}|gt{}|p{}|max{}|m{}|ch{}|inf{}|{}",
             self.version,
             self.max_withdraw_per_day_sats,
             self.max_withdraw_per_tx_sats,
@@ -51,6 +55,9 @@ impl Constitution {
             self.governance_t,
             self.p_reward_bps,
             self.p_reward_max_bps,
+            self.profit_splits.miners_bps,
+            self.profit_splits.channels_bps,
+            self.profit_splits.infra_bps,
             self.crypto_suite_id
         );
         crate::domain::attestation::Measurement::from_bytes(material.as_bytes())
@@ -73,6 +80,7 @@ impl Constitution {
                 "p_reward exceeds max".into(),
             ));
         }
+        self.profit_splits.validate()?;
         if self.hash != self.compute_hash() {
             return Err(DomainError::InvalidConstitution(
                 "constitution hash mismatch".into(),
@@ -83,7 +91,7 @@ impl Constitution {
 
     pub fn to_json(&self) -> String {
         format!(
-            r#"{{"version":{},"max_withdraw_per_day_sats":{},"max_withdraw_per_tx_sats":{},"signing_n":{},"signing_t":{},"governance_t":{},"p_reward_bps":{},"p_reward_max_bps":{},"crypto_suite_id":"{}","hash":"{}"}}"#,
+            r#"{{"version":{},"max_withdraw_per_day_sats":{},"max_withdraw_per_tx_sats":{},"signing_n":{},"signing_t":{},"governance_t":{},"p_reward_bps":{},"p_reward_max_bps":{},"profit_splits":{{"miners_bps":{},"channels_bps":{},"infra_bps":{}}},"crypto_suite_id":"{}","hash":"{}"}}"#,
             self.version,
             self.max_withdraw_per_day_sats,
             self.max_withdraw_per_tx_sats,
@@ -92,6 +100,9 @@ impl Constitution {
             self.governance_t,
             self.p_reward_bps,
             self.p_reward_max_bps,
+            self.profit_splits.miners_bps,
+            self.profit_splits.channels_bps,
+            self.profit_splits.infra_bps,
             self.crypto_suite_id,
             self.hash
         )

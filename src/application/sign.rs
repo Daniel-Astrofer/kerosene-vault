@@ -46,3 +46,26 @@ impl OnlineStatusPort for StaticOnlineCount {
         self.count
     }
 }
+
+/// Lab partition / fail-stop harness: online count can change at runtime.
+pub struct MutableOnlineCount {
+    count: std::sync::Mutex<usize>,
+}
+
+impl MutableOnlineCount {
+    pub fn new(count: usize) -> Self {
+        Self {
+            count: std::sync::Mutex::new(count),
+        }
+    }
+
+    pub fn set(&self, count: usize) {
+        *self.count.lock().expect("online lock") = count;
+    }
+}
+
+impl OnlineStatusPort for MutableOnlineCount {
+    fn online_count(&self) -> usize {
+        *self.count.lock().expect("online lock")
+    }
+}

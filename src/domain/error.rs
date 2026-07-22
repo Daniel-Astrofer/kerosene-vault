@@ -28,6 +28,16 @@ pub enum DomainError {
     TimelockNotElapsed { age_secs: u64, need_secs: u64 },
     ReleaseClosed(String),
     NotAllowlisted(String),
+    InvalidBucket(String),
+    InvalidIntent(String),
+    CapExceeded {
+        amount: u64,
+        cap: u64,
+        scope: String,
+    },
+    DestinationNotAllowed(String),
+    IntentReplay(String),
+    UsersOmnibusProtected,
 }
 
 impl fmt::Display for DomainError {
@@ -73,6 +83,16 @@ impl fmt::Display for DomainError {
             }
             Self::ReleaseClosed(id) => write!(f, "release closed: {id}"),
             Self::NotAllowlisted(h) => write!(f, "artifact not allowlisted: {h}"),
+            Self::InvalidBucket(b) => write!(f, "invalid bucket: {b}"),
+            Self::InvalidIntent(r) => write!(f, "invalid intent: {r}"),
+            Self::CapExceeded { amount, cap, scope } => {
+                write!(f, "cap exceeded ({scope}): amount {amount} > cap {cap}")
+            }
+            Self::DestinationNotAllowed(d) => write!(f, "destination not allowed: {d}"),
+            Self::IntentReplay(id) => write!(f, "intent replay: {id}"),
+            Self::UsersOmnibusProtected => {
+                write!(f, "USERS omnibus protected: operational bucket cannot debit USERS")
+            }
         }
     }
 }

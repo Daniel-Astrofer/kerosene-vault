@@ -1,13 +1,13 @@
 use std::sync::Arc;
 
 use crate::adapters::{
-    InMemoryLedger, InMemoryPeerDirectory, InMemoryReleaseMesh, SimAttestationAdapter, SystemClock,
-    ThresholdVaultState,
+    InMemoryBucketLedger, InMemoryLedger, InMemoryPeerDirectory, InMemoryReleaseMesh,
+    SimAttestationAdapter, SystemClock, ThresholdVaultState,
 };
 use crate::application::{
-    ActivateRelease, CosignRelease, GetAllowlist, GetHealth, GetLedgerSnapshot, PingPeer,
-    ProposeEpochAdvance, ProposeRelease, RebuildRelease, SignMessage, StaticOnlineCount,
-    VoteEpochAdvance,
+    ActivateRelease, AllocateProfit, CosignRelease, GateIntent, GetAllowlist, GetHealth,
+    GetLedgerSnapshot, PingPeer, ProposeEpochAdvance, ProposeRelease, RebuildRelease, SignMessage,
+    StaticOnlineCount, VoteEpochAdvance,
 };
 use crate::bootstrap::VaultConfig;
 use crate::domain::{
@@ -27,11 +27,14 @@ pub struct VaultRuntime {
     pub cosign_release: CosignRelease,
     pub activate_release: ActivateRelease,
     pub get_allowlist: GetAllowlist,
+    pub gate_intent: GateIntent,
+    pub allocate_profit: AllocateProfit,
     pub peers: Arc<InMemoryPeerDirectory>,
     pub ledger: Arc<InMemoryLedger>,
     pub threshold: Arc<ThresholdVaultState>,
     pub online: Arc<StaticOnlineCount>,
     pub release_mesh: Arc<InMemoryReleaseMesh>,
+    pub buckets: Arc<InMemoryBucketLedger>,
 }
 
 impl VaultRuntime {
@@ -62,6 +65,8 @@ impl VaultRuntime {
         active_set.truncate(n);
 
         let constitution = Constitution::v1_lab(n)?;
+        let max_tx = constitution.max_withdraw_per_tx_sats;
+        let max_day = constitution.max_withdraw_per_day_sats;
         let t = constitution.signing_t;
         let dkg_set = active_set.clone();
         let ledger = Arc::new(InMemoryLedger::genesis(
@@ -103,7 +108,7 @@ impl VaultRuntime {
                 }
             };
 
-        let measurement = Measurement::from_bytes(b"kerosene-vault-f5-release");
+        let measurement = Measurement::from_bytes(b"kerosene-vault-f6-buckets");
         let clock: Arc<dyn crate::application::ClockPort> = Arc::new(SystemClock);
         let peers_port: Arc<dyn crate::application::PeerDirectoryPort> = peers.clone();
         let ledger_port: Arc<dyn crate::application::LedgerPort> = ledger.clone();
@@ -115,6 +120,9 @@ impl VaultRuntime {
         let release_mesh = Arc::new(InMemoryReleaseMesh::new(release_policy));
         let release_port: Arc<dyn crate::application::ReleaseStorePort> = release_mesh.clone();
         let blob_port: Arc<dyn crate::application::BlobStorePort> = release_mesh.clone();
+
+        let buckets = Arc::new(InMemoryBucketLedger::from_constitution_caps(max_tx, max_day));
+        let bucket_port: Arc<dyn crate::application::BucketLedgerPort> = buckets.clone();
 
         let get_health = GetHealth::new(
             config.node_id.clone(),
@@ -138,8 +146,11 @@ impl VaultRuntime {
             clock.clone(),
             config.node_id.clone(),
         );
-        let activate_release = ActivateRelease::new(release_port.clone(), ledger_port, clock);
+        let activate_release =
+            ActivateRelease::new(release_port.clone(), ledger_port.clone(), clock);
         let get_allowlist = GetAllowlist::new(release_port);
+        let gate_intent = GateIntent::new(bucket_port, ledger_port.clone());
+        let allocate_profit = AllocateProfit::new(ledger_port);
 
         Ok(Self {
             config,
@@ -154,11 +165,14 @@ impl VaultRuntime {
             cosign_release,
             activate_release,
             get_allowlist,
+            gate_intent,
+            allocate_profit,
             peers,
             ledger,
             threshold,
             online,
             release_mesh,
+            buckets,
         })
     }
 }

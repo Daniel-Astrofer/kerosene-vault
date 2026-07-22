@@ -2,9 +2,9 @@ use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::Arc;
 
-use kerosene_vault::application::{BlobStorePort, ReleaseStorePort};
+use kerosene_vault::application::{BlobStorePort, LedgerPort, ReleaseStorePort};
 use kerosene_vault::bootstrap::{VaultConfig, VaultRuntime};
-use kerosene_vault::domain::{ContentHash, NodeId};
+use kerosene_vault::domain::{BucketKind, ContentHash, NodeId, SettlementIntent};
 
 fn main() {
     let config = match VaultConfig::from_env() {
@@ -25,7 +25,7 @@ fn main() {
 
     let group = runtime.threshold.group();
     eprintln!(
-        "kerosene-vault F5 release node={} listen={} attestation={} n={} t={} online={} timelock_scale={}",
+        "kerosene-vault F6 buckets node={} listen={} attestation={} n={} t={} online={} timelock_scale={}",
         runtime.config.node_id,
         runtime.config.listen_addr,
         runtime.config.attestation_mode.as_str(),
@@ -235,6 +235,66 @@ fn handle_request(runtime: &VaultRuntime, req: &str) -> (&'static str, String) {
             let id = path.trim_start_matches("/release/activate/");
             match runtime.activate_release.execute(id) {
                 Ok(e) => ("200 OK", e.to_json()),
+                Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+            }
+        }
+        // /intent/gate/{id}/{bucket}/{destination}/{amount_sats}
+        ("POST", path) if path.starts_with("/intent/gate/") => {
+            let rest = path.trim_start_matches("/intent/gate/");
+            let mut segs = rest.splitn(4, '/');
+            let id = segs.next().unwrap_or("");
+            let bucket_raw = segs.next().unwrap_or("");
+            let destination = segs.next().unwrap_or("");
+            let amount_raw = segs.next().unwrap_or("");
+            if id.is_empty()
+                || bucket_raw.is_empty()
+                || destination.is_empty()
+                || amount_raw.is_empty()
+            {
+                return (
+                    "400 Bad Request",
+                    r#"{"error":"usage /intent/gate/{id}/{bucket}/{destination}/{amount}"}"#.into(),
+                );
+            }
+            let bucket = match BucketKind::parse(bucket_raw) {
+                Ok(b) => b,
+                Err(e) => return ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+            };
+            let amount = match amount_raw.parse::<u64>() {
+                Ok(a) => a,
+                Err(_) => {
+                    return (
+                        "400 Bad Request",
+                        r#"{"error":"amount must be u64 sats"}"#.into(),
+                    )
+                }
+            };
+            let policy_hash = match runtime.ledger.constitution() {
+                Ok(c) => c.hash,
+                Err(e) => return ("500 Internal Server Error", format!(r#"{{"error":"{e}"}}"#)),
+            };
+            let intent = match SettlementIntent::new(id, bucket, destination, amount, policy_hash) {
+                Ok(i) => i,
+                Err(e) => return ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+            };
+            match runtime.gate_intent.execute(intent) {
+                Ok(r) => ("200 OK", r.to_json()),
+                Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+            }
+        }
+        ("POST", path) if path.starts_with("/profit/allocate/") => {
+            let amount_raw = path.trim_start_matches("/profit/allocate/");
+            let amount = match amount_raw.parse::<u64>() {
+                Ok(a) => a,
+                Err(_) => {
+                    return (
+                        "400 Bad Request",
+                        r#"{"error":"usage /profit/allocate/{profit_sats}"}"#.into(),
+                    )
+                }
+            };
+            match runtime.allocate_profit.execute(amount) {
+                Ok(a) => ("200 OK", a.to_json()),
                 Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
             }
         }
