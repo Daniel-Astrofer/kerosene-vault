@@ -14,6 +14,12 @@ pub enum DomainError {
     UnknownProposal(String),
     EpochMismatch { expected: u64, got: u64 },
     ProposalClosed(String),
+    InvalidShare(String),
+    ThresholdError(String),
+    NonceReuse(String),
+    FailStop { online: usize, need: usize },
+    SessionConsumed(String),
+    BadSigningPhase { session_id: String, phase: String },
 }
 
 impl fmt::Display for DomainError {
@@ -37,6 +43,16 @@ impl fmt::Display for DomainError {
                 write!(f, "epoch mismatch: expected {expected}, got {got}")
             }
             Self::ProposalClosed(id) => write!(f, "proposal already closed: {id}"),
+            Self::InvalidShare(r) => write!(f, "invalid share: {r}"),
+            Self::ThresholdError(r) => write!(f, "threshold error: {r}"),
+            Self::NonceReuse(r) => write!(f, "nonce reuse: {r}"),
+            Self::FailStop { online, need } => {
+                write!(f, "fail-stop: online {online} < need {need}")
+            }
+            Self::SessionConsumed(id) => write!(f, "signing session consumed: {id}"),
+            Self::BadSigningPhase { session_id, phase } => {
+                write!(f, "bad signing phase for {session_id}: {phase}")
+            }
         }
     }
 }

@@ -10,6 +10,8 @@ pub struct VaultConfig {
     pub refuse_sim: bool,
     /// Explicit genesis n; defaults to len(local+seeds) when unset.
     pub genesis_n: Option<usize>,
+    /// Online vaults for fail-stop (lab). Defaults to genesis_n.
+    pub online_count: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -52,6 +54,9 @@ impl VaultConfig {
         let genesis_n = std::env::var("VAULT_GENESIS_N")
             .ok()
             .and_then(|s| s.parse::<usize>().ok());
+        let online_count = std::env::var("VAULT_ONLINE_COUNT")
+            .ok()
+            .and_then(|s| s.parse::<usize>().ok());
 
         Ok(Self {
             node_id,
@@ -61,6 +66,7 @@ impl VaultConfig {
             seed_peers,
             refuse_sim,
             genesis_n,
+            online_count,
         })
     }
 

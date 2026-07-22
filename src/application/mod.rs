@@ -3,9 +3,11 @@
 mod health;
 mod ledger_ops;
 mod ping_peer;
+mod sign;
 pub mod ports;
 
 pub use health::GetHealth;
 pub use ledger_ops::{GetLedgerSnapshot, LedgerSnapshot, ProposeEpochAdvance, VoteEpochAdvance};
 pub use ping_peer::{PingPeer, PingReport};
 pub use ports::{AttestationPort, ClockPort, LedgerPort, PeerDirectoryPort};
+pub use sign::{OnlineStatusPort, SignMessage, StaticOnlineCount};

@@ -63,6 +63,7 @@ fn sim_forbidden_when_refuse_sim() {
         seed_peers: vec![],
         refuse_sim: true,
         genesis_n: None,
+        online_count: None,
     };
     assert_eq!(
         cfg.validate_attestation_policy(),
