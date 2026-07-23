@@ -172,8 +172,8 @@ impl TeeSealAdapter {
         match platform {
             AttestationMode::Sev => hw::sev_snp_derived_root(),
             AttestationMode::Sgx => hw::sgx_seal_root(),
-            AttestationMode::Sim => Err(DomainError::TeeRequired(
-                "sim attestation cannot derive HW seal keys".into(),
+            AttestationMode::Sim | AttestationMode::Software => Err(DomainError::TeeRequired(
+                "software/sim attestation cannot derive HW seal keys".into(),
             )),
         }
     }
@@ -266,9 +266,9 @@ impl TeeSealAdapter {
                 let mode = match platform {
                     AttestationMode::Sev => MODE_HW_SEV,
                     AttestationMode::Sgx => MODE_HW_SGX,
-                    AttestationMode::Sim => {
+                    AttestationMode::Sim | AttestationMode::Software => {
                         return Err(DomainError::TeeRequired(
-                            "sim cannot produce HW seal envelopes".into(),
+                            "software/sim cannot produce HW seal envelopes".into(),
                         ));
                     }
                 };
@@ -361,7 +361,7 @@ impl ShareStorePort for TeeSealAdapter {
             SealBackend::Hw { platform } => match platform {
                 AttestationMode::Sev => "tee_seal_hw_sev",
                 AttestationMode::Sgx => "tee_seal_hw_sgx",
-                AttestationMode::Sim => "tee_seal",
+                AttestationMode::Sim | AttestationMode::Software => "tee_seal",
             },
         }
     }

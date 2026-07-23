@@ -9,6 +9,7 @@ mod dkg;
 mod error;
 mod health;
 mod ledger;
+mod node_tier;
 mod peer;
 mod release;
 mod reshare_policy;
@@ -17,6 +18,10 @@ mod threshold;
 
 pub use attestation::{
     admits_attestation_measurement, AttestationMode, AttestationQuote, Measurement,
+};
+pub use node_tier::{
+    detect_tee_at_paths, detect_tee_devices, resolve_node_tier, seat_genesis_by_tier,
+    SeatingCandidate, VaultNodeTier,
 };
 pub use bitcoin_net::{validate_destination, BitcoinNetwork};
 pub use bucket::{

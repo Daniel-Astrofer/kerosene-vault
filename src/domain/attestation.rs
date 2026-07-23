@@ -4,7 +4,10 @@ use crate::domain::DomainError;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AttestationMode {
+    /// Lab-only visualization quote (refused under hardened / production ceremony).
     Sim,
+    /// Domestic software measurement — honest non-TEE label; prod-capable for domestic tier.
+    Software,
     Sev,
     Sgx,
 }
@@ -12,8 +15,10 @@ pub enum AttestationMode {
 impl AttestationMode {
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
-            "sim" => Some(Self::Sim),
-            "sev" => Some(Self::Sev),
+            "sim" | "simulation" => Some(Self::Sim),
+            // Alias: historical lab docs said "sim"; domestic prod uses "software".
+            "software" | "sw" | "measurement" => Some(Self::Software),
+            "sev" | "sev-snp" | "sev_snp" => Some(Self::Sev),
             "sgx" => Some(Self::Sgx),
             _ => None,
         }
@@ -22,6 +27,7 @@ impl AttestationMode {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Sim => "sim",
+            Self::Software => "software",
             Self::Sev => "sev",
             Self::Sgx => "sgx",
         }
@@ -29,6 +35,14 @@ impl AttestationMode {
 
     pub fn is_lab_only(self) -> bool {
         matches!(self, Self::Sim)
+    }
+
+    pub fn is_software_measurement(self) -> bool {
+        matches!(self, Self::Sim | Self::Software)
+    }
+
+    pub fn is_tee(self) -> bool {
+        matches!(self, Self::Sev | Self::Sgx)
     }
 }
 

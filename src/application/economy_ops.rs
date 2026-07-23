@@ -4,15 +4,18 @@ use std::sync::Arc;
 
 use crate::application::ports::{EconomyPort, LedgerPort};
 use crate::domain::{
-    assert_bank_issued_miner_payout, DomainError, EconomyState, GovernanceAccrual,
+    assert_bank_issued_miner_payout, AttestationMode, DomainError, EconomyState, GovernanceAccrual,
     GovernanceJobKind, GovernanceRewardConfig, LedgerEntry, LedgerEventKind, MinerOperator,
-    MinerPayoutShare, NodeId, SettlementIntent,
+    MinerPayoutShare, NodeId, SettlementIntent, VaultNodeTier,
 };
 
 pub struct GetEconomyStatus {
     economy: Arc<dyn EconomyPort>,
     ledger: Arc<dyn LedgerPort>,
     governance_reward: GovernanceRewardConfig,
+    node_tier: VaultNodeTier,
+    attestation_mode: AttestationMode,
+    tee_available: bool,
 }
 
 impl GetEconomyStatus {
@@ -20,11 +23,17 @@ impl GetEconomyStatus {
         economy: Arc<dyn EconomyPort>,
         ledger: Arc<dyn LedgerPort>,
         governance_reward: GovernanceRewardConfig,
+        node_tier: VaultNodeTier,
+        attestation_mode: AttestationMode,
+        tee_available: bool,
     ) -> Self {
         Self {
             economy,
             ledger,
             governance_reward,
+            node_tier,
+            attestation_mode,
+            tee_available,
         }
     }
 
@@ -48,6 +57,10 @@ impl GetEconomyStatus {
             crypto_suite_id_pq: eco.crypto_suite_id_pq,
             survivability_ok,
             open_economy: constitution.profit_splits.miners_bps > 0,
+            node_tier: self.node_tier.as_str().to_string(),
+            attestation_mode: self.attestation_mode.as_str().to_string(),
+            tee_available: self.tee_available,
+            tier_governance_weight_bps: self.node_tier.governance_weight_bps(),
         })
     }
 }
@@ -66,12 +79,16 @@ pub struct EconomyStatusView {
     pub crypto_suite_id_pq: String,
     pub survivability_ok: bool,
     pub open_economy: bool,
+    pub node_tier: String,
+    pub attestation_mode: String,
+    pub tee_available: bool,
+    pub tier_governance_weight_bps: u32,
 }
 
 impl EconomyStatusView {
     pub fn to_json(&self) -> String {
         format!(
-            r#"{{"miner_pool_sats":{},"accrued_profit_sats":{},"pending_governance_reward_sats":{},"governance_reward_sats":{},"governance_reward_bps":{},"p_reward_bps":{},"eligible_miners":{},"waiting_miners":{},"crypto_suite_id":"{}","crypto_suite_id_pq":"{}","survivability_ok":{},"open_economy":{}}}"#,
+            r#"{{"miner_pool_sats":{},"accrued_profit_sats":{},"pending_governance_reward_sats":{},"governance_reward_sats":{},"governance_reward_bps":{},"p_reward_bps":{},"eligible_miners":{},"waiting_miners":{},"crypto_suite_id":"{}","crypto_suite_id_pq":"{}","survivability_ok":{},"open_economy":{},"node_tier":"{}","attestation_mode":"{}","tee_available":{},"tier_governance_weight_bps":{}}}"#,
             self.miner_pool_sats,
             self.accrued_profit_sats,
             self.pending_governance_reward_sats,
@@ -83,7 +100,11 @@ impl EconomyStatusView {
             self.crypto_suite_id,
             self.crypto_suite_id_pq,
             self.survivability_ok,
-            self.open_economy
+            self.open_economy,
+            self.node_tier,
+            self.attestation_mode,
+            self.tee_available,
+            self.tier_governance_weight_bps
         )
     }
 }

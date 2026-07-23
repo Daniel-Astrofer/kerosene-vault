@@ -1,4 +1,18 @@
-//! AEAD disk share store (lab). Argon2id + ChaCha20-Poly1305. Disk ≠ TEE.
+//! AEAD disk share store (domestic / lab). Argon2id + ChaCha20-Poly1305.
+//!
+//! # Honest tier note
+//! Disk AEAD ≠ TEE. Domestic production may use this path; SEV/SGX nodes should use
+//! `VAULT_SHARE_STORE=tee_seal` when a real enclave seal is available.
+//!
+//! # Optional TPM 2.0 seal hook (not wired by default)
+//! On home PCs, operators can wrap the Argon2-derived key (or the on-disk blob) with a
+//! TPM 2.0 sealed object bound to PCR policy / NV index for **disk-at-rest + identity**:
+//! 1. Create a primary storage key in the TPM owner hierarchy.
+//! 2. Seal the passphrase (or DEK) under a PCR policy matching measured boot.
+//! 3. Unseal at vault start before constructing [`AeadDiskShareStore`].
+//!
+//! That improves anti-theft of the SSD and node identity; it does **not** isolate share
+//! plaintext from the host OS after unseal (unlike SEV-SNP). See `VAULT_MESH_PLAN.md` §3.1.
 
 use std::fs;
 use std::path::{Path, PathBuf};

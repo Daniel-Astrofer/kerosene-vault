@@ -1,4 +1,9 @@
-use crate::domain::{AttestationMode, BitcoinNetwork, DomainError, GovernanceRewardConfig, NodeId, ResharePolicy};
+use std::collections::BTreeMap;
+
+use crate::domain::{
+    resolve_node_tier, AttestationMode, BitcoinNetwork, DomainError, GovernanceRewardConfig, NodeId,
+    ResharePolicy, VaultNodeTier,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CeremonyMode {
@@ -109,10 +114,16 @@ impl ShareStoreMode {
 #[derive(Debug, Clone)]
 pub struct VaultConfig {
     pub node_id: NodeId,
+    /// Honest hardware tier (`domestic` | `sev` | `sgx`).
+    pub node_tier: VaultNodeTier,
+    /// True when a TEE guest/enclave device node is present (not the same as TPM).
+    pub tee_available: bool,
     pub attestation_mode: AttestationMode,
     pub listen_addr: String,
     pub lab_root: String,
     pub seed_peers: Vec<(String, String)>,
+    /// Optional per-peer tier overlay (`VAULT_PEER_TIERS=id=sev,...`); default domestic.
+    pub peer_tiers: BTreeMap<String, VaultNodeTier>,
     pub refuse_sim: bool,
     /// Explicit genesis n; defaults to len(local+seeds) when unset.
     pub genesis_n: Option<usize>,
@@ -172,14 +183,9 @@ impl VaultConfig {
         let node_id = NodeId::new(
             std::env::var("VAULT_NODE_ID").unwrap_or_else(|_| "vault-local-1".into()),
         )?;
-        let mode_raw = std::env::var("ATTESTATION_MODE").unwrap_or_else(|_| "sim".into());
-        let attestation_mode = AttestationMode::parse(&mode_raw).ok_or_else(|| {
-            DomainError::AttestationRejected(format!("unknown ATTESTATION_MODE={mode_raw}"))
-        })?;
-        let listen_addr =
-            std::env::var("VAULT_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:7701".into());
-        let lab_root =
-            std::env::var("LAB_ATTESTATION_ROOT").unwrap_or_else(|_| "kerosene-lab-root".into());
+
+        let tier_raw = std::env::var("VAULT_NODE_TIER").ok();
+        let (node_tier, tee_available) = resolve_node_tier(tier_raw.as_deref())?;
 
         let kerosene_env = std::env::var("KEROSENE_ENV").unwrap_or_else(|_| "lab".into());
         let is_production =
@@ -195,6 +201,25 @@ impl VaultConfig {
             DomainError::AttestationRejected(format!("unknown VAULT_CEREMONY_MODE={ceremony_raw}"))
         })?;
 
+        let mode_default = match node_tier {
+            VaultNodeTier::Domestic if matches!(ceremony_mode, CeremonyMode::Lab) && !hardened => {
+                "sim"
+            }
+            VaultNodeTier::Domestic => "software",
+            VaultNodeTier::Sev => "sev",
+            VaultNodeTier::Sgx => "sgx",
+        };
+        let mode_raw =
+            std::env::var("ATTESTATION_MODE").unwrap_or_else(|_| mode_default.to_string());
+        let attestation_mode = AttestationMode::parse(&mode_raw).ok_or_else(|| {
+            DomainError::AttestationRejected(format!("unknown ATTESTATION_MODE={mode_raw}"))
+        })?;
+
+        let listen_addr =
+            std::env::var("VAULT_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:7701".into());
+        let lab_root =
+            std::env::var("LAB_ATTESTATION_ROOT").unwrap_or_else(|_| "kerosene-lab-root".into());
+
         let mut seed_peers = Vec::new();
         if let Ok(raw) = std::env::var("VAULT_SEED_PEERS") {
             for part in raw.split(',') {
@@ -206,6 +231,25 @@ impl VaultConfig {
                     DomainError::AttestationRejected(format!("bad VAULT_SEED_PEERS entry: {part}"))
                 })?;
                 seed_peers.push((id.trim().to_string(), addr.trim().to_string()));
+            }
+        }
+
+        let mut peer_tiers = BTreeMap::new();
+        if let Ok(raw) = std::env::var("VAULT_PEER_TIERS") {
+            for part in raw.split(',') {
+                let part = part.trim();
+                if part.is_empty() {
+                    continue;
+                }
+                let (id, tier_s) = part.split_once('=').ok_or_else(|| {
+                    DomainError::AttestationRejected(format!("bad VAULT_PEER_TIERS entry: {part}"))
+                })?;
+                let tier = VaultNodeTier::parse(tier_s).ok_or_else(|| {
+                    DomainError::AttestationRejected(format!(
+                        "unknown tier in VAULT_PEER_TIERS: {tier_s}"
+                    ))
+                })?;
+                peer_tiers.insert(id.trim().to_string(), tier);
             }
         }
 
@@ -257,10 +301,10 @@ impl VaultConfig {
         let tls_client_key_path = env_nonempty_first(&["VAULT_TLS_CLIENT_KEY_PATH"]);
 
         let store_raw = std::env::var("VAULT_SHARE_STORE").unwrap_or_else(|_| {
-            if hardened {
-                "tee_seal".into()
-            } else {
-                "aead_disk".into()
+            match node_tier {
+                VaultNodeTier::Domestic => "aead_disk".into(),
+                VaultNodeTier::Sev | VaultNodeTier::Sgx if hardened => "tee_seal".into(),
+                VaultNodeTier::Sev | VaultNodeTier::Sgx => "aead_disk".into(),
             }
         });
         let share_store_mode = ShareStoreMode::parse(&store_raw).ok_or_else(|| {
@@ -299,10 +343,13 @@ impl VaultConfig {
 
         let cfg = Self {
             node_id,
+            node_tier,
+            tee_available,
             attestation_mode,
             listen_addr,
             lab_root,
             seed_peers,
+            peer_tiers,
             refuse_sim,
             genesis_n,
             online_count,
@@ -351,7 +398,8 @@ impl VaultConfig {
         Ok(())
     }
 
-    /// Prod/staging refuse: sim, lab timelock env, dealer, static token, host-disk share without TEE.
+    /// Prod/staging refuse: sim, lab timelock env, dealer, static token, fake TEE claims.
+    /// Domestic AEAD + software attestation is allowed; staging stub and sev-without-HW are not.
     pub fn validate_hygiene(&self) -> Result<(), DomainError> {
         self.validate_attestation_policy()?;
         if self.hardened {
@@ -385,6 +433,10 @@ impl VaultConfig {
                 "ATTESTATION_MODE=sim".into(),
             ));
         }
+
+        // Honest tier / mode: refuse advertising SEV/SGX without HW (stub is staging-only).
+        self.validate_tee_claims()?;
+
         if matches!(
             self.ceremony_mode,
             CeremonyMode::Staging | CeremonyMode::Production
@@ -399,9 +451,9 @@ impl VaultConfig {
                     "static token refused in staging/production; use mTLS".into(),
                 ));
             }
-            if self.share_store_mode == ShareStoreMode::AeadDisk {
+            if self.share_store_mode == ShareStoreMode::AeadDisk && self.node_tier.is_tee() {
                 return Err(DomainError::TeeRequired(
-                    "host disk AEAD share store refused without TEE in staging/production".into(),
+                    "TEE-tier node requires VAULT_SHARE_STORE=tee_seal (not host AEAD)".into(),
                 ));
             }
         }
@@ -410,6 +462,46 @@ impl VaultConfig {
             self.require_mtls_client_identity()?;
         }
         Ok(())
+    }
+
+    /// Refuse fake SEV/SGX claims: no device and no staging stub (stub never in production).
+    pub fn validate_tee_claims(&self) -> Result<(), DomainError> {
+        if self.node_tier.is_domestic() && self.attestation_mode.is_tee() {
+            return Err(DomainError::AttestationRejected(
+                "domestic tier cannot advertise ATTESTATION_MODE=sev|sgx (use software)".into(),
+            ));
+        }
+        let claims_tee = self.node_tier.is_tee() || self.attestation_mode.is_tee();
+        if !claims_tee {
+            return Ok(());
+        }
+        if self.attestation_staging_stub {
+            if matches!(self.ceremony_mode, CeremonyMode::Production) || cfg!(feature = "production")
+            {
+                return Err(DomainError::LabFlagForbidden(
+                    "ATTESTATION_STAGING_STUB cannot back a TEE claim in production".into(),
+                ));
+            }
+            return Ok(());
+        }
+        if !self.tee_available {
+            return Err(DomainError::AttestationRejected(
+                "TEE claim (VAULT_NODE_TIER or ATTESTATION_MODE=sev|sgx) without HW device; use domestic/software or set ATTESTATION_STAGING_STUB=1 for staging only".into(),
+            ));
+        }
+        if cfg!(feature = "production") && !cfg!(feature = "tee_hw") {
+            return Err(DomainError::AttestationRejected(
+                "production TEE claim requires --features tee_hw (or run domestic/software ceremony)".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn peer_tier(&self, peer_id: &str) -> VaultNodeTier {
+        self.peer_tiers
+            .get(peer_id)
+            .copied()
+            .unwrap_or(VaultNodeTier::Domestic)
     }
 
     /// Paths for rustls mTLS serve (`VAULT_TLS_*`).
@@ -504,10 +596,13 @@ mod tests {
     fn base() -> VaultConfig {
         VaultConfig {
             node_id: NodeId::new("v1").unwrap(),
+            node_tier: VaultNodeTier::Domestic,
+            tee_available: false,
             attestation_mode: AttestationMode::Sim,
             listen_addr: "127.0.0.1:0".into(),
             lab_root: "x".into(),
             seed_peers: vec![],
+            peer_tiers: BTreeMap::new(),
             refuse_sim: false,
             genesis_n: None,
             online_count: None,
@@ -567,6 +662,8 @@ mod tests {
         let mut cfg = base();
         cfg.hardened = true;
         cfg.refuse_sim = true;
+        cfg.node_tier = VaultNodeTier::Sev;
+        cfg.tee_available = true;
         cfg.attestation_mode = AttestationMode::Sev;
         cfg.lab_timelock_env_set = true;
         cfg.ceremony_mode = CeremonyMode::Lab;
@@ -592,6 +689,8 @@ mod tests {
     #[test]
     fn production_ceremony_rejects_staging_stub() {
         let mut cfg = base();
+        cfg.node_tier = VaultNodeTier::Sev;
+        cfg.tee_available = true;
         cfg.attestation_mode = AttestationMode::Sev;
         cfg.ceremony_mode = CeremonyMode::Production;
         cfg.attestation_staging_stub = true;
@@ -613,6 +712,8 @@ mod tests {
     #[test]
     fn staging_allows_sev_with_stub() {
         let mut cfg = base();
+        cfg.node_tier = VaultNodeTier::Sev;
+        cfg.tee_available = false;
         cfg.attestation_mode = AttestationMode::Sev;
         cfg.ceremony_mode = CeremonyMode::Staging;
         cfg.attestation_staging_stub = true;
@@ -627,8 +728,10 @@ mod tests {
     }
 
     #[test]
-    fn production_refuses_static_token_and_disk_share() {
+    fn production_refuses_static_token_and_tee_disk_share() {
         let mut cfg = base();
+        cfg.node_tier = VaultNodeTier::Sev;
+        cfg.tee_available = true;
         cfg.attestation_mode = AttestationMode::Sev;
         cfg.ceremony_mode = CeremonyMode::Production;
         cfg.refuse_sim = true;
@@ -651,6 +754,77 @@ mod tests {
     }
 
     #[test]
+    fn production_allows_domestic_software_and_aead() {
+        let mut cfg = base();
+        cfg.node_tier = VaultNodeTier::Domestic;
+        cfg.tee_available = false;
+        cfg.attestation_mode = AttestationMode::Software;
+        cfg.ceremony_mode = CeremonyMode::Production;
+        cfg.refuse_sim = true;
+        cfg.hardened = true;
+        cfg.auth_mode = AuthMode::MutualTls;
+        cfg = with_mtls_paths(cfg);
+        cfg.share_store_mode = ShareStoreMode::AeadDisk;
+        cfg.dealer_requested = false;
+        cfg.dkg_mode = DkgMode::DistributedWire;
+        assert!(cfg.validate_hygiene().is_ok());
+    }
+
+    #[test]
+    fn production_rejects_sev_claim_without_hw() {
+        let mut cfg = base();
+        cfg.node_tier = VaultNodeTier::Sev;
+        cfg.tee_available = false;
+        cfg.attestation_mode = AttestationMode::Sev;
+        cfg.attestation_staging_stub = false;
+        cfg.ceremony_mode = CeremonyMode::Production;
+        cfg.refuse_sim = true;
+        cfg.hardened = true;
+        cfg.auth_mode = AuthMode::MutualTls;
+        cfg = with_mtls_paths(cfg);
+        cfg.share_store_mode = ShareStoreMode::TeeSeal;
+        cfg.dealer_requested = false;
+        cfg.dkg_mode = DkgMode::Distributed;
+        assert!(matches!(
+            cfg.validate_hygiene(),
+            Err(DomainError::AttestationRejected(_))
+        ));
+    }
+
+    #[test]
+    fn production_rejects_stub_as_sev() {
+        let mut cfg = base();
+        cfg.node_tier = VaultNodeTier::Sev;
+        cfg.tee_available = false;
+        cfg.attestation_mode = AttestationMode::Sev;
+        cfg.attestation_staging_stub = true;
+        cfg.ceremony_mode = CeremonyMode::Production;
+        cfg.refuse_sim = true;
+        cfg.hardened = true;
+        cfg.auth_mode = AuthMode::MutualTls;
+        cfg = with_mtls_paths(cfg);
+        cfg.share_store_mode = ShareStoreMode::TeeSeal;
+        cfg.dealer_requested = false;
+        cfg.dkg_mode = DkgMode::Distributed;
+        assert!(matches!(
+            cfg.validate_hygiene(),
+            Err(DomainError::LabFlagForbidden(_))
+        ));
+    }
+
+    #[test]
+    fn domestic_cannot_advertise_sev_mode() {
+        let mut cfg = base();
+        cfg.node_tier = VaultNodeTier::Domestic;
+        cfg.attestation_mode = AttestationMode::Sev;
+        cfg.tee_available = true;
+        assert!(matches!(
+            cfg.validate_tee_claims(),
+            Err(DomainError::AttestationRejected(_))
+        ));
+    }
+
+    #[test]
     fn mtls_requires_tls_paths() {
         let mut cfg = base();
         cfg.auth_mode = AuthMode::MutualTls;
@@ -666,12 +840,13 @@ mod tests {
     fn staging_and_production_still_refuse_static_token() {
         for mode in [CeremonyMode::Staging, CeremonyMode::Production] {
             let mut cfg = base();
-            cfg.attestation_mode = AttestationMode::Sev;
+            cfg.node_tier = VaultNodeTier::Domestic;
+            cfg.attestation_mode = AttestationMode::Software;
             cfg.ceremony_mode = mode;
             cfg.refuse_sim = true;
             cfg.hardened = true;
             cfg.auth_mode = AuthMode::StaticToken;
-            cfg.share_store_mode = ShareStoreMode::TeeSeal;
+            cfg.share_store_mode = ShareStoreMode::AeadDisk;
             cfg.dealer_requested = false;
             cfg.dkg_mode = DkgMode::Distributed;
             assert!(

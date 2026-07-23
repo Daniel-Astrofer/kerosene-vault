@@ -23,8 +23,8 @@ use crate::application::{
 };
 use crate::bootstrap::{AuthMode, CeremonyMode, DkgMode, ShareStoreMode, VaultConfig};
 use crate::domain::{
-    run_dkg, Constitution, DomainError, EconomyState, Measurement, NodeId, PeerEndpoint, PeerInfo,
-    ReleasePolicy,
+    run_dkg, seat_genesis_by_tier, Constitution, DomainError, EconomyState, Measurement, NodeId,
+    PeerEndpoint, PeerInfo, ReleasePolicy, SeatingCandidate, VaultNodeTier,
 };
 
 pub struct VaultRuntime {
@@ -94,18 +94,26 @@ impl VaultRuntime {
             })?;
         }
 
-        let mut active_set = vec![config.node_id.clone()];
+        // Genesis seating: prefer SEV > SGX > domestic when filling signing_n.
+        let mut candidates = vec![SeatingCandidate {
+            id: config.node_id.clone(),
+            tier: config.node_tier,
+        }];
         for (id, _) in &config.seed_peers {
-            active_set.push(NodeId::new(id.clone())?);
+            candidates.push(SeatingCandidate {
+                id: NodeId::new(id.clone())?,
+                tier: config.peer_tier(id),
+            });
         }
-        active_set.sort_by(|a, b| a.as_str().cmp(b.as_str()));
-        active_set.dedup();
-
-        let n = config.genesis_n.unwrap_or(active_set.len().max(2));
-        while active_set.len() < n {
-            active_set.push(NodeId::new(format!("vault-pad-{}", active_set.len()))?);
+        let n = config.genesis_n.unwrap_or(candidates.len().max(2));
+        // Lab pads only when under-provisioned (still domestic tier).
+        while candidates.len() < n {
+            candidates.push(SeatingCandidate {
+                id: NodeId::new(format!("vault-pad-{}", candidates.len()))?,
+                tier: VaultNodeTier::Domestic,
+            });
         }
-        active_set.truncate(n);
+        let active_set = seat_genesis_by_tier(&candidates, n);
 
         let mut constitution = if config.open_economy {
             Constitution::v1_open(n)?
@@ -154,6 +162,9 @@ impl VaultRuntime {
             match config.attestation_mode {
                 crate::domain::AttestationMode::Sim => {
                     Arc::new(SimAttestationAdapter::new(config.lab_root.as_bytes()))
+                }
+                crate::domain::AttestationMode::Software => {
+                    Arc::new(SimAttestationAdapter::software(config.lab_root.as_bytes()))
                 }
                 crate::domain::AttestationMode::Sev | crate::domain::AttestationMode::Sgx => {
                     let refuse_stub = matches!(config.ceremony_mode, CeremonyMode::Production)
@@ -466,6 +477,8 @@ impl VaultRuntime {
             config.node_id.clone(),
             peers_port.clone(),
             attestation.clone(),
+            config.node_tier,
+            config.tee_available,
         );
         let ping_peer = PingPeer::new(peers_port, attestation, clock.clone(), measurement);
         let get_ledger = GetLedgerSnapshot::new(ledger_port.clone());
@@ -495,6 +508,9 @@ impl VaultRuntime {
             economy_port.clone(),
             ledger_port.clone(),
             governance_reward,
+            config.node_tier,
+            config.attestation_mode,
+            config.tee_available,
         );
         let upsert_miner = UpsertMiner::new(economy_port.clone());
         let accrue_rewards = AccrueMinerRewards::new(economy_port.clone(), ledger_port.clone());
@@ -506,7 +522,9 @@ impl VaultRuntime {
             "lab-visualize"
         };
         eprintln!(
-            "MODE={mode} auth={} share_store={} dkg={} reshare={} bitcoin={}",
+            "MODE={mode} tier={} tee_available={} auth={} share_store={} dkg={} reshare={} bitcoin={}",
+            config.node_tier.as_str(),
+            config.tee_available,
             auth.mode_name(),
             share_store.store_kind(),
             dkg.mode_name(),

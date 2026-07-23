@@ -192,6 +192,23 @@ A maioria dos operadores de vault são **computadores domésticos** (ex. Ryzen d
 - Gate **recusa** claim falso (`ATTESTATION_MODE=sev|sgx` sem HW / stub em prod). Gate **não** recusa set só-doméstico honesto.  
 - `--features production` alinha com isso: proíbe dealer/`sim`/stub; **não** exige SEV em 100% dos nós.
 
+#### Seating algorithm (implementado)
+
+1. Candidatos = nó local (`VAULT_NODE_TIER`) + `VAULT_SEED_PEERS` com tiers de `VAULT_PEER_TIERS` (default `domestic`).  
+2. Ordenar por prioridade **sev (3) > sgx (2) > domestic (1)**; empate por `node_id` ascendente.  
+3. Tomar os primeiros `VAULT_GENESIS_N` / `signing_n` assentos (`seat_genesis_by_tier`).  
+4. Health: `GET /v1/health` expõe `node_tier`, `attestation_mode`, `tee_available` (nunca rotular TPM como SEV).
+
+#### Env (produção doméstica / mista)
+
+| Var | Domestic native | TEE preferido |
+| --- | --- | --- |
+| `VAULT_NODE_TIER` | `domestic` (ou `auto` → sem `/dev/sev-guest`) | `sev` / `sgx` só com HW |
+| `ATTESTATION_MODE` | `software` | `sev` / `sgx` |
+| `VAULT_SHARE_STORE` | `aead_disk` (+ TPM seal opcional) | `tee_seal` |
+| `VAULT_PEER_TIERS` | opcional | `vault-epyc=sev,...` para preferência de assento |
+| `ATTESTATION_STAGING_STUB` | off | **proibido** em produção |
+
 #### TPM 2.0 vs SEV-SNP (tabela honesta)
 
 | Capacidade | TPM 2.0 (PC doméstico) | SEV-SNP (servidor confidencial) |
@@ -686,14 +703,19 @@ cd backend/kerosene-vault && ./scripts/lab_pentest.sh
 **Cutover (limpo)**
 
 ```bash
-# Staging TEE stub mesh
+# Staging TEE stub mesh (optional SEV path)
 docker compose -f infra/docker/compose/vault-mesh-staging.compose.yaml up --build
 
-# Ceremony gate
-VAULT_CEREMONY_MODE=staging ATTESTATION_MODE=sev \
+# Ceremony gate — domestic-native (Ryzen / home PC)
+VAULT_CEREMONY_MODE=production VAULT_NODE_TIER=domestic ATTESTATION_MODE=software \
+  VAULT_GENESIS_N=3 VAULT_SEED_PEERS='vault-2=host2:7701,vault-3=host3:7701' \
   ./backend/kerosene-vault/scripts/genesis_ceremony_checklist.sh
 
-# kfe go-live props (mesh-only, mpc off)
+# Ceremony gate — staging SEV stub
+VAULT_CEREMONY_MODE=staging ATTESTATION_MODE=sev ATTESTATION_STAGING_STUB=1 \
+  ./backend/kerosene-vault/scripts/genesis_ceremony_checklist.sh
+
+# kfe go-live props (mesh-only, mpc off; no hard tee_hw require)
 # --spring.config.additional-location=classpath:kfe-service-vaultmesh-go-live.properties
 ```
 

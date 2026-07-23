@@ -27,10 +27,13 @@ fn gen_lab_certs(dir: &Path) {
 fn lab_mtls_cfg(listen: &str, certs: &Path, data_dir: &Path) -> VaultConfig {
     VaultConfig {
         node_id: NodeId::new("vault-mtls-1").unwrap(),
+        node_tier: kerosene_vault::domain::VaultNodeTier::Domestic,
+        tee_available: false,
         attestation_mode: AttestationMode::Sim,
         listen_addr: listen.into(),
         lab_root: "kerosene-lab-mtls".into(),
         seed_peers: vec![],
+        peer_tiers: std::collections::BTreeMap::new(),
         refuse_sim: false,
         genesis_n: Some(2),
         online_count: Some(2),

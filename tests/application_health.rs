@@ -16,7 +16,13 @@ fn health_ready_when_peers_present() {
         })
         .unwrap();
     let attestation = Arc::new(SimAttestationAdapter::new(b"lab"));
-    let uc = GetHealth::new(NodeId::new("vault-1").unwrap(), peers, attestation);
+    let uc = GetHealth::new(
+        NodeId::new("vault-1").unwrap(),
+        peers,
+        attestation,
+        kerosene_vault::domain::VaultNodeTier::Domestic,
+        false,
+    );
     let health = uc.execute().unwrap();
     assert_eq!(health.peer_count, 1);
     assert_eq!(health.status, HealthStatus::Ready);
@@ -47,6 +53,7 @@ fn ping_peer_verifies_sim_quote() {
 #[test]
 fn refuse_sim_policy_domain_flag() {
     assert!(AttestationMode::Sim.is_lab_only());
+    assert!(!AttestationMode::Software.is_lab_only());
     assert!(!AttestationMode::Sev.is_lab_only());
 }
 
@@ -57,10 +64,13 @@ fn sim_forbidden_when_refuse_sim() {
 
     let mut cfg = VaultConfig {
         node_id: NodeId::new("v1").unwrap(),
+        node_tier: kerosene_vault::domain::VaultNodeTier::Domestic,
+        tee_available: false,
         attestation_mode: AttestationMode::Sim,
         listen_addr: "127.0.0.1:0".into(),
         lab_root: "x".into(),
         seed_peers: vec![],
+        peer_tiers: std::collections::BTreeMap::new(),
         refuse_sim: true,
         genesis_n: None,
         online_count: None,

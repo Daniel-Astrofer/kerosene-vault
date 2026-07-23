@@ -109,7 +109,7 @@ impl TeeAttestationAdapter {
         match self.mode {
             AttestationMode::Sev => b"kerosene-vault-sev-stub-v1",
             AttestationMode::Sgx => b"kerosene-vault-sgx-stub-v1",
-            AttestationMode::Sim => b"invalid",
+            AttestationMode::Sim | AttestationMode::Software => b"invalid",
         }
     }
 
@@ -141,7 +141,7 @@ impl TeeAttestationAdapter {
         match self.mode {
             AttestationMode::Sev => PLATFORM_SEV,
             AttestationMode::Sgx => PLATFORM_SGX,
-            AttestationMode::Sim => 0,
+            AttestationMode::Sim | AttestationMode::Software => 0,
         }
     }
 
@@ -150,7 +150,7 @@ impl TeeAttestationAdapter {
         let report = match self.mode {
             AttestationMode::Sev => sev_snp::issue_report(measurement)?,
             AttestationMode::Sgx => sgx::issue_report(measurement)?,
-            AttestationMode::Sim => {
+            AttestationMode::Sim | AttestationMode::Software => {
                 return Err(DomainError::SimAttestationForbidden);
             }
         };
@@ -185,7 +185,9 @@ impl TeeAttestationAdapter {
         match self.mode {
             AttestationMode::Sev => sev_snp::verify_report(&env.measurement, &env.report),
             AttestationMode::Sgx => sgx::verify_report(&env.measurement, &env.report),
-            AttestationMode::Sim => Err(DomainError::SimAttestationForbidden),
+            AttestationMode::Sim | AttestationMode::Software => {
+                Err(DomainError::SimAttestationForbidden)
+            }
         }
     }
 
@@ -219,9 +221,9 @@ impl AttestationPort for TeeAttestationAdapter {
     }
 
     fn verify_quote(&self, quote: &AttestationQuote) -> Result<(), DomainError> {
-        if quote.mode == AttestationMode::Sim {
+        if quote.mode.is_software_measurement() {
             return Err(DomainError::AttestationRejected(
-                "TEE adapter rejects sim quotes".into(),
+                "TEE adapter rejects software/sim quotes".into(),
             ));
         }
         if quote.mode != self.mode {

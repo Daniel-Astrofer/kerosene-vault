@@ -27,9 +27,11 @@ async fn main() {
 
     let group = runtime.threshold.group();
     eprintln!(
-        "kerosene-vault lab-p0 node={} listen={} attestation={} ceremony={} stub={} n={} t={} online={} timelock_scale={} hardened={} open_economy={} bitcoin={} auth={}",
+        "kerosene-vault lab-p0 node={} listen={} tier={} tee_available={} attestation={} ceremony={} stub={} n={} t={} online={} timelock_scale={} hardened={} open_economy={} bitcoin={} auth={}",
         runtime.config.node_id,
         runtime.config.listen_addr,
+        runtime.config.node_tier.as_str(),
+        runtime.config.tee_available,
         runtime.config.attestation_mode.as_str(),
         runtime.config.ceremony_mode.as_str(),
         runtime.config.attestation_staging_stub,
