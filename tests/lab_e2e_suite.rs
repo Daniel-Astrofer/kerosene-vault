@@ -4,7 +4,7 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use kerosene_vault::adapters::{
-    InMemoryBucketLedger, InMemoryLedger, InMemoryReleaseMesh, ThresholdVaultState,
+    InMemoryBucketLedger, InMemoryEconomy, InMemoryLedger, InMemoryReleaseMesh, ThresholdVaultState,
 };
 use kerosene_vault::application::{
     ActivateRelease, AllocateProfit, BlobStorePort, ClockPort, CosignRelease, GateIntent,
@@ -46,7 +46,7 @@ fn suite_happy_intent_gate_then_frost_sign() {
         constitution.max_withdraw_per_tx_sats,
         constitution.max_withdraw_per_day_sats,
     ));
-    let gate = GateIntent::new(buckets, ledger);
+    let gate = GateIntent::new(buckets, ledger, Arc::new(InMemoryEconomy::open()));
     let intent = SettlementIntent::new(
         "intent-happy",
         BucketKind::Users,
@@ -122,7 +122,7 @@ fn suite_intent_above_cap_rejected() {
         constitution.max_withdraw_per_tx_sats,
         constitution.max_withdraw_per_day_sats,
     ));
-    let gate = GateIntent::new(buckets, ledger);
+    let gate = GateIntent::new(buckets, ledger, Arc::new(InMemoryEconomy::open()));
     let intent = SettlementIntent::new(
         "intent-cap",
         BucketKind::Users,
@@ -147,7 +147,7 @@ fn suite_intent_replay_rejected() {
         constitution.max_withdraw_per_tx_sats,
         constitution.max_withdraw_per_day_sats,
     ));
-    let gate = GateIntent::new(buckets, ledger);
+    let gate = GateIntent::new(buckets, ledger, Arc::new(InMemoryEconomy::open()));
     let mk = || {
         SettlementIntent::new(
             "intent-replay",
@@ -258,7 +258,7 @@ fn suite_miners_bucket_cannot_use_users_destination_policy() {
         constitution.max_withdraw_per_tx_sats,
         constitution.max_withdraw_per_day_sats,
     ));
-    let gate = GateIntent::new(buckets, ledger);
+    let gate = GateIntent::new(buckets, ledger, Arc::new(InMemoryEconomy::open()));
     // Miners intent to a USERS-only destination must fail allowlist.
     let intent = SettlementIntent::new(
         "intent-miner-cross",

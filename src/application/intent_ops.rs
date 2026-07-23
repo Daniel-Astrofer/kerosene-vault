@@ -1,18 +1,27 @@
 use std::sync::Arc;
 
-use crate::application::ports::{BucketLedgerPort, LedgerPort};
+use crate::application::ports::{BucketLedgerPort, EconomyPort, LedgerPort};
 use crate::domain::{
-    evaluate_intent, BucketKind, DomainError, SettlementIntent,
+    assert_bank_issued_miner_payout, evaluate_intent, BucketKind, DomainError, SettlementIntent,
 };
 
 pub struct GateIntent {
     buckets: Arc<dyn BucketLedgerPort>,
     ledger: Arc<dyn LedgerPort>,
+    economy: Arc<dyn EconomyPort>,
 }
 
 impl GateIntent {
-    pub fn new(buckets: Arc<dyn BucketLedgerPort>, ledger: Arc<dyn LedgerPort>) -> Self {
-        Self { buckets, ledger }
+    pub fn new(
+        buckets: Arc<dyn BucketLedgerPort>,
+        ledger: Arc<dyn LedgerPort>,
+        economy: Arc<dyn EconomyPort>,
+    ) -> Self {
+        Self {
+            buckets,
+            ledger,
+            economy,
+        }
     }
 
     /// Evaluate + consume intent id (replay-safe). Does not sign.
@@ -21,8 +30,16 @@ impl GateIntent {
             return Err(DomainError::IntentReplay(intent.intent_id));
         }
         let constitution = self.ledger.constitution()?;
-        let policy = self.buckets.policy(intent.bucket)?;
+        let mut policy = self.buckets.policy(intent.bucket)?;
         let spent = self.buckets.spent_today(intent.bucket)?;
+        // F9: open MINERS — destination must be an eligible registered operator (bank Intent;
+        // vaults never invent self-pay). Registered dest is admitted into the allowlist for this check.
+        if constitution.profit_splits.miners_bps > 0 && intent.bucket == BucketKind::Miners {
+            assert_bank_issued_miner_payout(&self.economy.snapshot()?, &intent)?;
+            policy
+                .destination_allowlist
+                .insert(intent.destination.clone());
+        }
         evaluate_intent(&intent, &policy, spent, &constitution.hash)?;
         self.buckets.record_spend(intent.bucket, intent.amount_sats)?;
         self.buckets.mark_consumed(&intent.intent_id)?;

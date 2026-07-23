@@ -71,6 +71,7 @@ fn sim_forbidden_when_refuse_sim() {
         hardened: true,
         attestation_staging_stub: false,
         ceremony_mode: kerosene_vault::bootstrap::CeremonyMode::Lab,
+        open_economy: false,
     };
     assert_eq!(
         cfg.validate_attestation_policy(),

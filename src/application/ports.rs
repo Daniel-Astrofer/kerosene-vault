@@ -1,7 +1,7 @@
 use crate::domain::{
     AttestationMode, AttestationQuote, AllowlistEntry, BucketKind, BucketPolicy, Constitution,
-    ContentHash, DomainError, Epoch, EpochAdvanceProposal, LedgerEntry, Measurement, NodeId,
-    PeerInfo, ReleaseCandidate, ReleasePolicy,
+    ContentHash, DomainError, EconomyState, Epoch, EpochAdvanceProposal, LedgerEntry, Measurement,
+    MinerOperator, MinerPayoutShare, NodeId, PeerInfo, ReleaseCandidate, ReleasePolicy,
 };
 
 pub trait PeerDirectoryPort {
@@ -57,4 +57,13 @@ pub trait BucketLedgerPort {
     fn record_spend(&self, kind: BucketKind, amount_sats: u64) -> Result<(), DomainError>;
     fn is_consumed(&self, intent_id: &str) -> Result<bool, DomainError>;
     fn mark_consumed(&self, intent_id: &str) -> Result<(), DomainError>;
+}
+
+/// Miner reward pool + eligibility (F9). Vaults never invent payout destinations.
+pub trait EconomyPort {
+    fn snapshot(&self) -> Result<EconomyState, DomainError>;
+    fn upsert_operator(&self, op: MinerOperator) -> Result<(), DomainError>;
+    fn accrue_from_profit(&self, profit_sats: u64, p_reward_bps: u32) -> Result<u64, DomainError>;
+    fn propose_equal_payouts(&self, amount: u64) -> Result<Vec<MinerPayoutShare>, DomainError>;
+    fn debit_pool(&self, amount: u64) -> Result<(), DomainError>;
 }

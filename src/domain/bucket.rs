@@ -59,6 +59,25 @@ impl ProfitSplits {
         }
     }
 
+    /// Open economy: miners get `p_reward_bps` of PROFIT; remainder split channels/infra.
+    pub fn open_with_reward(p_reward_bps: u32) -> Result<Self, DomainError> {
+        if p_reward_bps > 10_000 {
+            return Err(DomainError::InvalidConstitution(
+                "p_reward_bps > 10000".into(),
+            ));
+        }
+        let rest = 10_000 - p_reward_bps;
+        let channels = rest / 2;
+        let infra = rest - channels;
+        let s = Self {
+            miners_bps: p_reward_bps,
+            channels_bps: channels,
+            infra_bps: infra,
+        };
+        s.validate()?;
+        Ok(s)
+    }
+
     pub fn validate(&self) -> Result<(), DomainError> {
         let sum = self
             .miners_bps

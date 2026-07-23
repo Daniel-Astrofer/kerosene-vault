@@ -44,6 +44,34 @@ impl Constitution {
         Ok(c)
     }
 
+    /// Open economy constitution: `p%=1%` miners split live (F9).
+    pub fn v1_open(n: usize) -> Result<Self, DomainError> {
+        if n < 2 {
+            return Err(DomainError::InvalidConstitution(
+                "signing_n must be >= 2".into(),
+            ));
+        }
+        let signing_t = quorum_two_thirds(n);
+        let governance_t = (signing_t + 1).min(n);
+        let p_reward_bps = 100;
+        let profit_splits = ProfitSplits::open_with_reward(p_reward_bps)?;
+        let mut c = Self {
+            version: 2,
+            max_withdraw_per_day_sats: 1_000_000,
+            max_withdraw_per_tx_sats: 250_000,
+            signing_n: n,
+            signing_t,
+            governance_t,
+            p_reward_bps,
+            p_reward_max_bps: 800,
+            profit_splits,
+            crypto_suite_id: "hybrid-v1-placeholder".into(),
+            hash: String::new(),
+        };
+        c.hash = c.compute_hash();
+        Ok(c)
+    }
+
     pub fn compute_hash(&self) -> String {
         let material = format!(
             "v{}|day{}|tx{}|n{}|t{}|gt{}|p{}|max{}|m{}|ch{}|inf{}|{}",

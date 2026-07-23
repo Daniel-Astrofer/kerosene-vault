@@ -51,6 +51,8 @@ pub struct VaultConfig {
     /// Staging-only TEE stub quotes (never for production ceremony).
     pub attestation_staging_stub: bool,
     pub ceremony_mode: CeremonyMode,
+    /// `VAULT_ECONOMY=open` enables live p%=1% miner splits (F9); default lab dry-run.
+    pub open_economy: bool,
 }
 
 impl VaultConfig {
@@ -114,6 +116,10 @@ impl VaultConfig {
             .ok()
             .and_then(|s| s.parse::<usize>().ok())
             .unwrap_or(3);
+        let open_economy = matches!(
+            std::env::var("VAULT_ECONOMY").as_deref(),
+            Ok("open" | "OPEN" | "v1_open")
+        );
 
         let cfg = Self {
             node_id,
@@ -131,6 +137,7 @@ impl VaultConfig {
             hardened,
             attestation_staging_stub,
             ceremony_mode,
+            open_economy,
         };
         cfg.validate_hygiene()?;
         Ok(cfg)
@@ -217,6 +224,7 @@ mod tests {
             hardened: false,
             attestation_staging_stub: false,
             ceremony_mode: CeremonyMode::Lab,
+            open_economy: false,
         }
     }
 

@@ -25,7 +25,7 @@ fn main() {
 
     let group = runtime.threshold.group();
     eprintln!(
-        "kerosene-vault F8 tee node={} listen={} attestation={} ceremony={} stub={} n={} t={} online={} timelock_scale={} hardened={}",
+        "kerosene-vault F9 economy node={} listen={} attestation={} ceremony={} stub={} n={} t={} online={} timelock_scale={} hardened={} open_economy={}",
         runtime.config.node_id,
         runtime.config.listen_addr,
         runtime.config.attestation_mode.as_str(),
@@ -35,7 +35,8 @@ fn main() {
         group.t,
         runtime.online.count,
         runtime.config.effective_lab_timelock_scale(),
-        runtime.config.hardened
+        runtime.config.hardened,
+        runtime.config.open_economy
     );
 
     let listener = match TcpListener::bind(&runtime.config.listen_addr) {
@@ -317,6 +318,82 @@ fn handle_request(runtime: &VaultRuntime, req: &str) -> (&'static str, String) {
             };
             match runtime.allocate_profit.execute(amount) {
                 Ok(a) => ("200 OK", a.to_json()),
+                Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+            }
+        }
+        ("GET", "/economy/status") => match runtime.get_economy.execute() {
+            Ok(v) => ("200 OK", v.to_json()),
+            Err(e) => ("500 Internal Server Error", format!(r#"{{"error":"{e}"}}"#)),
+        },
+        ("POST", path) if path.starts_with("/economy/accrue/") => {
+            let amount_raw = path.trim_start_matches("/economy/accrue/");
+            let amount = match amount_raw.parse::<u64>() {
+                Ok(a) => a,
+                Err(_) => {
+                    return (
+                        "400 Bad Request",
+                        r#"{"error":"usage /economy/accrue/{profit_sats}"}"#.into(),
+                    )
+                }
+            };
+            match runtime.accrue_rewards.execute(amount) {
+                Ok(a) => ("200 OK", a.to_json()),
+                Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+            }
+        }
+        // /economy/miner/upsert/{id}/{destination}/{uptime_bps}/{streak}/{bond}/{waiting}
+        ("POST", path) if path.starts_with("/economy/miner/upsert/") => {
+            let rest = path.trim_start_matches("/economy/miner/upsert/");
+            let mut segs = rest.splitn(6, '/');
+            let id = segs.next().unwrap_or("");
+            let destination = segs.next().unwrap_or("");
+            let uptime_raw = segs.next().unwrap_or("");
+            let streak_raw = segs.next().unwrap_or("");
+            let bond_raw = segs.next().unwrap_or("");
+            let waiting_raw = segs.next().unwrap_or("0");
+            if id.is_empty() || destination.is_empty() {
+                return (
+                    "400 Bad Request",
+                    r#"{"error":"usage /economy/miner/upsert/{id}/{dest}/{uptime}/{streak}/{bond}/{waiting}"}"#.into(),
+                );
+            }
+            let node_id = match NodeId::new(id) {
+                Ok(n) => n,
+                Err(e) => return ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+            };
+            let uptime = uptime_raw.parse::<u32>().unwrap_or(0);
+            let streak = streak_raw.parse::<u32>().unwrap_or(0);
+            let bond = bond_raw.parse::<u64>().unwrap_or(0);
+            let waiting = matches!(waiting_raw, "1" | "true" | "TRUE" | "waiting");
+            let op = kerosene_vault::domain::MinerOperator {
+                node_id,
+                payout_destination: destination.to_string(),
+                uptime_bps_30d: uptime,
+                attestation_streak_days: streak,
+                bond_sats: bond,
+                waiting,
+            };
+            match runtime.upsert_miner.execute(op) {
+                Ok(()) => ("200 OK", r#"{"status":"upserted"}"#.into()),
+                Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+            }
+        }
+        ("POST", path) if path.starts_with("/economy/payout/propose/") => {
+            let rest = path.trim_start_matches("/economy/payout/propose/");
+            let mut segs = rest.splitn(2, '/');
+            let amount_raw = segs.next().unwrap_or("");
+            let prefix = segs.next().unwrap_or("miner-pay");
+            let amount = match amount_raw.parse::<u64>() {
+                Ok(a) => a,
+                Err(_) => {
+                    return (
+                        "400 Bad Request",
+                        r#"{"error":"usage /economy/payout/propose/{amount}/{prefix}"}"#.into(),
+                    )
+                }
+            };
+            match runtime.propose_miner_payouts.execute(amount, prefix) {
+                Ok(p) => ("200 OK", p.to_json()),
                 Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
             }
         }

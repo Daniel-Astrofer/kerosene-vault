@@ -588,6 +588,8 @@ Rollback permitido: fail-stop + runbook operacional. **Proibido:** religar mpc-s
 
 ### Fase 9 — Economia aberta + resiliência do banco (contínuo)
 
+**Status (lab scaffold):** `Constitution::v1_open` com `p_reward_bps=100` (1%) e `ProfitSplits::open_with_reward`; `EconomyState` + elegibilidade (uptime 95%/30d, streak, waiting set não dilui); accrue `/economy/accrue`; proposta de payout MINERS `/economy/payout/propose` (Intents bank-issued — vaults **não** self-pay); gate rejeita destino MINERS não registrado (`MinerSelfPayForbidden`); PQ dual-stack placeholder `crypto_suite_id_pq`; `VAULT_ECONOMY=open`; testes `tests/economy_f9.rs`. Survivability: fail-closed abaixo de `t`; kfe ledger independente do cofre.
+
 **Entrega**
 
 - `p%=1%` + elegibilidade + payout crypto bucket MINERS.  
@@ -597,6 +599,16 @@ Rollback permitido: fail-stop + runbook operacional. **Proibido:** religar mpc-s
 - Set n maior / waiting set / bond se abrir operadores externos.
 
 **Critério de pronto:** miners pagos sem tocar USERS; banco sobrevive a perder um shard app sem vazar cofre.
+
+```bash
+# Open economy smoke
+VAULT_ECONOMY=open cargo test --test economy_f9
+# Accrue 1% then propose bank Intents:
+# POST /economy/accrue/1000000
+# POST /economy/miner/upsert/{id}/{dest}/{uptime}/{streak}/{bond}/{waiting}
+# POST /economy/payout/propose/{amount}/{prefix}
+# GET  /economy/status
+```
 
 ---
 

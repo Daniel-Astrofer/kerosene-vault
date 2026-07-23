@@ -1,17 +1,18 @@
 use std::sync::Arc;
 
 use crate::adapters::{
-    InMemoryBucketLedger, InMemoryLedger, InMemoryPeerDirectory, InMemoryReleaseMesh,
+    InMemoryBucketLedger, InMemoryEconomy, InMemoryLedger, InMemoryPeerDirectory, InMemoryReleaseMesh,
     SimAttestationAdapter, SystemClock, TeeAttestationAdapter, ThresholdVaultState,
 };
 use crate::application::{
-    ActivateRelease, AllocateProfit, CosignRelease, GateIntent, GetAllowlist, GetHealth,
-    GetLedgerSnapshot, PingPeer, ProposeEpochAdvance, ProposeRelease, RebuildRelease, SignMessage,
-    StaticOnlineCount, VoteEpochAdvance,
+    AccrueMinerRewards, AllocateProfit, CosignRelease, GateIntent, GetAllowlist, GetEconomyStatus,
+    GetHealth, GetLedgerSnapshot, PingPeer, ProposeEpochAdvance, ProposeMinerPayouts, ProposeRelease,
+    RebuildRelease, SignMessage, StaticOnlineCount, UpsertMiner, VoteEpochAdvance, ActivateRelease,
 };
 use crate::bootstrap::VaultConfig;
 use crate::domain::{
-    run_dkg, Constitution, DomainError, Measurement, NodeId, PeerEndpoint, PeerInfo, ReleasePolicy,
+    run_dkg, Constitution, DomainError, EconomyState, Measurement, NodeId, PeerEndpoint, PeerInfo,
+    ReleasePolicy,
 };
 
 pub struct VaultRuntime {
@@ -29,12 +30,17 @@ pub struct VaultRuntime {
     pub get_allowlist: GetAllowlist,
     pub gate_intent: GateIntent,
     pub allocate_profit: AllocateProfit,
+    pub get_economy: GetEconomyStatus,
+    pub upsert_miner: UpsertMiner,
+    pub accrue_rewards: AccrueMinerRewards,
+    pub propose_miner_payouts: ProposeMinerPayouts,
     pub peers: Arc<InMemoryPeerDirectory>,
     pub ledger: Arc<InMemoryLedger>,
     pub threshold: Arc<ThresholdVaultState>,
     pub online: Arc<StaticOnlineCount>,
     pub release_mesh: Arc<InMemoryReleaseMesh>,
     pub buckets: Arc<InMemoryBucketLedger>,
+    pub economy: Arc<InMemoryEconomy>,
 }
 
 impl VaultRuntime {
@@ -65,7 +71,11 @@ impl VaultRuntime {
         }
         active_set.truncate(n);
 
-        let constitution = Constitution::v1_lab(n)?;
+        let constitution = if config.open_economy {
+            Constitution::v1_open(n)?
+        } else {
+            Constitution::v1_lab(n)?
+        };
         let max_tx = constitution.max_withdraw_per_tx_sats;
         let max_day = constitution.max_withdraw_per_day_sats;
         let t = constitution.signing_t;
@@ -111,7 +121,7 @@ impl VaultRuntime {
                 }
             };
 
-        let measurement = Measurement::from_bytes(b"kerosene-vault-f8-tee");
+        let measurement = Measurement::from_bytes(b"kerosene-vault-f9-economy");
         let clock: Arc<dyn crate::application::ClockPort> = Arc::new(SystemClock);
         let peers_port: Arc<dyn crate::application::PeerDirectoryPort> = peers.clone();
         let ledger_port: Arc<dyn crate::application::LedgerPort> = ledger.clone();
@@ -126,6 +136,9 @@ impl VaultRuntime {
 
         let buckets = Arc::new(InMemoryBucketLedger::from_constitution_caps(max_tx, max_day));
         let bucket_port: Arc<dyn crate::application::BucketLedgerPort> = buckets.clone();
+
+        let economy = Arc::new(InMemoryEconomy::new(EconomyState::new_open()));
+        let economy_port: Arc<dyn crate::application::EconomyPort> = economy.clone();
 
         let get_health = GetHealth::new(
             config.node_id.clone(),
@@ -152,8 +165,12 @@ impl VaultRuntime {
         let activate_release =
             ActivateRelease::new(release_port.clone(), ledger_port.clone(), clock);
         let get_allowlist = GetAllowlist::new(release_port);
-        let gate_intent = GateIntent::new(bucket_port, ledger_port.clone());
-        let allocate_profit = AllocateProfit::new(ledger_port);
+        let gate_intent = GateIntent::new(bucket_port, ledger_port.clone(), economy_port.clone());
+        let allocate_profit = AllocateProfit::new(ledger_port.clone());
+        let get_economy = GetEconomyStatus::new(economy_port.clone(), ledger_port.clone());
+        let upsert_miner = UpsertMiner::new(economy_port.clone());
+        let accrue_rewards = AccrueMinerRewards::new(economy_port.clone(), ledger_port.clone());
+        let propose_miner_payouts = ProposeMinerPayouts::new(economy_port, ledger_port);
 
         Ok(Self {
             config,
@@ -170,12 +187,17 @@ impl VaultRuntime {
             get_allowlist,
             gate_intent,
             allocate_profit,
+            get_economy,
+            upsert_miner,
+            accrue_rewards,
+            propose_miner_payouts,
             peers,
             ledger,
             threshold,
             online,
             release_mesh,
             buckets,
+            economy,
         })
     }
 }

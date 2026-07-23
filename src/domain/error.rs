@@ -40,6 +40,9 @@ pub enum DomainError {
     UsersOmnibusProtected,
     LabFlagForbidden(String),
     RequestRejected(String),
+    NoEligibleMiners,
+    InsufficientMinerPool { have: u64, want: u64 },
+    MinerSelfPayForbidden,
 }
 
 impl fmt::Display for DomainError {
@@ -99,6 +102,16 @@ impl fmt::Display for DomainError {
                 write!(f, "lab flag forbidden outside lab: {flag}")
             }
             Self::RequestRejected(r) => write!(f, "request rejected: {r}"),
+            Self::NoEligibleMiners => write!(f, "no eligible miners for payout"),
+            Self::InsufficientMinerPool { have, want } => {
+                write!(f, "insufficient miner pool: have {have}, want {want}")
+            }
+            Self::MinerSelfPayForbidden => {
+                write!(
+                    f,
+                    "miner payout forbidden: destination not an eligible registered operator (no self-pay)"
+                )
+            }
         }
     }
 }
