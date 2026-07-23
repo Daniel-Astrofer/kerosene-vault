@@ -589,9 +589,13 @@ async fn v1_frost_tr_sign_share(State(state): State<AppState>, body: Bytes) -> i
         }
     };
     match state.runtime.tr_cosign_peer.handle_sign_share(&req) {
-        Ok(resp) => (
+        Ok(Some(resp)) => (
             StatusCode::OK,
             serde_json::to_string(&resp).unwrap_or_else(|e| json_err(e)),
+        ),
+        Ok(None) => (
+            StatusCode::OK,
+            r#"{"skipped":true,"reason":"not in signing set"}"#.into(),
         ),
         Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }

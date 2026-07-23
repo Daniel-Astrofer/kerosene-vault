@@ -14,6 +14,16 @@ A real SPIRE/SPIFFE agent is **not** required; paths and URI SANs mirror the SPI
 
 Staging override: set `VAULT_MTLS_TRUST_DOMAIN=kerosene.staging` when generating. Each vault should use a **unique** SPIFFE ID (`VAULT_TLS_PEER_SPIFFE_ID=spiffe://…/vault/vault-1`, etc.).
 
+### App-layer principal (Critical #3)
+
+Verified mTLS leaf SPIFFE URI (and DNS SAN for legacy `…/vault/server`) binds to a mesh principal:
+
+- **Role `kfe`**: settlement / sign / Intent / PSBT.
+- **Role `vault`**: DKG, day vote, peer prepare, FROST co-sign.
+- Shared ops (`/v1/day/advance`, current day, reshare) allow either role.
+
+A CA-valid leaf alone is not full power. DKG `sender_node_id` must equal the TLS vault peer identity (Critical #4). Lab `static_token` remains omnipotent for visualize only.
+
 ## On-disk layout
 
 After `./scripts/gen_lab_mtls_certs.sh` (or rotate):

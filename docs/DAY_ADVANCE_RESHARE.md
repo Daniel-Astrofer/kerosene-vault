@@ -50,7 +50,17 @@ Optional: `"voter":"<authenticated-node-id>"` (mismatch → 400).
 
 ## `POST /v1/day/advance`
 
-Records this vault’s vote for today’s UTC day, then **fans out** authenticated votes to `VAULT_SEED_PEERS` and collects peer self-votes until quorum `t = ⌈2n/3⌉` (solo / no peers: `t = 1`). Fail-closed when quorum unmet (peers unreachable). Idempotent when already on the live day (still ensures disk persist). On a real advance with `VAULT_RESHARE_POLICY=daily`, runs Intent + Taproot share refresh.
+Records this vault’s vote for today’s UTC day, then **fans out** authenticated votes to `VAULT_SEED_PEERS` and collects peer self-votes until quorum `t = ⌈2n/3⌉` (solo / no peers: `t = 1`). Fail-closed when quorum unmet (peers unreachable). Idempotent when already on the live day (still ensures disk persist). On a real advance with `VAULT_RESHARE_POLICY=daily`, runs Intent + Taproot share refresh **only when dealer_lab in-process N-share reshare is allowed**; `distributed_wire` fail-closes in-process N-share reshare (Critical #6 — wire reshare required).
+
+### Critical mesh notes (#1–#6)
+
+| # | Mitigation |
+| --- | --- |
+| #1/#2 | Staging/prod / `distributed_wire`: Taproot FROST signs with **one local share** + peer co-sign (`/v1/frost/tr/commit`, `/v1/frost/tr/sign-share`). Multi-share `sign_raw_quorum` is `dealer_lab` only. |
+| #3 | mTLS SPIFFE/SAN → principal role (`kfe` vs `vault`); routes authorized by role. |
+| #4 | DKG ingest: `sender_node_id` must equal TLS vault peer identity. |
+| #5 | Day advance quorum = `⌈2n/3⌉` authenticated peers when seed peers configured (solo `t=1`). |
+| #6 | In-process N-share reshare refused outside dealer_lab; single-share mesh must reshare over wire. |
 
 **Request:** empty body (or omit).
 

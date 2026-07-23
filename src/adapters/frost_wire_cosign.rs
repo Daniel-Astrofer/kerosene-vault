@@ -122,7 +122,20 @@ impl TrCosignPeerState {
     pub fn handle_sign_share(
         &self,
         req: &TrSignShareRequest,
-    ) -> Result<TrSignShareResponse, DomainError> {
+    ) -> Result<Option<TrSignShareResponse>, DomainError> {
+        if !req.participant_node_ids.is_empty()
+            && !req
+                .participant_node_ids
+                .iter()
+                .any(|id| id == &self.local_node_id)
+        {
+            // Not in trimmed signing set — drop pending nonces if any.
+            let mut pending = self.pending.lock().expect("tr cosign pending");
+            if let Some(mut entry) = pending.remove(&req.session_id) {
+                entry.nonces.zeroize();
+            }
+            return Ok(None);
+        }
         let mut pending = self.pending.lock().expect("tr cosign pending");
         let entry = pending.remove(&req.session_id).ok_or_else(|| {
             DomainError::ThresholdError(format!(
@@ -148,16 +161,20 @@ impl TrCosignPeerState {
         }
         let snap = self.shares.snapshot()?;
         let (id, kp) = Self::local_key_package(&snap)?;
+        if !signing_package.signing_commitments().contains_key(&id) {
+            nonces.zeroize();
+            return Ok(None);
+        }
         let kp = kp.into_even_y(None).tweak(None::<&[u8]>);
         let share = frost::round2::sign(&signing_package, &nonces, &kp)
             .map_err(|e| DomainError::ThresholdError(format!("frost-tr peer round2: {e}")))?;
         nonces.zeroize();
         let share_hex = hex::encode(share.serialize());
-        Ok(TrSignShareResponse {
+        Ok(Some(TrSignShareResponse {
             node_id: self.local_node_id.clone(),
             identifier_hex: hex::encode(id.serialize()),
             signature_share_hex: share_hex,
-        })
+        }))
     }
 }
 
@@ -302,6 +319,11 @@ impl TrCosignTransport for HttpTrCosignTransport {
     ) -> Result<Vec<TrSignShareResponse>, DomainError> {
         let mut out = Vec::new();
         for (id, base) in &self.peers {
+            if !req.participant_node_ids.is_empty()
+                && !req.participant_node_ids.iter().any(|p| p == id)
+            {
+                continue;
+            }
             let resp: TrSignShareResponse = self
                 .post_peer(base, "/v1/frost/tr/sign-share", req)
                 .map_err(|e| {
@@ -445,13 +467,9 @@ pub fn sign_raw_wire(
     let share_req = TrSignShareRequest {
         session_id: session_id.to_string(),
         signing_package_hex: pkg_hex,
+        participant_node_ids: selected_peer_nodes.into_iter().collect(),
     };
-    // Only peers whose commitments are in the package may produce shares.
-    let peer_shares: Vec<TrSignShareResponse> = transport
-        .collect_signature_shares(&share_req)?
-        .into_iter()
-        .filter(|p| selected_peer_nodes.contains(&p.node_id))
-        .collect();
+    let peer_shares = transport.collect_signature_shares(&share_req)?;
 
     let mut signature_shares: BTreeMap<Identifier, SignatureShare> = BTreeMap::new();
     signature_shares.insert(local_id, local_share);
@@ -542,10 +560,13 @@ mod tests {
             &self,
             req: &TrSignShareRequest,
         ) -> Result<Vec<TrSignShareResponse>, DomainError> {
-            self.peers
-                .iter()
-                .map(|(_, p)| p.handle_sign_share(req))
-                .collect()
+            let mut out = Vec::new();
+            for (_, p) in &self.peers {
+                if let Some(resp) = p.handle_sign_share(req)? {
+                    out.push(resp);
+                }
+            }
+            Ok(out)
         }
     }
 

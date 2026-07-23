@@ -47,7 +47,7 @@ curl -s -H "X-Vault-Token: $TOKEN" "$VAULT/v1/bitcoin/deposit"
 - Treasury UTXOs must live on the mesh Taproot deposit (not hot Core keys)
 - Single key-path Taproot spend path; no BIP32 change derivation under FROST yet
 - Multi-input works if all inputs are mesh `tr()` UTXOs; mixed script types not signed
-- Distributed DKG for Taproot keyset still lab-dealer for this path
+- Distributed DKG for Taproot keyset still lab-dealer for this path; `distributed_wire` must install **local TR share only** and co-sign over `/v1/frost/tr/*` (never N local shares in staging/prod)
 - Raw `/v1/bitcoin/sign-sighash` remains lab-only (cannot bind outputs)
 
 ## Day advance + Taproot reshare
