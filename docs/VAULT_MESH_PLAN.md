@@ -733,8 +733,8 @@ Itens **não fechados** na conversa — precisam de decisão explícita:
 
 | Fatia | Status | Notas |
 | --- | --- | --- |
-| **Distributed DKG (in-process)** | **started** | `VAULT_DKG_MODE=distributed`: FROST `part1/2/3` multi-party sim (n=3,t=2), **sem** `generate_with_dealer`; ToB check `min_signers` == constituição; shares só via `ShareStorePort`; HTTP `/v1/dkg/round{1,2,3}` stubs (P1 over-wire) |
-| Over-wire DKG HTTP | pending P1 | Round-message stubs only |
+| **Distributed DKG (in-process)** | **landed** | `VAULT_DKG_MODE=distributed`: FROST `part1/2/3` multi-party sim (n=3,t=2), **sem** `generate_with_dealer`; ToB check `min_signers` == constituição; shares só via `ShareStorePort` |
+| **Over-wire DKG HTTP** | **landed (lab)** | `/v1/dkg/round{1,2,3}` + `VAULT_DKG_MODE=distributed_wire`; peer exchange com `X-Vault-Token`; cada vault só com seu share; compose notes + `scripts/lab_dkg_wire.sh`; in-process permanece fallback |
 | TEE seal shares | refuse | `TeeSealShareStore` fail-closed |
 | mTLS auth | refuse stub | `MutualTlsAuthAdapter` |
 | HW attestation | staging stub / refuse | sim forbidden when hardened |
