@@ -108,8 +108,18 @@ impl FrostSignOrchestrator {
         for id in nonces_map.keys().copied().collect::<Vec<_>>() {
             let kp = &key_packages[&id];
             let nonces = &nonces_map[&id];
-            let share = frost::round2::sign(&signing_package, nonces, kp)
-                .map_err(|e| DomainError::ThresholdError(format!("frost round2: {e}")))?;
+            let share = match frost::round2::sign(&signing_package, nonces, kp) {
+                Ok(share) => share,
+                Err(e) => {
+                    // Zeroize ephemeral round nonces on failure (side-channel hygiene).
+                    for (_, n) in nonces_map.iter_mut() {
+                        n.zeroize();
+                    }
+                    return Err(DomainError::ThresholdError(format!(
+                        "frost round2: {e}"
+                    )));
+                }
+            };
             signature_shares.insert(id, share);
         }
 

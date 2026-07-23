@@ -22,6 +22,22 @@ use super::tls_peer_verify::{build_mtls_rustls_client_config, TlsPeerVerifyPolic
 use super::{FrostTrShareSlot, FrostTrShareState};
 use crate::domain::DomainError;
 
+struct SigningNoncesGuard {
+    nonces: SigningNonces,
+}
+
+impl SigningNoncesGuard {
+    fn new(nonces: SigningNonces) -> Self {
+        Self { nonces }
+    }
+}
+
+impl Drop for SigningNoncesGuard {
+    fn drop(&mut self) {
+        self.nonces.zeroize();
+    }
+}
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct TrCommitRequest {
     pub session_id: String,
@@ -147,6 +163,7 @@ impl TrCosignPeerState {
             mut nonces,
             message,
         } = entry;
+        let _nonces_guard = SigningNoncesGuard::new(nonces);
         let pkg_bytes = hex::decode(req.signing_package_hex.trim()).map_err(|e| {
             DomainError::ThresholdError(format!("signing package hex: {e}"))
         })?;
@@ -154,7 +171,6 @@ impl TrCosignPeerState {
             DomainError::ThresholdError(format!("signing package deserialize: {e}"))
         })?;
         if signing_package.message() != message.as_slice() {
-            nonces.zeroize();
             return Err(DomainError::ThresholdError(
                 "co-sign signing package message mismatch".into(),
             ));
@@ -162,13 +178,12 @@ impl TrCosignPeerState {
         let snap = self.shares.snapshot()?;
         let (id, kp) = Self::local_key_package(&snap)?;
         if !signing_package.signing_commitments().contains_key(&id) {
-            nonces.zeroize();
             return Ok(None);
         }
         let kp = kp.into_even_y(None).tweak(None::<&[u8]>);
-        let share = frost::round2::sign(&signing_package, &nonces, &kp)
-            .map_err(|e| DomainError::ThresholdError(format!("frost-tr peer round2: {e}")))?;
-        nonces.zeroize();
+        let share = frost::round2::sign(&signing_package, &_nonces_guard.nonces, &kp).map_err(|e| {
+            DomainError::ThresholdError(format!("frost-tr peer round2: {e}"))
+        })?;
         let share_hex = hex::encode(share.serialize());
         Ok(Some(TrSignShareResponse {
             node_id: self.local_node_id.clone(),
@@ -391,6 +406,7 @@ pub fn sign_raw_wire(
     let mut rng = OsRng;
     let (mut local_nonces, local_commitments) =
         frost::round1::commit(local_kp_tweaked.signing_share(), &mut rng);
+    let mut local_nonces_guard = SigningNoncesGuard::new(local_nonces);
 
     let commit_req = TrCommitRequest {
         session_id: session_id.to_string(),
@@ -420,7 +436,6 @@ pub fn sign_raw_wire(
     }
 
     if commitments_map.len() < min_signers {
-        local_nonces.zeroize();
         return Err(DomainError::FailStop {
             online: commitments_map.len(),
             need: min_signers,
@@ -460,9 +475,13 @@ pub fn sign_raw_wire(
             .map_err(|e| DomainError::ThresholdError(format!("signing package serialize: {e}")))?,
     );
 
-    let local_share = frost::round2::sign(&signing_package, &local_nonces, &local_kp_tweaked)
+    let local_share = frost::round2::sign(
+        &signing_package,
+        &local_nonces_guard.nonces,
+        &local_kp_tweaked,
+    )
         .map_err(|e| DomainError::ThresholdError(format!("frost-tr local round2: {e}")))?;
-    local_nonces.zeroize();
+    local_nonces_guard.nonces.zeroize();
 
     let share_req = TrSignShareRequest {
         session_id: session_id.to_string(),
