@@ -44,3 +44,7 @@ curl -s -H "X-Vault-Token: $TOKEN" "$VAULT/v1/bitcoin/deposit"
 - Single key-path Taproot spend path; no BIP32 change derivation under FROST yet
 - Multi-input works if all inputs are mesh `tr()` UTXOs; mixed script types not signed
 - Distributed DKG for Taproot keyset still lab-dealer for this path
+
+## Day advance + Taproot reshare
+
+See [`DAY_ADVANCE_RESHARE.md`](./DAY_ADVANCE_RESHARE.md). With `VAULT_RESHARE_POLICY=daily`, `/v1/day/advance` refreshes Intent **and** Taproot shares; deposit `tb1p` must stay identical (group verifying key invariant).
