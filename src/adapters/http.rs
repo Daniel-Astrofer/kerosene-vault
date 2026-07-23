@@ -64,6 +64,10 @@ pub fn build_router(runtime: Arc<VaultRuntime>) -> Router {
     let protected = Router::new()
         .route("/v1/sign", post(v1_sign))
         .route("/v1/intent", post(v1_intent))
+        // Two-phase Intent (High #9): reserve → commit after success, release on failure.
+        .route("/v1/intent/reserve", post(v1_intent_reserve))
+        .route("/v1/intent/release", post(v1_intent_release))
+        .route("/v1/intent/commit", post(v1_intent_commit))
         .route("/v1/bitcoin/deposit", get(v1_bitcoin_deposit))
         .route("/v1/bitcoin/sign-sighash", post(v1_bitcoin_sign_sighash))
         .route("/v1/bitcoin/sign-psbt", post(v1_bitcoin_sign_psbt))
@@ -991,7 +995,34 @@ struct IntentBody {
 }
 
 async fn v1_intent(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
-    let req: IntentBody = match serde_json::from_slice(&body) {
+    match parse_settlement_intent(&state, &body) {
+        Ok(intent) => match state.runtime.gate_intent.execute(intent) {
+            Ok(r) => (StatusCode::OK, r.to_json()),
+            Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
+        },
+        Err(resp) => resp,
+    }
+}
+
+async fn v1_intent_reserve(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    match parse_settlement_intent(&state, &body) {
+        Ok(intent) => match state.runtime.gate_intent.reserve(intent) {
+            Ok(r) => (StatusCode::OK, r.to_json()),
+            Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
+        },
+        Err(resp) => resp,
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct IntentReleaseBody {
+    intent_id: String,
+    bucket: String,
+    amount_sats: u64,
+}
+
+async fn v1_intent_release(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    let req: IntentReleaseBody = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
             return (
@@ -1000,36 +1031,95 @@ async fn v1_intent(State(state): State<AppState>, body: Bytes) -> impl IntoRespo
             )
         }
     };
-    if let Err(e) = validate_destination(state.runtime.config.bitcoin_network, &req.destination) {
-        return (StatusCode::BAD_REQUEST, json_err(e));
-    }
     let bucket = match BucketKind::parse(&req.bucket) {
         Ok(b) => b,
         Err(e) => return (StatusCode::BAD_REQUEST, json_err(e)),
     };
-    let policy_hash = match state.runtime.ledger.constitution() {
-        Ok(c) => c.hash,
+    match state
+        .runtime
+        .gate_intent
+        .release(&req.intent_id, bucket, req.amount_sats)
+    {
+        Ok(()) => (
+            StatusCode::OK,
+            format!(
+                r#"{{"intent_id":"{}","bucket":"{}","amount_sats":{},"status":"RELEASED"}}"#,
+                req.intent_id,
+                bucket.as_str(),
+                req.amount_sats
+            ),
+        ),
+        Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct IntentCommitBody {
+    intent_id: String,
+}
+
+async fn v1_intent_commit(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    let req: IntentCommitBody = match serde_json::from_slice(&body) {
+        Ok(r) => r,
         Err(e) => {
             return (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                json_err(e),
+                StatusCode::BAD_REQUEST,
+                json_err(format!("invalid json: {e}")),
             )
         }
     };
-    let intent = match SettlementIntent::new(
+    if req.intent_id.trim().is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            json_err("intent_id required"),
+        );
+    }
+    match state.runtime.gate_intent.commit(req.intent_id.trim()) {
+        Ok(()) => (
+            StatusCode::OK,
+            format!(
+                r#"{{"intent_id":"{}","status":"COMMITTED"}}"#,
+                req.intent_id.trim()
+            ),
+        ),
+        Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
+    }
+}
+
+fn parse_settlement_intent(
+    state: &AppState,
+    body: &Bytes,
+) -> Result<SettlementIntent, (StatusCode, String)> {
+    let req: IntentBody = match serde_json::from_slice(body) {
+        Ok(r) => r,
+        Err(e) => {
+            return Err((
+                StatusCode::BAD_REQUEST,
+                json_err(format!("invalid json: {e}")),
+            ))
+        }
+    };
+    if let Err(e) = validate_destination(state.runtime.config.bitcoin_network, &req.destination) {
+        return Err((StatusCode::BAD_REQUEST, json_err(e)));
+    }
+    let bucket = match BucketKind::parse(&req.bucket) {
+        Ok(b) => b,
+        Err(e) => return Err((StatusCode::BAD_REQUEST, json_err(e))),
+    };
+    let policy_hash = match state.runtime.ledger.constitution() {
+        Ok(c) => c.hash,
+        Err(e) => {
+            return Err((StatusCode::INTERNAL_SERVER_ERROR, json_err(e)))
+        }
+    };
+    SettlementIntent::new(
         req.intent_id,
         bucket,
         req.destination,
         req.amount_sats,
         policy_hash,
-    ) {
-        Ok(i) => i,
-        Err(e) => return (StatusCode::BAD_REQUEST, json_err(e)),
-    };
-    match state.runtime.gate_intent.execute(intent) {
-        Ok(r) => (StatusCode::OK, r.to_json()),
-        Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
-    }
+    )
+    .map_err(|e| (StatusCode::BAD_REQUEST, json_err(e)))
 }
 
 async fn legacy_dispatch(State(state): State<AppState>, req: Request) -> impl IntoResponse {

@@ -73,7 +73,7 @@ TPM binds disk-at-rest to the machine; it does **not** isolate share RAM after u
 | Gap | Notes |
 | --- | --- |
 | **Full SNP VCEK verification** | HW path **fail-closed** without real `/dev/sev-guest` + VCEK chain; staging stub is lab-only (`ATTESTATION_STAGING_STUB`). Not production-complete. |
-| **CHANNELS → LND inject** | CHANNELS bucket cannot spend shared Taproot key; kfe `ChannelsMeshInjectGateway` fail-closed (`CHANNELS_MESH_INJECT_NOT_WIRED`); go-live requires inject + disables auto-open — inject wiring still planned |
+| **CHANNELS → LND inject** | landed (reserve→open→commit): Decision-gate non-mutating; `KfeChannelLifecycleService.openChannel` soft-reserves CHANNELS (`ln-channel-rebalance`) then LND open; release on open failure; go-live requires inject + disables auto-open; LND wallet ≠ mesh CHANNELS capital. Residual: no on-chain fund-from-mesh yet; pending-open race; commit-after-open crash window |
 | **Deposit xpub vs `tb1p`** | Ceremony yields stable mesh `tb1p` deposit (`tr()`); user-visible xpub / HD from group VK is not implemented; product `bitcoin.platform.master-xpub` ≠ mesh deposit |
 | **Economy / release durability (#18)** | `InMemoryEconomy` / `InMemoryReleaseMesh` — restart loses state; not an authenticated mesh ledger |
 | **Supply-chain audit (#38)** | `cargo audit` (cargo-audit `v0.22.2`, DB last-updated `2026-07-23T06:23:12+02:00`) found **0 HIGH/CRITICAL** advisories for `backend/kerosene-vault` (`vulnerabilities.found=false`). Advisory database contains **unmaintained** only (informational), no actionable HIGH/CRITICAL. |

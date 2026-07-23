@@ -74,7 +74,7 @@ pub fn route_class_for_path(path: &str) -> Option<RouteClass> {
     let p = path.split('?').next().unwrap_or(path);
     if p.starts_with("/v1/sign")
         || p.starts_with("/v1/bitcoin/")
-        || p == "/v1/intent"
+        || (p.starts_with("/v1/intent") && !p.starts_with("/v1/intent/consume/"))
         || p.starts_with("/sign/")
         || p.starts_with("/intent/")
     {
