@@ -549,6 +549,8 @@ F0 spec ──► F1 vault skeleton + lab N nós
 
 **Status (lab):** ports em `kerosene-contracts`; client HTTP `KfeVaultMeshSettlementClient` + fallback `MESH_DISABLED` (`KfeVaultMeshConfiguration`); endpoint interno `POST /internal/kfe/vault-mesh/intent`; flags `kfe.vaultmesh.*` (default off). Rails/mpc intactos. Hook opt-in no submit outbound via `KfeVaultMeshIntentService` (`submit-on-outbound`).
 
+**Status (lab / testnet3 — PSBT on-chain):** mesh-only outbound builds funded PSBT via Bitcoin Core (`includeWatching`, `change_type=bech32m`) → vault `POST /v1/bitcoin/sign-psbt` (Intent gate + `frost-secp256k1-tr` Taproot key-path sighashes) → finalize/broadcast. Deposit: `GET /v1/bitcoin/deposit` (`tr()` + `tb1p…`). mpc-sidecar permanece off.
+
 **Entrega**
 
 - Ports em `kerosene-contracts`; client na mesh a partir de `kfe-service`.  
