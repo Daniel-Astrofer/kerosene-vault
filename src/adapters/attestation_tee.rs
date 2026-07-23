@@ -1,18 +1,26 @@
 use crate::application::AttestationPort;
 use crate::domain::{AttestationMode, AttestationQuote, DomainError, Measurement};
 
-/// SEV/SGX attestation adapter (F8).
+/// SEV/SGX attestation adapter (F8 / Gate).
 ///
 /// - Staging: `ATTESTATION_STAGING_STUB=1` issues measurement-bound stub quotes (not sim).
+/// - Quotes are pinned to a constitution (or config) measurement; mismatch → reject.
 /// - Production HW: without stub, quote issue/verify fail closed until real TEE plumbing lands.
 pub struct TeeAttestationAdapter {
     mode: AttestationMode,
     staging_stub: bool,
     platform_root: Vec<u8>,
+    /// Expected binary / constitution measurement pin.
+    pinned_measurement: Measurement,
 }
 
 impl TeeAttestationAdapter {
-    pub fn new(mode: AttestationMode, staging_stub: bool, platform_root: &[u8]) -> Result<Self, DomainError> {
+    pub fn new(
+        mode: AttestationMode,
+        staging_stub: bool,
+        platform_root: &[u8],
+        pinned_measurement: Measurement,
+    ) -> Result<Self, DomainError> {
         if !matches!(mode, AttestationMode::Sev | AttestationMode::Sgx) {
             return Err(DomainError::AttestationRejected(
                 "TeeAttestationAdapter requires sev or sgx mode".into(),
@@ -22,7 +30,12 @@ impl TeeAttestationAdapter {
             mode,
             staging_stub,
             platform_root: platform_root.to_vec(),
+            pinned_measurement,
         })
+    }
+
+    pub fn pinned_measurement(&self) -> &Measurement {
+        &self.pinned_measurement
     }
 
     fn quote_tag(&self) -> &'static [u8] {
@@ -38,7 +51,16 @@ impl TeeAttestationAdapter {
         out.extend_from_slice(self.quote_tag());
         out.extend_from_slice(&self.platform_root);
         out.extend_from_slice(measurement.as_hex().as_bytes());
+        out.extend_from_slice(b"|pin|");
+        out.extend_from_slice(self.pinned_measurement.as_hex().as_bytes());
         Measurement::from_bytes(&out).as_hex().as_bytes().to_vec()
+    }
+
+    fn enforce_pin(&self, measurement: &Measurement) -> Result<(), DomainError> {
+        if measurement != &self.pinned_measurement {
+            return Err(DomainError::MeasurementMismatch);
+        }
+        Ok(())
     }
 }
 
@@ -48,6 +70,7 @@ impl AttestationPort for TeeAttestationAdapter {
     }
 
     fn issue_quote(&self, measurement: &Measurement) -> Result<AttestationQuote, DomainError> {
+        self.enforce_pin(measurement)?;
         if !self.staging_stub {
             return Err(DomainError::AttestationRejected(format!(
                 "{} hardware quote unavailable (set ATTESTATION_STAGING_STUB=1 for staging only)",
@@ -74,6 +97,7 @@ impl AttestationPort for TeeAttestationAdapter {
                 self.mode.as_str()
             )));
         }
+        self.enforce_pin(&quote.measurement)?;
         if !self.staging_stub {
             return Err(DomainError::AttestationRejected(format!(
                 "{} hardware verify unavailable",
@@ -94,22 +118,43 @@ impl AttestationPort for TeeAttestationAdapter {
 mod tests {
     use super::*;
 
+    fn pin() -> Measurement {
+        Measurement::from_bytes(b"constitution-pin")
+    }
+
     #[test]
     fn staging_stub_roundtrip_sev() {
-        let tee = TeeAttestationAdapter::new(AttestationMode::Sev, true, b"plat").unwrap();
-        let m = Measurement::from_bytes(b"code");
-        let q = tee.issue_quote(&m).unwrap();
+        let tee = TeeAttestationAdapter::new(AttestationMode::Sev, true, b"plat", pin()).unwrap();
+        let q = tee.issue_quote(&pin()).unwrap();
         assert_eq!(q.mode, AttestationMode::Sev);
         tee.verify_quote(&q).unwrap();
     }
 
     #[test]
+    fn rejects_measurement_not_pinned() {
+        let tee = TeeAttestationAdapter::new(AttestationMode::Sgx, true, b"plat", pin()).unwrap();
+        let other = Measurement::from_bytes(b"other-binary");
+        assert!(matches!(
+            tee.issue_quote(&other),
+            Err(DomainError::MeasurementMismatch)
+        ));
+        let bad = AttestationQuote {
+            mode: AttestationMode::Sgx,
+            measurement: other,
+            quote_blob: vec![1, 2, 3],
+        };
+        assert!(matches!(
+            tee.verify_quote(&bad),
+            Err(DomainError::MeasurementMismatch)
+        ));
+    }
+
+    #[test]
     fn rejects_sim_quote() {
-        let tee = TeeAttestationAdapter::new(AttestationMode::Sgx, true, b"plat").unwrap();
-        let m = Measurement::from_bytes(b"code");
+        let tee = TeeAttestationAdapter::new(AttestationMode::Sgx, true, b"plat", pin()).unwrap();
         let bad = AttestationQuote {
             mode: AttestationMode::Sim,
-            measurement: m,
+            measurement: pin(),
             quote_blob: vec![1, 2, 3],
         };
         assert!(tee.verify_quote(&bad).is_err());
@@ -117,8 +162,7 @@ mod tests {
 
     #[test]
     fn hw_path_fail_closed_without_stub() {
-        let tee = TeeAttestationAdapter::new(AttestationMode::Sev, false, b"plat").unwrap();
-        let m = Measurement::from_bytes(b"code");
-        assert!(tee.issue_quote(&m).is_err());
+        let tee = TeeAttestationAdapter::new(AttestationMode::Sev, false, b"plat", pin()).unwrap();
+        assert!(tee.issue_quote(&pin()).is_err());
     }
 }

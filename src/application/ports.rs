@@ -94,11 +94,28 @@ pub trait VaultAuthPort: Send + Sync {
 pub trait AntiNoncePort: Send + Sync {
     fn claim_session(&self, session_id: &str) -> Result<(), DomainError>;
     fn is_consumed(&self, session_id: &str) -> Result<bool, DomainError>;
+    /// Best-effort observe a peer-used session_id (idempotent).
+    fn observe_remote(&self, session_id: &str) -> Result<(), DomainError> {
+        match self.claim_session(session_id) {
+            Ok(()) => Ok(()),
+            Err(DomainError::NonceReuse(_)) => Ok(()),
+            Err(e) => Err(e),
+        }
+    }
 }
 
-/// Daily rotation stub: advance/bind day_epoch (full reshare is Production Gate).
+/// Hook invoked after a quorum day_epoch advance (reshare policy sketch).
+pub trait ReshareHookPort: Send + Sync {
+    fn on_day_advance(&self, from: &DayEpoch, to: &DayEpoch) -> Result<(), DomainError>;
+}
+
+/// Daily rotation: advance/bind day_epoch; Gate path uses quorum + reshare hook.
 pub trait DailyRotationPort: Send + Sync {
     fn current_day_epoch(&self) -> Result<DayEpoch, DomainError>;
     fn advance(&self) -> Result<DayEpoch, DomainError>;
     fn require_epoch(&self, bound: &DayEpoch) -> Result<(), DomainError>;
+    /// Record a peer vote to advance toward `target` (quorum stub).
+    fn record_vote(&self, _voter: &str, _target: &DayEpoch) -> Result<(), DomainError> {
+        Ok(())
+    }
 }

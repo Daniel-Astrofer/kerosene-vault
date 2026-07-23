@@ -1,4 +1,4 @@
-use crate::domain::{DomainError, ProfitSplits};
+use crate::domain::{DomainError, Measurement, ProfitSplits};
 
 /// Active security/economic constitution anchored on the vault ledger.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -14,6 +14,9 @@ pub struct Constitution {
     pub profit_splits: ProfitSplits,
     pub crypto_suite_id: String,
     pub hash: String,
+    /// Pinned code/binary measurement for HW/staging attestation binding.
+    /// Not part of `hash` material (derived/bound separately to avoid circularity).
+    pub measurement_pin: Option<Measurement>,
 }
 
 impl Constitution {
@@ -39,8 +42,10 @@ impl Constitution {
             profit_splits,
             crypto_suite_id: "hybrid-v1-placeholder".into(),
             hash: String::new(),
+            measurement_pin: None,
         };
         c.hash = c.compute_hash();
+        c.ensure_measurement_pin();
         Ok(c)
     }
 
@@ -67,9 +72,29 @@ impl Constitution {
             profit_splits,
             crypto_suite_id: "hybrid-v1-placeholder".into(),
             hash: String::new(),
+            measurement_pin: None,
         };
         c.hash = c.compute_hash();
+        c.ensure_measurement_pin();
         Ok(c)
+    }
+
+    /// If no explicit pin, bind attestation to the constitution hash bytes.
+    pub fn ensure_measurement_pin(&mut self) {
+        if self.measurement_pin.is_none() {
+            self.measurement_pin = Some(Measurement::from_bytes(self.hash.as_bytes()));
+        }
+    }
+
+    pub fn measurement_pin_or_hash(&self) -> Measurement {
+        self.measurement_pin
+            .clone()
+            .unwrap_or_else(|| Measurement::from_bytes(self.hash.as_bytes()))
+    }
+
+    pub fn with_measurement_pin(mut self, pin: Measurement) -> Self {
+        self.measurement_pin = Some(pin);
+        self
     }
 
     pub fn compute_hash(&self) -> String {
@@ -118,8 +143,13 @@ impl Constitution {
     }
 
     pub fn to_json(&self) -> String {
+        let pin = self
+            .measurement_pin
+            .as_ref()
+            .map(|m| m.as_hex().to_string())
+            .unwrap_or_default();
         format!(
-            r#"{{"version":{},"max_withdraw_per_day_sats":{},"max_withdraw_per_tx_sats":{},"signing_n":{},"signing_t":{},"governance_t":{},"p_reward_bps":{},"p_reward_max_bps":{},"profit_splits":{{"miners_bps":{},"channels_bps":{},"infra_bps":{}}},"crypto_suite_id":"{}","hash":"{}"}}"#,
+            r#"{{"version":{},"max_withdraw_per_day_sats":{},"max_withdraw_per_tx_sats":{},"signing_n":{},"signing_t":{},"governance_t":{},"p_reward_bps":{},"p_reward_max_bps":{},"profit_splits":{{"miners_bps":{},"channels_bps":{},"infra_bps":{}}},"crypto_suite_id":"{}","hash":"{}","measurement_pin":"{}"}}"#,
             self.version,
             self.max_withdraw_per_day_sats,
             self.max_withdraw_per_tx_sats,
@@ -132,7 +162,8 @@ impl Constitution {
             self.profit_splits.channels_bps,
             self.profit_splits.infra_bps,
             self.crypto_suite_id,
-            self.hash
+            self.hash,
+            pin
         )
     }
 }

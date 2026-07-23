@@ -1,10 +1,13 @@
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::adapters::{
-    AeadDiskShareStore, DistributedDkgAdapter, FrostSignOrchestrator, InMemoryBucketLedger,
-    InMemoryEconomy, InMemoryLedger, InMemoryPeerDirectory, InMemoryReleaseMesh, LedgerDayEpochStub,
-    MutualTlsAuthAdapter, PersistedAntiNonce, SimAttestationAdapter, StaticTokenAuthAdapter,
-    SystemClock, TeeAttestationAdapter, TeeSealShareStore, ThresholdVaultState,
+    AeadDiskShareStore, DistributedDkgAdapter, DistributedWireDkgPort, FrostSignOrchestrator,
+    InMemoryBucketLedger, InMemoryEconomy, InMemoryLedger, InMemoryPeerDirectory,
+    InMemoryReleaseMesh, LedgerDayEpochStub, MutualTlsAuthAdapter, NoopReshareHook,
+    PersistedAntiNonce, QuorumDailyRotation, ReplicatedAntiNonce, SimAttestationAdapter,
+    StaticTokenAuthAdapter, SystemClock, TeeAttestationAdapter, TeeSealAdapter,
+    ThresholdVaultState, WireDkgHub,
 };
 #[cfg(feature = "dealer_lab")]
 use crate::adapters::{dealer_fatal_banner, DealerLabAdapter};
@@ -53,6 +56,8 @@ pub struct VaultRuntime {
     pub anti_nonce: Arc<dyn AntiNoncePort>,
     /// Present after dealer_lab or distributed FROST DKG keygen.
     pub frost: Option<Arc<FrostSignOrchestrator>>,
+    /// Over-wire DKG hub (HTTP round exchange between peers).
+    pub wire_dkg: Arc<WireDkgHub>,
 }
 
 impl VaultRuntime {
@@ -93,14 +98,21 @@ impl VaultRuntime {
         }
         active_set.truncate(n);
 
-        let constitution = if config.open_economy {
+        let mut constitution = if config.open_economy {
             Constitution::v1_open(n)?
         } else {
             Constitution::v1_lab(n)?
         };
+        if let Some(hex) = config.measurement_pin_hex.as_deref() {
+            constitution = constitution.with_measurement_pin(Measurement::from_hex(hex)?);
+        } else {
+            constitution.ensure_measurement_pin();
+        }
+        let measurement = constitution.measurement_pin_or_hash();
         let max_tx = constitution.max_withdraw_per_tx_sats;
         let max_day = constitution.max_withdraw_per_day_sats;
         let t = constitution.signing_t;
+        let rotation_quorum = constitution.governance_t.max(1);
         let dkg_set = active_set.clone();
         let ledger = Arc::new(InMemoryLedger::genesis(
             constitution,
@@ -139,11 +151,11 @@ impl VaultRuntime {
                         config.attestation_mode,
                         config.attestation_staging_stub,
                         config.lab_root.as_bytes(),
+                        measurement.clone(),
                     )?)
                 }
             };
 
-        let measurement = Measurement::from_bytes(b"kerosene-vault-lab-p0");
         let clock: Arc<dyn crate::application::ClockPort> = Arc::new(SystemClock);
         let peers_port: Arc<dyn crate::application::PeerDirectoryPort> = peers.clone();
         let ledger_port: Arc<dyn crate::application::LedgerPort> = ledger.clone();
@@ -189,14 +201,61 @@ impl VaultRuntime {
                     pass,
                 ))
             }
-            ShareStoreMode::TeeSeal => Arc::new(TeeSealShareStore::new()),
+            ShareStoreMode::TeeSeal => {
+                if config.attestation_staging_stub
+                    && !matches!(config.ceremony_mode, CeremonyMode::Production)
+                {
+                    let pass = config
+                        .share_passphrase
+                        .clone()
+                        .unwrap_or_else(|| "kerosene-vault-lab-passphrase".into());
+                    Arc::new(TeeSealAdapter::staging_stub(
+                        data_root.join("tee-shares"),
+                        pass,
+                        measurement.clone(),
+                    ))
+                } else {
+                    Arc::new(TeeSealAdapter::fail_closed(measurement.clone()))
+                }
+            }
         };
 
-        let anti_nonce: Arc<dyn AntiNoncePort> = Arc::new(PersistedAntiNonce::open(
+        let wire_token = config
+            .effective_vault_token()
+            .unwrap_or("kerosene-vault-lab-only")
+            .to_string();
+        let mut peer_ingest = Vec::new();
+        for (_, addr) in &config.seed_peers {
+            let base = if addr.starts_with("http://") || addr.starts_with("https://") {
+                addr.clone()
+            } else {
+                format!("http://{addr}")
+            };
+            peer_ingest.push(format!("{base}/v1/anti-nonce/ingest"));
+        }
+        let anti_nonce: Arc<dyn AntiNoncePort> = Arc::new(ReplicatedAntiNonce::open(
             data_root.join("used_sessions.log"),
+            config.effective_anti_nonce_shared_dir(),
+            config.node_id.as_str(),
+            peer_ingest,
+            wire_token.clone(),
         )?);
-        let daily_rotation: Arc<dyn DailyRotationPort> =
-            Arc::new(LedgerDayEpochStub::new(clock.clone()));
+        let daily_rotation: Arc<dyn DailyRotationPort> = Arc::new(QuorumDailyRotation::new(
+            clock.clone(),
+            rotation_quorum,
+            config.node_id.as_str(),
+            Arc::new(NoopReshareHook),
+        ));
+
+        let mut peer_addrs = BTreeMap::new();
+        for (id, addr) in &config.seed_peers {
+            peer_addrs.insert(id.clone(), addr.clone());
+        }
+        let wire_dkg = Arc::new(WireDkgHub::new(
+            config.node_id.as_str().to_string(),
+            peer_addrs,
+            wire_token,
+        ));
 
         #[cfg(feature = "dealer_lab")]
         let (dkg, frost): (Arc<dyn DkgPort>, Option<Arc<FrostSignOrchestrator>>) = {
@@ -225,6 +284,9 @@ impl VaultRuntime {
                     Box::new(LedgerDayEpochStub::new(clock.clone())),
                 );
                 (Arc::new(adapter), Some(Arc::new(orch)))
+            } else if matches!(config.dkg_mode, DkgMode::DistributedWire) {
+                // Over-wire ceremony via /v1/dkg/round{1,2,3}; no in-process dealer/sim.
+                (Arc::new(DistributedWireDkgPort), None)
             } else if matches!(config.dkg_mode, DkgMode::Distributed) {
                 wire_distributed_dkg(n, t, &share_store, &data_root, clock.clone())?
             } else {
@@ -239,7 +301,11 @@ impl VaultRuntime {
                     "dealer DKG not compiled (build without dealer_lab)".into(),
                 ));
             }
-            wire_distributed_dkg(n, t, &share_store, &data_root, clock.clone())?
+            if matches!(config.dkg_mode, DkgMode::DistributedWire) {
+                (Arc::new(DistributedWireDkgPort), None)
+            } else {
+                wire_distributed_dkg(n, t, &share_store, &data_root, clock.clone())?
+            }
         };
 
         let get_health = GetHealth::new(
@@ -319,6 +385,7 @@ impl VaultRuntime {
             daily_rotation,
             anti_nonce,
             frost,
+            wire_dkg,
         })
     }
 }

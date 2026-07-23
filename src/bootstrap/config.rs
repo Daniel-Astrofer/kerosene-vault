@@ -60,8 +60,10 @@ pub enum ShareStoreMode {
 pub enum DkgMode {
     /// Trusted-dealer single-process (lab visualize only).
     DealerLab,
-    /// Multi-round FROST DKG without dealer (Production Gate path).
+    /// Multi-round FROST DKG without dealer — in-process N-party sim (lab/single-node).
     Distributed,
+    /// Multi-round FROST DKG over HTTP between vault peers (no dealer).
+    DistributedWire,
 }
 
 impl DkgMode {
@@ -69,6 +71,7 @@ impl DkgMode {
         match raw.trim().to_ascii_lowercase().as_str() {
             "dealer" | "dealer_lab" => Some(Self::DealerLab),
             "distributed" | "dkg_distributed" => Some(Self::Distributed),
+            "distributed_wire" | "wire" | "over_wire" => Some(Self::DistributedWire),
             _ => None,
         }
     }
@@ -77,7 +80,12 @@ impl DkgMode {
         match self {
             Self::DealerLab => "dealer_lab",
             Self::Distributed => "distributed",
+            Self::DistributedWire => "distributed_wire",
         }
+    }
+
+    pub fn is_distributed(self) -> bool {
+        matches!(self, Self::Distributed | Self::DistributedWire)
     }
 }
 
@@ -128,10 +136,20 @@ pub struct VaultConfig {
     pub bitcoin_network: BitcoinNetwork,
     pub auth_mode: AuthMode,
     pub vault_token: Option<String>,
+    /// PEM server certificate (`VAULT_TLS_CERT_PATH`) — required when `auth_mode=mtls`.
+    pub tls_cert_path: Option<String>,
+    /// PEM server private key (`VAULT_TLS_KEY_PATH`) — required when `auth_mode=mtls`.
+    pub tls_key_path: Option<String>,
+    /// PEM client CA bundle (`VAULT_TLS_CLIENT_CA_PATH`) — required when `auth_mode=mtls`.
+    pub tls_client_ca_path: Option<String>,
     pub share_store_mode: ShareStoreMode,
     pub share_passphrase: Option<String>,
     /// Share / anti-nonce disk root (`VAULT_DATA_DIR`); lab default under `lab_root`.
     pub data_dir: Option<String>,
+    /// Shared lab volume for best-effort anti-nonce replication (`VAULT_ANTI_NONCE_SHARED_DIR`).
+    pub anti_nonce_shared_dir: Option<String>,
+    /// Optional hex measurement pin (`VAULT_MEASUREMENT_PIN`); else constitution hash pin.
+    pub measurement_pin_hex: Option<String>,
     /// Request dealer DKG (only honored when `dealer_lab` feature is compiled).
     pub dealer_requested: bool,
     /// Explicit DKG mode (`VAULT_DKG_MODE`).
@@ -221,6 +239,9 @@ impl VaultConfig {
         })?;
         // Lab P0 contract: VAULT_API_TOKEN (preferred) ↔ X-Vault-Token; VAULT_TOKEN legacy alias.
         let vault_token = env_nonempty_first(&["VAULT_API_TOKEN", "VAULT_TOKEN"]);
+        let tls_cert_path = env_nonempty_first(&["VAULT_TLS_CERT_PATH"]);
+        let tls_key_path = env_nonempty_first(&["VAULT_TLS_KEY_PATH"]);
+        let tls_client_ca_path = env_nonempty_first(&["VAULT_TLS_CLIENT_CA_PATH"]);
 
         let store_raw = std::env::var("VAULT_SHARE_STORE").unwrap_or_else(|_| {
             if hardened {
@@ -236,6 +257,8 @@ impl VaultConfig {
         let share_passphrase =
             env_nonempty_first(&["VAULT_DATA_PASSPHRASE", "VAULT_SHARE_PASSPHRASE"]);
         let data_dir = env_nonempty_first(&["VAULT_DATA_DIR"]);
+        let anti_nonce_shared_dir = env_nonempty_first(&["VAULT_ANTI_NONCE_SHARED_DIR"]);
+        let measurement_pin_hex = env_nonempty_first(&["VAULT_MEASUREMENT_PIN"]);
 
         // Lab P0 / Gate: VAULT_DKG_MODE (preferred); VAULT_DKG legacy alias.
         // `distributed` wins over the lab dealer default. Dealer never default in hardened.
@@ -272,9 +295,14 @@ impl VaultConfig {
             bitcoin_network,
             auth_mode,
             vault_token,
+            tls_cert_path,
+            tls_key_path,
+            tls_client_ca_path,
             share_store_mode,
             share_passphrase,
             data_dir,
+            anti_nonce_shared_dir,
+            measurement_pin_hex,
             dealer_requested,
             dkg_mode,
         };
@@ -338,7 +366,24 @@ impl VaultConfig {
                 ));
             }
         }
+        if self.auth_mode == AuthMode::MutualTls {
+            self.require_mtls_paths()?;
+        }
         Ok(())
+    }
+
+    /// Paths for rustls mTLS serve (`VAULT_TLS_*`).
+    pub fn require_mtls_paths(&self) -> Result<(&str, &str, &str), DomainError> {
+        let cert = self.tls_cert_path.as_deref().filter(|s| !s.is_empty());
+        let key = self.tls_key_path.as_deref().filter(|s| !s.is_empty());
+        let ca = self.tls_client_ca_path.as_deref().filter(|s| !s.is_empty());
+        match (cert, key, ca) {
+            (Some(c), Some(k), Some(a)) => Ok((c, k, a)),
+            _ => Err(DomainError::AuthRejected(
+                "mTLS requires VAULT_TLS_CERT_PATH, VAULT_TLS_KEY_PATH, and VAULT_TLS_CLIENT_CA_PATH"
+                    .into(),
+            )),
+        }
     }
 
     pub fn effective_lab_timelock_scale(&self) -> u64 {
@@ -368,6 +413,12 @@ impl VaultConfig {
         } else {
             std::path::PathBuf::from(&self.lab_root).join("vault-data")
         }
+    }
+
+    pub fn effective_anti_nonce_shared_dir(&self) -> Option<std::path::PathBuf> {
+        self.anti_nonce_shared_dir
+            .as_deref()
+            .map(std::path::PathBuf::from)
     }
 }
 
@@ -414,12 +465,24 @@ mod tests {
             bitcoin_network: BitcoinNetwork::Testnet3,
             auth_mode: AuthMode::StaticToken,
             vault_token: Some("t".into()),
+            tls_cert_path: None,
+            tls_key_path: None,
+            tls_client_ca_path: None,
             share_store_mode: ShareStoreMode::AeadDisk,
             share_passphrase: Some("pass".into()),
             data_dir: None,
+            anti_nonce_shared_dir: None,
+            measurement_pin_hex: None,
             dealer_requested: true,
             dkg_mode: DkgMode::DealerLab,
         }
+    }
+
+    fn with_mtls_paths(mut cfg: VaultConfig) -> VaultConfig {
+        cfg.tls_cert_path = Some("/lab/certs/vault-server.crt".into());
+        cfg.tls_key_path = Some("/lab/certs/vault-server.key".into());
+        cfg.tls_client_ca_path = Some("/lab/certs/ca.crt".into());
+        cfg
     }
 
     #[test]
@@ -444,6 +507,7 @@ mod tests {
         cfg.lab_timelock_env_set = true;
         cfg.ceremony_mode = CeremonyMode::Lab;
         cfg.auth_mode = AuthMode::MutualTls;
+        cfg = with_mtls_paths(cfg);
         cfg.share_store_mode = ShareStoreMode::TeeSeal;
         cfg.dealer_requested = false;
         cfg.dkg_mode = DkgMode::Distributed;
@@ -470,6 +534,7 @@ mod tests {
         cfg.refuse_sim = true;
         cfg.hardened = true;
         cfg.auth_mode = AuthMode::MutualTls;
+        cfg = with_mtls_paths(cfg);
         cfg.share_store_mode = ShareStoreMode::TeeSeal;
         cfg.dealer_requested = false;
         cfg.dkg_mode = DkgMode::Distributed;
@@ -490,6 +555,7 @@ mod tests {
         cfg.refuse_sim = true;
         cfg.hardened = true;
         cfg.auth_mode = AuthMode::MutualTls;
+        cfg = with_mtls_paths(cfg);
         cfg.share_store_mode = ShareStoreMode::TeeSeal;
         cfg.dealer_requested = false;
         cfg.dkg_mode = DkgMode::Distributed;
@@ -512,10 +578,43 @@ mod tests {
             Err(DomainError::AuthRejected(_))
         ));
         cfg.auth_mode = AuthMode::MutualTls;
+        cfg = with_mtls_paths(cfg);
         cfg.share_store_mode = ShareStoreMode::AeadDisk;
         assert!(matches!(
             cfg.validate_hygiene(),
             Err(DomainError::TeeRequired(_))
         ));
+    }
+
+    #[test]
+    fn mtls_requires_tls_paths() {
+        let mut cfg = base();
+        cfg.auth_mode = AuthMode::MutualTls;
+        assert!(matches!(
+            cfg.validate_hygiene(),
+            Err(DomainError::AuthRejected(_))
+        ));
+        cfg = with_mtls_paths(cfg);
+        assert!(cfg.validate_hygiene().is_ok());
+    }
+
+    #[test]
+    fn staging_and_production_still_refuse_static_token() {
+        for mode in [CeremonyMode::Staging, CeremonyMode::Production] {
+            let mut cfg = base();
+            cfg.attestation_mode = AttestationMode::Sev;
+            cfg.ceremony_mode = mode;
+            cfg.refuse_sim = true;
+            cfg.hardened = true;
+            cfg.auth_mode = AuthMode::StaticToken;
+            cfg.share_store_mode = ShareStoreMode::TeeSeal;
+            cfg.dealer_requested = false;
+            cfg.dkg_mode = DkgMode::Distributed;
+            assert!(
+                matches!(cfg.validate_hygiene(), Err(DomainError::AuthRejected(_))),
+                "static_token must be refused in {:?}",
+                mode
+            );
+        }
     }
 }

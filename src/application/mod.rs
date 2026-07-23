@@ -19,8 +19,8 @@ pub use ledger_ops::{GetLedgerSnapshot, LedgerSnapshot, ProposeEpochAdvance, Vot
 pub use ping_peer::{PingPeer, PingReport};
 pub use ports::{
     AntiNoncePort, AttestationPort, BlobStorePort, BucketLedgerPort, ClockPort, DailyRotationPort,
-    DkgPort, EconomyPort, LedgerPort, PeerDirectoryPort, ReleaseStorePort, ShareStorePort,
-    VaultAuthPort,
+    DkgPort, EconomyPort, LedgerPort, PeerDirectoryPort, ReleaseStorePort, ReshareHookPort,
+    ShareStorePort, VaultAuthPort,
 };
 pub use release_ops::{
     ActivateRelease, CosignRelease, GetAllowlist, ProposeRelease, RebuildRelease,

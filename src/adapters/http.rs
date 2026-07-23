@@ -28,10 +28,15 @@ pub fn build_router(runtime: Arc<VaultRuntime>) -> Router {
     let protected = Router::new()
         .route("/v1/sign", post(v1_sign))
         .route("/v1/intent", post(v1_intent))
-        // P1 wire stubs: over-wire DKG round exchange (in-process sim is the current Gate slice).
-        .route("/v1/dkg/round1", post(v1_dkg_round_stub))
-        .route("/v1/dkg/round2", post(v1_dkg_round_stub))
-        .route("/v1/dkg/round3", post(v1_dkg_round_stub))
+        // Over-wire FROST DKG round exchange (HTTP JSON + X-Vault-Token). No dealer.
+        .route("/v1/dkg/round1", post(v1_dkg_round1))
+        .route("/v1/dkg/round2", post(v1_dkg_round2))
+        .route("/v1/dkg/round3", post(v1_dkg_round3))
+        .route("/v1/dkg/status", get(v1_dkg_status))
+        .route("/v1/anti-nonce/ingest", post(v1_anti_nonce_ingest))
+        .route("/v1/day/advance", post(v1_day_advance))
+        .route("/v1/day/vote", post(v1_day_vote))
+        .route("/v1/day/current", get(v1_day_current))
         .route("/health", get(legacy_dispatch))
         .route("/ledger", get(legacy_dispatch))
         .route("/threshold", get(legacy_dispatch))
@@ -103,13 +108,286 @@ async fn v1_sign(State(state): State<AppState>, body: Bytes) -> impl IntoRespons
     }
 }
 
-/// Stub for over-wire DKG rounds (P1). In-process multi-party DKG is available via
-/// `VAULT_DKG_MODE=distributed`; HTTP package exchange is not go-live yet.
-async fn v1_dkg_round_stub() -> impl IntoResponse {
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        r#"{"error":"production gate: over-wire DKG round exchange is P1; use VAULT_DKG_MODE=distributed in-process sim","status":"stub"}"#.to_string(),
-    )
+async fn v1_anti_nonce_ingest(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    #[derive(serde::Deserialize)]
+    struct IngestBody {
+        session_id: String,
+    }
+    let req: IngestBody = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!(r#"{{"error":"invalid json: {e}"}}"#),
+            )
+        }
+    };
+    match state.runtime.anti_nonce.observe_remote(&req.session_id) {
+        Ok(()) => (StatusCode::OK, r#"{"ok":true}"#.to_string()),
+        Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+    }
+}
+
+async fn v1_day_current(State(state): State<AppState>) -> impl IntoResponse {
+    match state.runtime.daily_rotation.current_day_epoch() {
+        Ok(d) => (
+            StatusCode::OK,
+            format!(r#"{{"day_epoch":"{}"}}"#, d.as_str()),
+        ),
+        Err(e) => (StatusCode::CONFLICT, format!(r#"{{"error":"{e}"}}"#)),
+    }
+}
+
+async fn v1_day_vote(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    #[derive(serde::Deserialize)]
+    struct VoteBody {
+        voter: String,
+        day_epoch: String,
+    }
+    let req: VoteBody = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!(r#"{{"error":"invalid json: {e}"}}"#),
+            )
+        }
+    };
+    let target = match crate::domain::DayEpoch::parse(req.day_epoch) {
+        Ok(d) => d,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#))
+        }
+    };
+    match state
+        .runtime
+        .daily_rotation
+        .record_vote(&req.voter, &target)
+    {
+        Ok(()) => (StatusCode::OK, r#"{"ok":true}"#.to_string()),
+        Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+    }
+}
+
+async fn v1_day_advance(State(state): State<AppState>) -> impl IntoResponse {
+    match state.runtime.daily_rotation.advance() {
+        Ok(d) => (
+            StatusCode::OK,
+            format!(r#"{{"day_epoch":"{}","advanced":true}}"#, d.as_str()),
+        ),
+        Err(e) => (StatusCode::CONFLICT, format!(r#"{{"error":"{e}"}}"#)),
+    }
+}
+
+/// Round1: start local part1 (`roster` present) or ingest a peer package (`package_hex`).
+/// Optional `fanout: true` on start POSTs the local package to `VAULT_SEED_PEERS`.
+async fn v1_dkg_round1(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    #[derive(serde::Deserialize)]
+    struct Round1Body {
+        session_id: String,
+        #[serde(default)]
+        roster: Option<Vec<String>>,
+        #[serde(default)]
+        max_signers: Option<u16>,
+        #[serde(default)]
+        min_signers: Option<u16>,
+        #[serde(default)]
+        fanout: bool,
+        #[serde(default)]
+        sender_node_id: Option<String>,
+        #[serde(default)]
+        sender_identifier: Option<u16>,
+        #[serde(default)]
+        package_hex: Option<String>,
+    }
+    let req: Round1Body = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!(r#"{{"error":"invalid json: {e}"}}"#),
+            )
+        }
+    };
+
+    if let Some(roster) = req.roster {
+        let max = req.max_signers.unwrap_or(roster.len() as u16);
+        let min = req.min_signers.unwrap_or_else(|| {
+            // Match constitution-style ⌈2n/3⌉ for lab when omitted.
+            ((max as usize * 2).div_ceil(3)).max(2).min(max as usize) as u16
+        });
+        let start = crate::adapters::DkgStartRequest {
+            session_id: req.session_id.clone(),
+            max_signers: max,
+            min_signers: min,
+            roster,
+        };
+        match state.runtime.wire_dkg.start(start) {
+            Ok((status, wire)) => {
+                if req.fanout {
+                    if let Err(e) = state.runtime.wire_dkg.fanout_round1(&wire).await {
+                        return (
+                            StatusCode::BAD_GATEWAY,
+                            format!(r#"{{"error":"{e}","status":{}}}"#, serde_json::to_string(&status).unwrap_or_default()),
+                        );
+                    }
+                }
+                (
+                    StatusCode::OK,
+                    serde_json::json!({
+                        "status": status,
+                        "round1": wire,
+                    })
+                    .to_string(),
+                )
+            }
+            Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+        }
+    } else {
+        let Some(package_hex) = req.package_hex else {
+            return (
+                StatusCode::BAD_REQUEST,
+                r#"{"error":"round1 requires roster (start) or package_hex (ingest)"}"#.into(),
+            );
+        };
+        let msg = crate::adapters::Round1WireMessage {
+            session_id: req.session_id,
+            sender_node_id: req.sender_node_id.unwrap_or_default(),
+            sender_identifier: req.sender_identifier.unwrap_or(0),
+            max_signers: req.max_signers.unwrap_or(0),
+            min_signers: req.min_signers.unwrap_or(0),
+            package_hex,
+        };
+        match state.runtime.wire_dkg.ingest_round1(msg) {
+            Ok(status) => (
+                StatusCode::OK,
+                serde_json::to_string(&status).unwrap_or_else(|e| format!(r#"{{"error":"{e}"}}"#)),
+            ),
+            Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+        }
+    }
+}
+
+/// Round2: ingest peer package, or `deliver: true` to fan-out local outbound packages.
+async fn v1_dkg_round2(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    #[derive(serde::Deserialize)]
+    struct Round2Body {
+        session_id: String,
+        #[serde(default)]
+        deliver: bool,
+        #[serde(default)]
+        fanout: bool,
+        #[serde(default)]
+        sender_node_id: Option<String>,
+        #[serde(default)]
+        sender_identifier: Option<u16>,
+        #[serde(default)]
+        recipient_node_id: Option<String>,
+        #[serde(default)]
+        recipient_identifier: Option<u16>,
+        #[serde(default)]
+        package_hex: Option<String>,
+    }
+    let req: Round2Body = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!(r#"{{"error":"invalid json: {e}"}}"#),
+            )
+        }
+    };
+
+    if req.deliver {
+        match state.runtime.wire_dkg.take_round2_outbound(&req.session_id) {
+            Ok(msgs) => {
+                if req.fanout {
+                    if let Err(e) = state.runtime.wire_dkg.fanout_round2(&msgs).await {
+                        return (StatusCode::BAD_GATEWAY, format!(r#"{{"error":"{e}"}}"#));
+                    }
+                }
+                (
+                    StatusCode::OK,
+                    serde_json::json!({ "outbound": msgs }).to_string(),
+                )
+            }
+            Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+        }
+    } else {
+        let Some(package_hex) = req.package_hex else {
+            return (
+                StatusCode::BAD_REQUEST,
+                r#"{"error":"round2 requires package_hex (ingest) or deliver=true"}"#.into(),
+            );
+        };
+        let msg = crate::adapters::Round2WireMessage {
+            session_id: req.session_id,
+            sender_node_id: req.sender_node_id.unwrap_or_default(),
+            sender_identifier: req.sender_identifier.unwrap_or(0),
+            recipient_node_id: req.recipient_node_id.unwrap_or_default(),
+            recipient_identifier: req.recipient_identifier.unwrap_or(0),
+            package_hex,
+        };
+        match state.runtime.wire_dkg.ingest_round2(msg) {
+            Ok(status) => (
+                StatusCode::OK,
+                serde_json::to_string(&status).unwrap_or_else(|e| format!(r#"{{"error":"{e}"}}"#)),
+            ),
+            Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+        }
+    }
+}
+
+/// Round3: finalize part3 when round2 inbox is complete; persists only local share.
+async fn v1_dkg_round3(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    let req: crate::adapters::Round3WireRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!(r#"{{"error":"invalid json: {e}"}}"#),
+            )
+        }
+    };
+    if !req.finalize {
+        return match state.runtime.wire_dkg.status(&req.session_id) {
+            Ok(status) => (
+                StatusCode::OK,
+                serde_json::to_string(&status).unwrap_or_else(|e| format!(r#"{{"error":"{e}"}}"#)),
+            ),
+            Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+        };
+    }
+    match state
+        .runtime
+        .wire_dkg
+        .finalize_round3(&req.session_id, state.runtime.share_store.as_ref())
+    {
+        Ok(status) => (
+            StatusCode::OK,
+            serde_json::to_string(&status).unwrap_or_else(|e| format!(r#"{{"error":"{e}"}}"#)),
+        ),
+        Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+    }
+}
+
+async fn v1_dkg_status(
+    State(state): State<AppState>,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let Some(session_id) = q.get("session_id") else {
+        return (
+            StatusCode::BAD_REQUEST,
+            r#"{"error":"session_id query required"}"#.into(),
+        );
+    };
+    match state.runtime.wire_dkg.status(session_id) {
+        Ok(status) => (
+            StatusCode::OK,
+            serde_json::to_string(&status).unwrap_or_else(|e| format!(r#"{{"error":"{e}"}}"#)),
+        ),
+        Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+    }
 }
 
 #[derive(serde::Deserialize)]

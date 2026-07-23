@@ -1,10 +1,13 @@
-//! Distributed FROST DKG (no dealer) — Production Gate first slice.
+//! Distributed FROST DKG (no dealer) — Production Gate.
 //!
 //! Trail of Bits (2024): malicious participants in naive/dealer DKG can silently
 //! raise the threshold. This adapter uses `frost-secp256k1` multi-round DKG
 //! (`part1`/`part2`/`part3`) and asserts `min_signers` matches the constitution
-//! after part3. Over-wire HTTP round exchange is stubbed for P1; lab can run
-//! in-process multi-party simulation via `VAULT_DKG_MODE=distributed`.
+//! after part3.
+//!
+//! - `VAULT_DKG_MODE=distributed` — in-process multi-party simulation (single process).
+//! - `VAULT_DKG_MODE=distributed_wire` — over-wire HTTP round exchange (`dkg_wire` +
+//!   `/v1/dkg/round{1,2,3}`); each vault holds only its own share after protocol.
 
 use std::collections::BTreeMap;
 
