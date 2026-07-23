@@ -72,6 +72,13 @@ fn sim_forbidden_when_refuse_sim() {
         attestation_staging_stub: false,
         ceremony_mode: kerosene_vault::bootstrap::CeremonyMode::Lab,
         open_economy: false,
+        bitcoin_network: kerosene_vault::domain::BitcoinNetwork::Testnet3,
+        auth_mode: kerosene_vault::bootstrap::AuthMode::MutualTls,
+        vault_token: None,
+        share_store_mode: kerosene_vault::bootstrap::ShareStoreMode::TeeSeal,
+        share_passphrase: None,
+        data_dir: None,
+        dealer_requested: false,
     };
     assert_eq!(
         cfg.validate_attestation_policy(),

@@ -50,7 +50,7 @@ fn suite_happy_intent_gate_then_frost_sign() {
     let intent = SettlementIntent::new(
         "intent-happy",
         BucketKind::Users,
-        "bc1q-users-withdraw",
+        "tb1q-users-withdraw",
         10_000,
         policy_hash,
     )
@@ -126,7 +126,7 @@ fn suite_intent_above_cap_rejected() {
     let intent = SettlementIntent::new(
         "intent-cap",
         BucketKind::Users,
-        "bc1q-users-withdraw",
+        "tb1q-users-withdraw",
         constitution.max_withdraw_per_tx_sats + 1,
         policy_hash,
     )
@@ -152,7 +152,7 @@ fn suite_intent_replay_rejected() {
         SettlementIntent::new(
             "intent-replay",
             BucketKind::Users,
-            "bc1q-users-withdraw",
+            "tb1q-users-withdraw",
             1,
             &policy_hash,
         )
@@ -263,7 +263,7 @@ fn suite_miners_bucket_cannot_use_users_destination_policy() {
     let intent = SettlementIntent::new(
         "intent-miner-cross",
         BucketKind::Miners,
-        "bc1q-users-withdraw",
+        "tb1q-users-withdraw",
         1,
         policy_hash,
     )

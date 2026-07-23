@@ -1,8 +1,10 @@
 //! Domain layer: entities and pure policy. No Tor, disk, or network.
 
 mod attestation;
+mod bitcoin_net;
 mod bucket;
 mod constitution;
+mod day_epoch;
 mod dkg;
 mod error;
 mod health;
@@ -13,10 +15,12 @@ mod reward;
 mod threshold;
 
 pub use attestation::{AttestationMode, AttestationQuote, Measurement};
+pub use bitcoin_net::{validate_destination, BitcoinNetwork};
 pub use bucket::{
     evaluate_intent, BucketKind, BucketPolicy, ProfitSplits, SettlementIntent,
 };
 pub use constitution::{quorum_two_thirds, Constitution};
+pub use day_epoch::DayEpoch;
 pub use dkg::run_dkg;
 pub use error::DomainError;
 pub use health::{HealthStatus, NodeHealth};

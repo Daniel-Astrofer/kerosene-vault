@@ -43,6 +43,13 @@ pub enum DomainError {
     NoEligibleMiners,
     InsufficientMinerPool { have: u64, want: u64 },
     MinerSelfPayForbidden,
+    AuthRejected(String),
+    ShareStoreForbidden(String),
+    DealerForbidden(String),
+    TeeRequired(String),
+    BitcoinNetworkMismatch(String),
+    DayEpochStale { have: String, need: String },
+    ProductionGate(String),
 }
 
 impl fmt::Display for DomainError {
@@ -112,6 +119,15 @@ impl fmt::Display for DomainError {
                     "miner payout forbidden: destination not an eligible registered operator (no self-pay)"
                 )
             }
+            Self::AuthRejected(r) => write!(f, "auth rejected: {r}"),
+            Self::ShareStoreForbidden(r) => write!(f, "share store forbidden: {r}"),
+            Self::DealerForbidden(r) => write!(f, "dealer DKG forbidden: {r}"),
+            Self::TeeRequired(r) => write!(f, "TEE sealing required: {r}"),
+            Self::BitcoinNetworkMismatch(r) => write!(f, "bitcoin network mismatch: {r}"),
+            Self::DayEpochStale { have, need } => {
+                write!(f, "day_epoch stale: have {have}, need {need}")
+            }
+            Self::ProductionGate(r) => write!(f, "production gate: {r}"),
         }
     }
 }

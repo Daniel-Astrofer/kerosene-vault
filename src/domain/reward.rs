@@ -198,7 +198,7 @@ mod tests {
         let policy = RewardPolicy::v1_open();
         let op = MinerOperator {
             node_id: NodeId::new("m1").unwrap(),
-            payout_destination: "bc1q-miner-payout".into(),
+            payout_destination: "tb1q-miner-payout".into(),
             uptime_bps_30d: 9_900,
             attestation_streak_days: 10,
             bond_sats: 0,

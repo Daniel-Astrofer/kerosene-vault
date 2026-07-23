@@ -1,15 +1,20 @@
 use std::sync::Arc;
 
 use crate::adapters::{
-    InMemoryBucketLedger, InMemoryEconomy, InMemoryLedger, InMemoryPeerDirectory, InMemoryReleaseMesh,
-    SimAttestationAdapter, SystemClock, TeeAttestationAdapter, ThresholdVaultState,
+    AeadDiskShareStore, DistributedDkgAdapter, InMemoryBucketLedger, InMemoryEconomy,
+    InMemoryLedger, InMemoryPeerDirectory, InMemoryReleaseMesh, LedgerDayEpochStub,
+    MutualTlsAuthAdapter, PersistedAntiNonce, SimAttestationAdapter, StaticTokenAuthAdapter,
+    SystemClock, TeeAttestationAdapter, TeeSealShareStore, ThresholdVaultState,
 };
+#[cfg(feature = "dealer_lab")]
+use crate::adapters::{dealer_fatal_banner, DealerLabAdapter, FrostSignOrchestrator};
 use crate::application::{
-    AccrueMinerRewards, AllocateProfit, CosignRelease, GateIntent, GetAllowlist, GetEconomyStatus,
-    GetHealth, GetLedgerSnapshot, PingPeer, ProposeEpochAdvance, ProposeMinerPayouts, ProposeRelease,
-    RebuildRelease, SignMessage, StaticOnlineCount, UpsertMiner, VoteEpochAdvance, ActivateRelease,
+    AccrueMinerRewards, AllocateProfit, AntiNoncePort, CosignRelease, DailyRotationPort, DkgPort,
+    GateIntent, GetAllowlist, GetEconomyStatus, GetHealth, GetLedgerSnapshot, PingPeer,
+    ProposeEpochAdvance, ProposeMinerPayouts, ProposeRelease, RebuildRelease, ShareStorePort,
+    SignMessage, StaticOnlineCount, UpsertMiner, VaultAuthPort, VoteEpochAdvance, ActivateRelease,
 };
-use crate::bootstrap::VaultConfig;
+use crate::bootstrap::{AuthMode, CeremonyMode, ShareStoreMode, VaultConfig};
 use crate::domain::{
     run_dkg, Constitution, DomainError, EconomyState, Measurement, NodeId, PeerEndpoint, PeerInfo,
     ReleasePolicy,
@@ -41,12 +46,29 @@ pub struct VaultRuntime {
     pub release_mesh: Arc<InMemoryReleaseMesh>,
     pub buckets: Arc<InMemoryBucketLedger>,
     pub economy: Arc<InMemoryEconomy>,
+    pub auth: Arc<dyn VaultAuthPort>,
+    pub share_store: Arc<dyn ShareStorePort>,
+    pub dkg: Arc<dyn DkgPort>,
+    pub daily_rotation: Arc<dyn DailyRotationPort>,
+    pub anti_nonce: Arc<dyn AntiNoncePort>,
+    #[cfg(feature = "dealer_lab")]
+    pub frost: Option<Arc<FrostSignOrchestrator>>,
 }
 
 impl VaultRuntime {
     pub fn build(config: VaultConfig) -> Result<Self, DomainError> {
         config.validate_attestation_policy()?;
         config.validate_hygiene()?;
+
+        if matches!(
+            config.ceremony_mode,
+            CeremonyMode::Staging | CeremonyMode::Production
+        ) && config.dealer_requested
+        {
+            return Err(DomainError::DealerForbidden(
+                "dealer DKG refused in staging/production".into(),
+            ));
+        }
 
         let peers = Arc::new(InMemoryPeerDirectory::new());
         for (id, addr) in &config.seed_peers {
@@ -121,7 +143,7 @@ impl VaultRuntime {
                 }
             };
 
-        let measurement = Measurement::from_bytes(b"kerosene-vault-f9-economy");
+        let measurement = Measurement::from_bytes(b"kerosene-vault-lab-p0");
         let clock: Arc<dyn crate::application::ClockPort> = Arc::new(SystemClock);
         let peers_port: Arc<dyn crate::application::PeerDirectoryPort> = peers.clone();
         let ledger_port: Arc<dyn crate::application::LedgerPort> = ledger.clone();
@@ -139,6 +161,84 @@ impl VaultRuntime {
 
         let economy = Arc::new(InMemoryEconomy::new(EconomyState::new_open()));
         let economy_port: Arc<dyn crate::application::EconomyPort> = economy.clone();
+
+        let auth: Arc<dyn VaultAuthPort> = match config.auth_mode {
+            AuthMode::StaticToken => {
+                let token = config
+                    .effective_vault_token()
+                    .ok_or_else(|| {
+                        DomainError::AuthRejected(
+                            "VAULT_API_TOKEN (or VAULT_TOKEN) required for static auth".into(),
+                        )
+                    })?
+                    .to_string();
+                Arc::new(StaticTokenAuthAdapter::new(token))
+            }
+            AuthMode::MutualTls => Arc::new(MutualTlsAuthAdapter::new()),
+        };
+
+        let data_root = config.effective_data_dir();
+        let share_store: Arc<dyn ShareStorePort> = match config.share_store_mode {
+            ShareStoreMode::AeadDisk => {
+                let pass = config
+                    .share_passphrase
+                    .clone()
+                    .unwrap_or_else(|| "kerosene-vault-lab-passphrase".into());
+                Arc::new(AeadDiskShareStore::new(
+                    data_root.join("shares"),
+                    pass,
+                ))
+            }
+            ShareStoreMode::TeeSeal => Arc::new(TeeSealShareStore::new()),
+        };
+
+        let anti_nonce: Arc<dyn AntiNoncePort> = Arc::new(PersistedAntiNonce::open(
+            data_root.join("used_sessions.log"),
+        )?);
+        let daily_rotation: Arc<dyn DailyRotationPort> =
+            Arc::new(LedgerDayEpochStub::new(clock.clone()));
+
+        #[cfg(feature = "dealer_lab")]
+        let (dkg, frost): (Arc<dyn DkgPort>, Option<Arc<FrostSignOrchestrator>>) = {
+            if config.dealer_requested
+                && matches!(config.ceremony_mode, CeremonyMode::Lab)
+                && !config.hardened
+            {
+                dealer_fatal_banner();
+                let adapter = DealerLabAdapter::new();
+                let max = n.min(u16::MAX as usize) as u16;
+                let min = t.min(u16::MAX as usize) as u16;
+                let bundle = DealerLabAdapter::generate(max.max(2), min.max(2).min(max))?;
+                // Seal local share bytes (serialized verifying key + identifier index) for lab store smoke.
+                if let Some((id, kp)) = bundle.key_packages.iter().next() {
+                    let blob = format!("frost-lab-share:{id:?}");
+                    let _ = share_store.put_share(config.node_id.as_str(), blob.as_bytes());
+                    let _ = kp;
+                }
+                let orch = FrostSignOrchestrator::new(
+                    bundle.key_packages,
+                    bundle.pubkey_package,
+                    t,
+                    Box::new(PersistedAntiNonce::open(
+                        data_root.join("frost_sessions.log"),
+                    )?),
+                    Box::new(LedgerDayEpochStub::new(clock.clone())),
+                );
+                (Arc::new(adapter), Some(Arc::new(orch)))
+            } else {
+                (Arc::new(DistributedDkgAdapter::new()), None)
+            }
+        };
+
+        #[cfg(not(feature = "dealer_lab"))]
+        let dkg: Arc<dyn DkgPort> = {
+            if config.dealer_requested {
+                return Err(DomainError::DealerForbidden(
+                    "dealer DKG not compiled (build without dealer_lab)".into(),
+                ));
+            }
+            Arc::new(DistributedDkgAdapter::new())
+        };
 
         let get_health = GetHealth::new(
             config.node_id.clone(),
@@ -172,6 +272,19 @@ impl VaultRuntime {
         let accrue_rewards = AccrueMinerRewards::new(economy_port.clone(), ledger_port.clone());
         let propose_miner_payouts = ProposeMinerPayouts::new(economy_port, ledger_port);
 
+        let mode = if config.hardened {
+            "production-refuse"
+        } else {
+            "lab-visualize"
+        };
+        eprintln!(
+            "MODE={mode} auth={} share_store={} dkg={} bitcoin={}",
+            auth.mode_name(),
+            share_store.store_kind(),
+            dkg.mode_name(),
+            config.bitcoin_network.as_str()
+        );
+
         Ok(Self {
             config,
             get_health,
@@ -198,6 +311,13 @@ impl VaultRuntime {
             release_mesh,
             buckets,
             economy,
+            auth,
+            share_store,
+            dkg,
+            daily_rotation,
+            anti_nonce,
+            #[cfg(feature = "dealer_lab")]
+            frost,
         })
     }
 }

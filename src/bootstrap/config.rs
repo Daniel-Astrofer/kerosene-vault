@@ -1,4 +1,4 @@
-use crate::domain::{AttestationMode, DomainError, NodeId};
+use crate::domain::{AttestationMode, BitcoinNetwork, DomainError, NodeId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CeremonyMode {
@@ -22,6 +22,52 @@ impl CeremonyMode {
             Self::Lab => "lab",
             Self::Staging => "staging",
             Self::Production => "production",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AuthMode {
+    StaticToken,
+    MutualTls,
+}
+
+impl AuthMode {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "static" | "token" | "static_token" => Some(Self::StaticToken),
+            "mtls" | "mutual_tls" => Some(Self::MutualTls),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::StaticToken => "static_token",
+            Self::MutualTls => "mtls",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShareStoreMode {
+    AeadDisk,
+    TeeSeal,
+}
+
+impl ShareStoreMode {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "aead" | "disk" | "aead_disk" => Some(Self::AeadDisk),
+            "tee" | "tee_seal" => Some(Self::TeeSeal),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::AeadDisk => "aead_disk",
+            Self::TeeSeal => "tee_seal",
         }
     }
 }
@@ -53,6 +99,15 @@ pub struct VaultConfig {
     pub ceremony_mode: CeremonyMode,
     /// `VAULT_ECONOMY=open` enables live p%=1% miner splits (F9); default lab dry-run.
     pub open_economy: bool,
+    pub bitcoin_network: BitcoinNetwork,
+    pub auth_mode: AuthMode,
+    pub vault_token: Option<String>,
+    pub share_store_mode: ShareStoreMode,
+    pub share_passphrase: Option<String>,
+    /// Share / anti-nonce disk root (`VAULT_DATA_DIR`); lab default under `lab_root`.
+    pub data_dir: Option<String>,
+    /// Request dealer DKG (only honored when `dealer_lab` feature is compiled).
+    pub dealer_requested: bool,
 }
 
 impl VaultConfig {
@@ -70,8 +125,8 @@ impl VaultConfig {
             std::env::var("LAB_ATTESTATION_ROOT").unwrap_or_else(|_| "kerosene-lab-root".into());
 
         let kerosene_env = std::env::var("KEROSENE_ENV").unwrap_or_else(|_| "lab".into());
-        let is_production = cfg!(feature = "production")
-            || kerosene_env.eq_ignore_ascii_case("production");
+        let is_production =
+            cfg!(feature = "production") || kerosene_env.eq_ignore_ascii_case("production");
         let is_staging = kerosene_env.eq_ignore_ascii_case("staging");
         let refuse_sim = env_flag("KEROSENE_VAULT_REFUSE_SIM") || is_production || is_staging;
         let hardened = refuse_sim;
@@ -121,6 +176,48 @@ impl VaultConfig {
             Ok("open" | "OPEN" | "v1_open")
         );
 
+        let btc_raw = std::env::var("BITCOIN_NETWORK").unwrap_or_else(|_| "testnet3".into());
+        let bitcoin_network = BitcoinNetwork::parse(&btc_raw).ok_or_else(|| {
+            DomainError::BitcoinNetworkMismatch(format!("unknown BITCOIN_NETWORK={btc_raw}"))
+        })?;
+
+        let auth_raw = std::env::var("VAULT_AUTH_MODE").unwrap_or_else(|_| {
+            if hardened {
+                "mtls".into()
+            } else {
+                "static_token".into()
+            }
+        });
+        let auth_mode = AuthMode::parse(&auth_raw).ok_or_else(|| {
+            DomainError::AuthRejected(format!("unknown VAULT_AUTH_MODE={auth_raw}"))
+        })?;
+        // Lab P0 contract: VAULT_API_TOKEN (preferred) ↔ X-Vault-Token; VAULT_TOKEN legacy alias.
+        let vault_token = env_nonempty_first(&["VAULT_API_TOKEN", "VAULT_TOKEN"]);
+
+        let store_raw = std::env::var("VAULT_SHARE_STORE").unwrap_or_else(|_| {
+            if hardened {
+                "tee_seal".into()
+            } else {
+                "aead_disk".into()
+            }
+        });
+        let share_store_mode = ShareStoreMode::parse(&store_raw).ok_or_else(|| {
+            DomainError::ShareStoreForbidden(format!("unknown VAULT_SHARE_STORE={store_raw}"))
+        })?;
+        // Lab P0: VAULT_DATA_PASSPHRASE (preferred); VAULT_SHARE_PASSPHRASE legacy alias.
+        let share_passphrase =
+            env_nonempty_first(&["VAULT_DATA_PASSPHRASE", "VAULT_SHARE_PASSPHRASE"]);
+        let data_dir = env_nonempty_first(&["VAULT_DATA_DIR"]);
+
+        // Lab P0: VAULT_DKG_MODE (preferred); VAULT_DKG legacy alias.
+        let dkg_mode = std::env::var("VAULT_DKG_MODE")
+            .or_else(|_| std::env::var("VAULT_DKG"))
+            .ok();
+        let dealer_requested = matches!(
+            dkg_mode.as_deref(),
+            Some("dealer" | "DEALER" | "dealer_lab")
+        ) || (!hardened && cfg!(feature = "dealer_lab"));
+
         let cfg = Self {
             node_id,
             attestation_mode,
@@ -138,6 +235,13 @@ impl VaultConfig {
             attestation_staging_stub,
             ceremony_mode,
             open_economy,
+            bitcoin_network,
+            auth_mode,
+            vault_token,
+            share_store_mode,
+            share_passphrase,
+            data_dir,
+            dealer_requested,
         };
         cfg.validate_hygiene()?;
         Ok(cfg)
@@ -150,8 +254,7 @@ impl VaultConfig {
         Ok(())
     }
 
-    /// §13.5 + F8: prod/staging must not boot with sim or LAB_TIMELOCK_SCALE;
-    /// production ceremony forbids staging TEE stubs.
+    /// Prod/staging refuse: sim, lab timelock env, dealer, static token, host-disk share without TEE.
     pub fn validate_hygiene(&self) -> Result<(), DomainError> {
         self.validate_attestation_policy()?;
         if self.hardened {
@@ -180,6 +283,26 @@ impl VaultConfig {
                 "ATTESTATION_MODE=sim".into(),
             ));
         }
+        if matches!(
+            self.ceremony_mode,
+            CeremonyMode::Staging | CeremonyMode::Production
+        ) {
+            if self.dealer_requested {
+                return Err(DomainError::DealerForbidden(
+                    "dealer DKG refused in staging/production (ToB 2024)".into(),
+                ));
+            }
+            if self.auth_mode == AuthMode::StaticToken {
+                return Err(DomainError::AuthRejected(
+                    "static token refused in staging/production; use mTLS".into(),
+                ));
+            }
+            if self.share_store_mode == ShareStoreMode::AeadDisk {
+                return Err(DomainError::TeeRequired(
+                    "host disk AEAD share store refused without TEE in staging/production".into(),
+                ));
+            }
+        }
         Ok(())
     }
 
@@ -194,6 +317,23 @@ impl VaultConfig {
     pub fn lab_endpoints_enabled(&self) -> bool {
         !self.hardened
     }
+
+    pub fn effective_vault_token(&self) -> Option<&str> {
+        self.vault_token.as_deref().or(if self.hardened {
+            None
+        } else {
+            // Matches vault-mesh-lab.compose.yaml + kfe-service-vaultmesh-testnet3.properties.
+            Some("kerosene-vault-lab-only")
+        })
+    }
+
+    pub fn effective_data_dir(&self) -> std::path::PathBuf {
+        if let Some(dir) = self.data_dir.as_deref() {
+            std::path::PathBuf::from(dir)
+        } else {
+            std::path::PathBuf::from(&self.lab_root).join("vault-data")
+        }
+    }
 }
 
 fn env_flag(name: &str) -> bool {
@@ -201,6 +341,17 @@ fn env_flag(name: &str) -> bool {
         std::env::var(name).as_deref(),
         Ok("1" | "true" | "TRUE" | "yes" | "YES")
     )
+}
+
+fn env_nonempty_first(names: &[&str]) -> Option<String> {
+    for name in names {
+        if let Ok(v) = std::env::var(name) {
+            if !v.is_empty() {
+                return Some(v);
+            }
+        }
+    }
+    None
 }
 
 #[cfg(test)]
@@ -225,6 +376,13 @@ mod tests {
             attestation_staging_stub: false,
             ceremony_mode: CeremonyMode::Lab,
             open_economy: false,
+            bitcoin_network: BitcoinNetwork::Testnet3,
+            auth_mode: AuthMode::StaticToken,
+            vault_token: Some("t".into()),
+            share_store_mode: ShareStoreMode::AeadDisk,
+            share_passphrase: Some("pass".into()),
+            data_dir: None,
+            dealer_requested: true,
         }
     }
 
@@ -248,6 +406,10 @@ mod tests {
         cfg.refuse_sim = true;
         cfg.attestation_mode = AttestationMode::Sev;
         cfg.lab_timelock_env_set = true;
+        cfg.ceremony_mode = CeremonyMode::Lab;
+        cfg.auth_mode = AuthMode::MutualTls;
+        cfg.share_store_mode = ShareStoreMode::TeeSeal;
+        cfg.dealer_requested = false;
         assert_eq!(
             cfg.validate_hygiene(),
             Err(DomainError::LabFlagForbidden("LAB_TIMELOCK_SCALE".into()))
@@ -270,6 +432,9 @@ mod tests {
         cfg.attestation_staging_stub = true;
         cfg.refuse_sim = true;
         cfg.hardened = true;
+        cfg.auth_mode = AuthMode::MutualTls;
+        cfg.share_store_mode = ShareStoreMode::TeeSeal;
+        cfg.dealer_requested = false;
         assert_eq!(
             cfg.validate_hygiene(),
             Err(DomainError::LabFlagForbidden(
@@ -286,6 +451,31 @@ mod tests {
         cfg.attestation_staging_stub = true;
         cfg.refuse_sim = true;
         cfg.hardened = true;
+        cfg.auth_mode = AuthMode::MutualTls;
+        cfg.share_store_mode = ShareStoreMode::TeeSeal;
+        cfg.dealer_requested = false;
         assert!(cfg.validate_hygiene().is_ok());
+    }
+
+    #[test]
+    fn production_refuses_static_token_and_disk_share() {
+        let mut cfg = base();
+        cfg.attestation_mode = AttestationMode::Sev;
+        cfg.ceremony_mode = CeremonyMode::Production;
+        cfg.refuse_sim = true;
+        cfg.hardened = true;
+        cfg.auth_mode = AuthMode::StaticToken;
+        cfg.share_store_mode = ShareStoreMode::TeeSeal;
+        cfg.dealer_requested = false;
+        assert!(matches!(
+            cfg.validate_hygiene(),
+            Err(DomainError::AuthRejected(_))
+        ));
+        cfg.auth_mode = AuthMode::MutualTls;
+        cfg.share_store_mode = ShareStoreMode::AeadDisk;
+        assert!(matches!(
+            cfg.validate_hygiene(),
+            Err(DomainError::TeeRequired(_))
+        ));
     }
 }

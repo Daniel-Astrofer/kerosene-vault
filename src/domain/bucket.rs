@@ -112,20 +112,21 @@ impl BucketPolicy {
         let mut destination_allowlist = BTreeSet::new();
         match kind {
             BucketKind::Users => {
-                destination_allowlist.insert("bc1q-users-withdraw".into());
+                // Lab opaque tags (testnet3); real bc1 mainnet addresses are rejected by network policy.
+                destination_allowlist.insert("tb1q-users-withdraw".into());
                 destination_allowlist.insert("ln-users-withdraw".into());
             }
             BucketKind::Profit => {
                 destination_allowlist.insert("internal-profit-split".into());
             }
             BucketKind::Miners => {
-                destination_allowlist.insert("bc1q-miner-payout".into());
+                destination_allowlist.insert("tb1q-miner-payout".into());
             }
             BucketKind::Channels => {
                 destination_allowlist.insert("ln-channel-rebalance".into());
             }
             BucketKind::Infra => {
-                destination_allowlist.insert("bc1q-infra-ops".into());
+                destination_allowlist.insert("tb1q-infra-ops".into());
             }
         }
         Self {
@@ -258,7 +259,7 @@ mod tests {
         let intent = SettlementIntent::new(
             "i1",
             BucketKind::Users,
-            "bc1q-users-withdraw",
+            "tb1q-users-withdraw",
             101,
             "ph",
         )

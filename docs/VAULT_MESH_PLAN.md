@@ -7,6 +7,51 @@ Kerosene **permanece banco** (ledger de saldos, regras, produto). A mesh de vaul
 Status: rascunho de arquitetura consolidado após discussão.  
 Billing de máquinas (compra/colo vs provedor crypto) = **adiado** (pago por fora).
 
+### Princípio: produção no código, lab na visualização
+
+A implementação nasce com **contratos, hygiene e fail-closed de produção**. O lab local / testnet3 só **visualiza e exercita** o mesmo binário com flags/features de lab (`MODE=lab-visualize`) — **não** é um fork “toy” que depois se reescreve.
+
+| Ambiente | O que roda | O que é proibido |
+| --- | --- | --- |
+| **Local / lab / testnet3** | Mesmo código; `dealer_lab` + token + AEAD disk + `ATTESTATION_MODE=sim` para ver quorum/Intent/FROST | Rotular como go-live; mainnet |
+| **Production build** (`--features production`) | Sem `dealer_lab` linkado; exige mTLS mode, TEE seal path, HW attestation, DKG distributed | Dealer, static token, sim attestation, share em disco host |
+
+**Lab ≠ go-live.** Lab P0 exercita o caminho; o Production Gate (abaixo) é obrigatório antes de cerimônia / mainnet.
+
+```mermaid
+flowchart LR
+  code[Production_grade_codebase]
+  local[Local_testnet3_visualize]
+  gate[Production_Gate_checklist]
+  live[Ceremony_go_live]
+  code --> local
+  code --> gate
+  gate --> live
+```
+
+### Lab P0 vs Production Gate
+
+| Critério | Lab P0 (visualização local / testnet3) | Production Gate (obrigatório go-live) | Risco se ignorado + fonte |
+| --- | --- | --- | --- |
+| DKG | Dealer single-process (`feature = dealer_lab` **só**); banner + production **não compila** dealer | DKG distribuído multi-round over-wire (**sem** dealer) | ToB 2024: threshold manipulation |
+| Share protection | AEAD Argon2 + ChaCha20-Poly1305 + secrecy/zeroize | **TEE sealing** (SEV/SGX) desde genesis | Host compromise pós-unseal |
+| Auth kfe ↔ vault | `X-Vault-Token` / `VAULT_AUTH_MODE=static_token` (lab) | **mTLS mútuo** + cert rotation (SPIFFE-like) | Token leak → signing |
+| Attestation | Stub / measurement SHA-256 básico | **HW quote** + predicados na constituição | Supply chain / binary tamper |
+| Rotação diária | Session material stub (epoch diário no ledger; signing bind ao day-epoch) | Rotação **completa** session + **reshare policy** | Nonce reuse em escala + stale shares |
+| Anti-nonce | Determinístico + persistência local | + **replicated** anti-replay log | Key extraction (Schnorr) |
+| FROST | `frost-secp256k1` 3.x | Mesma + pin de versão auditada + **concurrent-safe** sessions | Forgery (Drijvers et al.) |
+| Bitcoin network | **testnet3** (`BITCOIN_NETWORK=testnet3`) | testnet3 até aceite; mainnet só Gate+flag | Fundos reais cedo demais |
+
+Env lab (compose / props): `BITCOIN_NETWORK=testnet3`, `VAULT_API_TOKEN` → header `X-Vault-Token`, `VAULT_DATA_PASSPHRASE`, `VAULT_DATA_DIR`, `VAULT_DKG_MODE=dealer_lab`, `VAULT_AUTH_MODE=static_token`. kfe: `kfe-service-vaultmesh-testnet3.properties` + `kfe.vaultmesh.api-token`.
+
+### Threat notes (obrigatório no threat model)
+
+1. **Nonce reuse FROST/Schnorr (crítico)** — reuso ⇒ extração algébrica de share. Lib ZF faz binding message+participants; **nossa** orquestração ainda pode errar (reusar nonces map, resign após abort, `session_id` recycle). Controles: `session_id` único persistido; nonces zeroize pós-uso; nunca resign com mesmos nonces; preferir commit bound a `session_id || message`. Detalhe operacional em §4.3.
+2. **DKG dealer / Pedersen DKG — Trail of Bits (2024)** — participante malicioso pode **aumentar o threshold silenciosamente**. Dealer single-process e DKG ingênuo são inaceitáveis em prod. Gate: DKG distribuído multi-round **com** verificações contra threshold manipulation (protocolo ZF atualizado + regressão).
+3. **FROST ZF** — auditorias NCC (2023) e Least Authority (2025); sem falhas críticas graves no resumo público, mas atenção a **DKG** e **concurrent signing**. Evitar signing paralelo inseguro na mesma key sem isolamento de sessão.
+4. **Disk AEAD ≪ TEE sealing** — Argon2+ChaCha ajuda lab; host compromise pós-unseal expõe share. Prod: seal no enclave desde genesis.
+5. **Custody threshold** — risco dominante costuma ser **coordenação, rotação e policy**, não só crypto. Rotação diária + caps + fail-stop + governance são parte do Gate, não afterthought.
+
 ---
 
 ## 1. Objetivos
@@ -386,7 +431,9 @@ Hardware-chip break = fora do lab diário (staging TEE).
 ### 13.5 Regra de higiene
 
 - Imagem **prod** não boot com `ATTESTATION_MODE=sim` nem `LAB_TIMELOCK_SCALE`.  
-- Lab pode usar council keys de teste e `p%=0`; protocolo de release/signing permanece o mesmo.
+- Lab pode usar council keys de teste e `p%=0`; protocolo de release/signing permanece o mesmo.  
+- Compose lab (`vault-mesh-lab.compose.yaml`): `BITCOIN_NETWORK=testnet3`, `VAULT_DKG_MODE=dealer_lab`, `VAULT_AUTH_MODE=static_token`, token/passphrase **lab-only**, volumes `VAULT_DATA_DIR`. **Lab ≠ go-live.**  
+- Smoke: `./backend/kerosene-vault/scripts/lab_testnet3_smoke.sh` (health + `X-Vault-Token` sign path).
 
 ---
 
@@ -678,4 +725,6 @@ Itens **não fechados** na conversa — precisam de decisão explícita:
 - Confiança = modelo + custo do ataque + teto de dano; não zero vuln.  
 - Quorum para **assinar transação** = **2/3** (`t = ⌈2n/3⌉`).  
 - **Anti-nonce-reuse** em FROST/Schnorr é requisito explícito (§4.3), não detalhe opcional.  
-- Código novo: **SOLID + Clean Architecture** (§2.1), camadas domain / application / adapters.
+- Código novo: **SOLID + Clean Architecture** (§2.1), camadas domain / application / adapters.  
+- **Lab ≠ go-live:** Lab P0 visualiza o binário de produção; Production Gate (ToB DKG, TEE seal, mTLS, HW attestation) é obrigatório antes de cerimônia.  
+- Threat notes: nonce reuse, ToB 2024 DKG threshold inflation, audits ZF (NCC/Least Authority), disk AEAD ≪ TEE.
