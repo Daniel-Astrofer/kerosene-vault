@@ -4,14 +4,17 @@
 //! without a quorum `advance` → stale rejection (no silent auto-roll).
 //!
 //! `day_epoch` is persisted under `VAULT_DATA_DIR` so restarts resume the same
-//! ledger day. Peers gossip via existing `/v1/day/vote` + `/v1/day/advance`
-//! (no vault-side calendar cron — the server asks).
+//! ledger day. Cross-node votes: authenticated outbound fan-out over the peer
+//! channel (mTLS / token) collects peer self-votes keyed by seed peer id until
+//! signing threshold; inbound `/v1/day/vote` binds voter via auth identity hooks.
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use super::http_peer::PeerHttpSettings;
+use super::tls_peer_verify::{build_mtls_rustls_client_config, TlsPeerVerifyPolicy};
 use crate::application::{ClockPort, DailyRotationPort, ReshareHookPort};
 use crate::domain::{DayEpoch, DomainError};
 
@@ -63,6 +66,172 @@ impl ReshareHookPort for RecordingReshareHook {
     }
 }
 
+/// Peer self-vote collected over an authenticated channel.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerDayVote {
+    pub voter: String,
+    pub day_epoch: DayEpoch,
+}
+
+/// Transport for authenticated outbound day-vote fan-out / exchange.
+pub trait DayVoteTransport: Send + Sync {
+    /// Fan out local vote to peers; each ACK returns that peer's self-vote for `target`
+    /// (identity = configured peer id on the authenticated channel — not client body).
+    fn exchange_with_peers(
+        &self,
+        local_voter: &str,
+        target: &DayEpoch,
+    ) -> Result<Vec<PeerDayVote>, DomainError>;
+}
+
+/// No peers — solo node.
+pub struct NoopDayVoteTransport;
+
+impl DayVoteTransport for NoopDayVoteTransport {
+    fn exchange_with_peers(
+        &self,
+        _local_voter: &str,
+        _target: &DayEpoch,
+    ) -> Result<Vec<PeerDayVote>, DomainError> {
+        Ok(vec![])
+    }
+}
+
+/// HTTP exchange: POST `/v1/day/vote` on each peer with `X-Vault-Node-Id`.
+pub struct HttpDayVoteTransport {
+    /// (peer_node_id, vote_url)
+    peers: Vec<(String, String)>,
+    auth_token: Option<String>,
+    peer_http: PeerHttpSettings,
+    tls: Option<rustls::ClientConfig>,
+}
+
+impl HttpDayVoteTransport {
+    pub fn with_peer_http(
+        peers: Vec<(String, String)>,
+        auth_token: Option<String>,
+        peer_http: PeerHttpSettings,
+    ) -> Self {
+        Self {
+            peers,
+            auth_token,
+            peer_http,
+            tls: None,
+        }
+    }
+
+    pub fn with_mtls(
+        peers: Vec<(String, String)>,
+        peer_http: PeerHttpSettings,
+        client_cert_path: &Path,
+        client_key_path: &Path,
+        ca_path: &Path,
+        verify: &TlsPeerVerifyPolicy,
+    ) -> Result<Self, DomainError> {
+        let tls = build_mtls_rustls_client_config(
+            client_cert_path,
+            client_key_path,
+            ca_path,
+            verify,
+        )?;
+        Ok(Self {
+            peers,
+            auth_token: None,
+            peer_http,
+            tls: Some(tls),
+        })
+    }
+
+    fn build_blocking_client(&self) -> Result<reqwest::blocking::Client, DomainError> {
+        let mut builder = self
+            .peer_http
+            .apply_blocking_builder(reqwest::blocking::Client::builder())?;
+        if let Some(tls) = self.tls.clone() {
+            builder = builder.use_preconfigured_tls(tls);
+        }
+        builder
+            .build()
+            .map_err(|e| DomainError::ThresholdError(format!("day-vote http client: {e}")))
+    }
+}
+
+impl DayVoteTransport for HttpDayVoteTransport {
+    fn exchange_with_peers(
+        &self,
+        local_voter: &str,
+        target: &DayEpoch,
+    ) -> Result<Vec<PeerDayVote>, DomainError> {
+        let mut out = Vec::with_capacity(self.peers.len());
+        if self.peers.is_empty() {
+            return Ok(out);
+        }
+        let client = self.build_blocking_client()?;
+        let body = serde_json::json!({
+            "day_epoch": target.as_str(),
+            "voter": local_voter,
+        })
+        .to_string();
+        for (peer_id, url) in &self.peers {
+            let attempts = self.peer_http.max_retries.max(1);
+            let mut got = None;
+            for attempt in 0..attempts {
+                let mut req = client
+                    .post(url)
+                    .header("Content-Type", "application/json")
+                    .header("X-Vault-Node-Id", local_voter)
+                    .body(body.clone());
+                if let Some(token) = self.auth_token.as_deref() {
+                    req = req.header("X-Vault-Token", token);
+                }
+                match req.send() {
+                    Ok(resp) if resp.status().is_success() => {
+                        let text = resp.text().unwrap_or_default();
+                        // Peer identity is the configured seed id we contacted (auth channel).
+                        // Prefer peer's reported self vote from response when present.
+                        let peer_day = parse_peer_self_day(&text).unwrap_or_else(|| target.clone());
+                        got = Some(PeerDayVote {
+                            voter: peer_id.clone(),
+                            day_epoch: peer_day,
+                        });
+                        break;
+                    }
+                    Ok(resp) => {
+                        if !PeerHttpSettings::should_retry_status(resp.status())
+                            || attempt + 1 >= attempts
+                        {
+                            break;
+                        }
+                        std::thread::sleep(self.peer_http.backoff_delay(attempt));
+                    }
+                    Err(_) => {
+                        if attempt + 1 >= attempts {
+                            break;
+                        }
+                        std::thread::sleep(self.peer_http.backoff_delay(attempt));
+                    }
+                }
+            }
+            if let Some(v) = got {
+                out.push(v);
+            }
+        }
+        Ok(out)
+    }
+}
+
+fn parse_peer_self_day(body: &str) -> Option<DayEpoch> {
+    #[derive(serde::Deserialize)]
+    struct VoteResp {
+        #[serde(default)]
+        self_day_epoch: Option<String>,
+        #[serde(default)]
+        day_epoch: Option<String>,
+    }
+    let r = serde_json::from_str::<VoteResp>(body).ok()?;
+    let raw = r.self_day_epoch.or(r.day_epoch)?;
+    DayEpoch::parse(raw).ok()
+}
+
 /// Quorum-gated daily rotation (Gate path beyond the pure calendar stub).
 pub struct QuorumDailyRotation {
     clock: Arc<dyn ClockPort>,
@@ -72,6 +241,7 @@ pub struct QuorumDailyRotation {
     local_voter: String,
     reshare: Arc<dyn ReshareHookPort>,
     persist_path: Option<PathBuf>,
+    transport: Arc<dyn DayVoteTransport>,
 }
 
 impl QuorumDailyRotation {
@@ -81,7 +251,14 @@ impl QuorumDailyRotation {
         local_voter: impl Into<String>,
         reshare: Arc<dyn ReshareHookPort>,
     ) -> Self {
-        Self::with_persist_path(clock, quorum_t, local_voter, reshare, None)
+        Self::with_persist_path(
+            clock,
+            quorum_t,
+            local_voter,
+            reshare,
+            None,
+            Arc::new(NoopDayVoteTransport),
+        )
     }
 
     /// Load `day_epoch` from `path` on boot (if present); persist on every advance.
@@ -98,7 +275,36 @@ impl QuorumDailyRotation {
             local_voter,
             reshare,
             Some(path.into()),
+            Arc::new(NoopDayVoteTransport),
         )
+    }
+
+    pub fn with_persist_and_transport(
+        clock: Arc<dyn ClockPort>,
+        quorum_t: usize,
+        local_voter: impl Into<String>,
+        reshare: Arc<dyn ReshareHookPort>,
+        path: impl Into<PathBuf>,
+        transport: Arc<dyn DayVoteTransport>,
+    ) -> Self {
+        Self::with_persist_path(
+            clock,
+            quorum_t,
+            local_voter,
+            reshare,
+            Some(path.into()),
+            transport,
+        )
+    }
+
+    pub fn with_transport(
+        clock: Arc<dyn ClockPort>,
+        quorum_t: usize,
+        local_voter: impl Into<String>,
+        reshare: Arc<dyn ReshareHookPort>,
+        transport: Arc<dyn DayVoteTransport>,
+    ) -> Self {
+        Self::with_persist_path(clock, quorum_t, local_voter, reshare, None, transport)
     }
 
     fn with_persist_path(
@@ -107,6 +313,7 @@ impl QuorumDailyRotation {
         local_voter: impl Into<String>,
         reshare: Arc<dyn ReshareHookPort>,
         persist_path: Option<PathBuf>,
+        transport: Arc<dyn DayVoteTransport>,
     ) -> Self {
         let from_clock = DayEpoch::from_unix_secs(clock.unix_now_secs());
         let current = match persist_path.as_ref() {
@@ -121,7 +328,22 @@ impl QuorumDailyRotation {
             local_voter: local_voter.into(),
             reshare,
             persist_path,
+            transport,
         }
+    }
+
+    pub fn quorum_t(&self) -> usize {
+        self.quorum_t
+    }
+
+    pub fn local_voter(&self) -> &str {
+        &self.local_voter
+    }
+
+    /// Current in-memory vote map snapshot (tests / observability).
+    pub fn vote_count_for(&self, target: &DayEpoch) -> usize {
+        let votes = self.votes.lock().expect("day votes");
+        votes.values().filter(|e| *e == target).count()
     }
 
     fn write_persist(&self, epoch: &DayEpoch) -> Result<(), DomainError> {
@@ -175,6 +397,14 @@ impl DailyRotationPort for QuorumDailyRotation {
     fn advance(&self) -> Result<DayEpoch, DomainError> {
         let live = DayEpoch::from_unix_secs(self.clock.unix_now_secs());
         self.record_vote(&self.local_voter, &live)?;
+
+        // Authenticated outbound fan-out: collect peer self-votes (fail-closed toward quorum).
+        let peer_votes = self
+            .transport
+            .exchange_with_peers(&self.local_voter, &live)?;
+        for pv in &peer_votes {
+            self.record_vote(&pv.voter, &pv.day_epoch)?;
+        }
 
         let have = {
             let votes = self.votes.lock().expect("day votes");
@@ -277,6 +507,39 @@ impl DailyRotationPort for LedgerDayEpochStub {
     }
 }
 
+/// In-memory multi-node day vote exchange for tests.
+pub struct MemoryDayVoteTransport {
+    /// peer_id → shared rotation so we can record remote votes + peer self-vote.
+    peers: Vec<(String, Arc<QuorumDailyRotation>)>,
+}
+
+impl MemoryDayVoteTransport {
+    pub fn new(peers: Vec<(String, Arc<QuorumDailyRotation>)>) -> Self {
+        Self { peers }
+    }
+}
+
+impl DayVoteTransport for MemoryDayVoteTransport {
+    fn exchange_with_peers(
+        &self,
+        local_voter: &str,
+        target: &DayEpoch,
+    ) -> Result<Vec<PeerDayVote>, DomainError> {
+        let mut out = Vec::with_capacity(self.peers.len());
+        for (peer_id, rot) in &self.peers {
+            // Record our vote on the peer (authenticated channel = known peer map).
+            rot.record_vote(local_voter, target)?;
+            // Peer auto-records its own self-vote for the live target when exchanging.
+            rot.record_vote(peer_id, target)?;
+            out.push(PeerDayVote {
+                voter: peer_id.clone(),
+                day_epoch: target.clone(),
+            });
+        }
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -324,7 +587,7 @@ mod tests {
             Err(DomainError::DayEpochStale { .. })
         ));
 
-        // One vote insufficient.
+        // One vote insufficient (no peer transport).
         assert!(matches!(
             rot.advance(),
             Err(DomainError::QuorumNotMet { have: 1, need: 2 })
@@ -375,5 +638,51 @@ mod tests {
             path,
         );
         assert_eq!(rot2.current_day_epoch().unwrap().as_str(), "2024-01-02");
+    }
+
+    #[test]
+    fn cross_node_fanout_reaches_signing_threshold() {
+        let clock = Arc::new(FakeClock(AtomicU64::new(1_704_067_200 + 86_400)));
+        let hook = Arc::new(RecordingReshareHook::new());
+        // Build peer rotations first (t=2 each), then wire memory transport.
+        let v2 = Arc::new(QuorumDailyRotation::new(
+            clock.clone(),
+            2,
+            "v2",
+            Arc::new(NoopReshareHook),
+        ));
+        let v3 = Arc::new(QuorumDailyRotation::new(
+            clock.clone(),
+            2,
+            "v3",
+            Arc::new(NoopReshareHook),
+        ));
+        let transport = Arc::new(MemoryDayVoteTransport::new(vec![
+            ("v2".into(), v2.clone()),
+            ("v3".into(), v3.clone()),
+        ]));
+        let v1 = QuorumDailyRotation::with_transport(
+            clock.clone(),
+            2, // signing threshold for n=3
+            "v1",
+            hook.clone(),
+            transport,
+        );
+        let next = v1.advance().unwrap();
+        assert_eq!(next.as_str(), "2024-01-02");
+        assert!(v1.vote_count_for(&next) >= 2);
+        // Peers recorded v1's vote via fan-out.
+        assert_eq!(v2.vote_count_for(&next), 2); // v1 + v2 self
+    }
+
+    #[test]
+    fn cross_node_fails_closed_when_peers_unreachable() {
+        let clock = Arc::new(FakeClock(AtomicU64::new(1_704_067_200 + 86_400)));
+        // peer_count implied by t=2 with noop transport → only local vote.
+        let rot = QuorumDailyRotation::new(clock, 2, "v1", Arc::new(NoopReshareHook));
+        assert!(matches!(
+            rot.advance(),
+            Err(DomainError::QuorumNotMet { have: 1, need: 2 })
+        ));
     }
 }

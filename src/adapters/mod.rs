@@ -2,6 +2,7 @@
 
 mod attestation_sim;
 mod attestation_tee;
+mod auth_identity;
 mod auth_mtls;
 mod auth_static;
 mod bucket_memory;
@@ -17,6 +18,7 @@ mod frost_sign;
 mod frost_tr_bitcoin;
 mod http;
 mod http_peer;
+mod intent_consume;
 mod ledger_memory;
 mod peer_memory;
 mod release_memory;
@@ -29,12 +31,14 @@ mod tls_peer_verify;
 
 pub use attestation_sim::SimAttestationAdapter;
 pub use attestation_tee::TeeAttestationAdapter;
+pub use auth_identity::{mesh_allowed_node_ids, resolve_mesh_caller_identity};
 pub use auth_mtls::{build_mtls_server_config, MutualTlsAuthAdapter};
 pub use auth_static::StaticTokenAuthAdapter;
 pub use bucket_memory::{InMemoryBucketLedger, PersistedBucketLedger};
 pub use clock::SystemClock;
 pub use daily_rotation::{
-    LedgerDayEpochStub, NoopReshareHook, QuorumDailyRotation, RecordingReshareHook,
+    DayVoteTransport, HttpDayVoteTransport, LedgerDayEpochStub, MemoryDayVoteTransport,
+    NoopDayVoteTransport, NoopReshareHook, PeerDayVote, QuorumDailyRotation, RecordingReshareHook,
 };
 pub use dkg_distributed::{DistributedDkgAdapter, FrostDistributedBundle};
 pub use dkg_wire::{
@@ -57,6 +61,10 @@ pub use frost_tr_bitcoin::generate_tr_dealer;
 pub use http::{build_router, AppState};
 pub use http_peer::{
     peer_addr_is_onion, post_json_with_retry, PeerHttpSettings, VaultTransport,
+};
+pub use intent_consume::{
+    HttpIntentConsumeTransport, IntentConsumeQuorumTransport, IntentPrepareAck,
+    MemoryIntentConsumeTransport, QuorumBucketLedger,
 };
 pub use ledger_memory::InMemoryLedger;
 pub use peer_memory::InMemoryPeerDirectory;

@@ -4,9 +4,10 @@ use std::sync::Arc;
 use crate::adapters::{
     build_tpm_seal_port, resolve_aead_passphrase, AeadDiskShareStore, DistributedDkgAdapter,
     DistributedWireDkgPort, FrostShareSlot, FrostShareState, FrostSignOrchestrator,
-    FrostTrBitcoinOrchestrator, FrostTrShareSlot, HttpAntiNonceTransport, InMemoryEconomy,
-    InMemoryLedger, InMemoryPeerDirectory, InMemoryReleaseMesh, MutualTlsAuthAdapter,
-    PersistedBucketLedger, PolicyReshareHook, QuorumAntiNonce, QuorumDailyRotation, SharedAntiNonce,
+    FrostTrBitcoinOrchestrator, FrostTrShareSlot, HttpAntiNonceTransport, HttpDayVoteTransport,
+    HttpIntentConsumeTransport, InMemoryEconomy, InMemoryLedger, InMemoryPeerDirectory,
+    InMemoryReleaseMesh, MutualTlsAuthAdapter, NoopDayVoteTransport, PersistedBucketLedger,
+    PolicyReshareHook, QuorumAntiNonce, QuorumBucketLedger, QuorumDailyRotation, SharedAntiNonce,
     SimAttestationAdapter, StaticTokenAuthAdapter, SystemClock, TeeAttestationAdapter,
     TeeSealAdapter, ThresholdVaultState, WireDkgHub, WireDkgPeerAuth,
 };
@@ -53,7 +54,7 @@ pub struct VaultRuntime {
     pub threshold: Arc<ThresholdVaultState>,
     pub online: Arc<StaticOnlineCount>,
     pub release_mesh: Arc<InMemoryReleaseMesh>,
-    pub buckets: Arc<PersistedBucketLedger>,
+    pub buckets: Arc<QuorumBucketLedger>,
     pub economy: Arc<InMemoryEconomy>,
     pub auth: Arc<dyn VaultAuthPort>,
     pub share_store: Arc<dyn ShareStorePort>,
@@ -121,10 +122,10 @@ impl VaultRuntime {
         let max_tx = constitution.max_withdraw_per_tx_sats;
         let max_day = constitution.max_withdraw_per_day_sats;
         let t = constitution.signing_t;
-        // Day-advance votes are bound to this vault's authenticated identity only
-        // (no client-spoofed peer voters under shared auth). Mesh day sync = kfe
-        // asks each vault to self-vote + advance; local quorum is t=1.
-        let rotation_quorum = 1usize;
+        // Day-advance quorum = signing threshold. Solo (no seed peers) stays t=1.
+        // Cross-node votes collected via authenticated outbound fan-out.
+        let peer_n = config.seed_peers.len();
+        let rotation_quorum = if peer_n == 0 { 1usize } else { t };
         let dkg_set = active_set.clone();
         let ledger = Arc::new(InMemoryLedger::genesis(
             constitution,
@@ -216,18 +217,17 @@ impl VaultRuntime {
         };
 
         let data_root = config.effective_data_dir();
-        let buckets = Arc::new(PersistedBucketLedger::open(
+        let local_buckets = Arc::new(PersistedBucketLedger::open(
             data_root.join("consumed_intents.log"),
             max_tx,
             max_day,
         )?);
         if !config.users_destination_allowlist.is_empty() {
-            buckets.admit_destinations(
+            local_buckets.admit_destinations(
                 crate::domain::BucketKind::Users,
                 config.users_destination_allowlist.clone(),
             )?;
         }
-        let bucket_port: Arc<dyn crate::application::BucketLedgerPort> = buckets.clone();
         let share_store: Arc<dyn ShareStorePort> = match config.share_store_mode {
             ShareStoreMode::AeadDisk => {
                 if config.share_tpm_seal {
@@ -346,9 +346,9 @@ impl VaultRuntime {
             .effective_vault_token()
             .unwrap_or("kerosene-vault-lab-only")
             .to_string();
-        let mut peer_prepare = Vec::new();
+        let mut peer_bases: Vec<(String, String)> = Vec::new();
         let mtls = matches!(config.auth_mode, AuthMode::MutualTls);
-        for (_, addr) in &config.seed_peers {
+        for (id, addr) in &config.seed_peers {
             let base = if addr.starts_with("http://") || addr.starts_with("https://") {
                 if mtls && addr.starts_with("http://") {
                     format!("https://{}", addr.trim_start_matches("http://"))
@@ -360,18 +360,31 @@ impl VaultRuntime {
             } else {
                 format!("http://{addr}")
             };
-            peer_prepare.push(format!("{base}/v1/anti-nonce/prepare"));
+            peer_bases.push((id.clone(), base));
         }
         // Lab static_token: send X-Vault-Token. mTLS mode: omit token (peer identity is TLS).
         let peer_auth_token = match config.auth_mode {
             AuthMode::StaticToken => Some(wire_token.clone()),
             AuthMode::MutualTls => None,
         };
-        let peer_count = peer_prepare.len();
+        let peer_count = peer_bases.len();
+        let peer_prepare: Vec<String> = peer_bases
+            .iter()
+            .map(|(_, b)| format!("{b}/v1/anti-nonce/prepare"))
+            .collect();
+        let intent_prepare: Vec<String> = peer_bases
+            .iter()
+            .map(|(_, b)| format!("{b}/v1/intent/consume/prepare"))
+            .collect();
+        let day_vote_peers: Vec<(String, String)> = peer_bases
+            .iter()
+            .map(|(id, b)| (id.clone(), format!("{b}/v1/day/vote")))
+            .collect();
+
         let anti_transport = match config.auth_mode {
             AuthMode::StaticToken => Arc::new(HttpAntiNonceTransport::with_peer_http(
                 peer_prepare,
-                peer_auth_token,
+                peer_auth_token.clone(),
                 config.peer_http.clone(),
             )),
             AuthMode::MutualTls => {
@@ -391,6 +404,34 @@ impl VaultRuntime {
             anti_transport,
             peer_count,
         )?);
+
+        let intent_transport: Arc<dyn crate::adapters::IntentConsumeQuorumTransport> =
+            match config.auth_mode {
+                AuthMode::StaticToken => Arc::new(HttpIntentConsumeTransport::with_peer_http(
+                    intent_prepare,
+                    peer_auth_token.clone(),
+                    config.peer_http.clone(),
+                )),
+                AuthMode::MutualTls => {
+                    let (cert, key, ca) = config.require_mtls_client_identity()?;
+                    Arc::new(HttpIntentConsumeTransport::with_mtls(
+                        intent_prepare,
+                        config.peer_http.clone(),
+                        std::path::Path::new(cert),
+                        std::path::Path::new(key),
+                        std::path::Path::new(ca),
+                        &config.tls_verify_policy,
+                    )?)
+                }
+            };
+        // Fail-closed when peers configured (incl. hardened): quorum prepare before authorize.
+        let buckets = Arc::new(QuorumBucketLedger::from_local(
+            local_buckets,
+            intent_transport,
+            peer_count,
+        ));
+        let bucket_port: Arc<dyn crate::application::BucketLedgerPort> = buckets.clone();
+
         let frost_shares = Arc::new(FrostShareSlot::new());
         let frost_tr_shares = Arc::new(FrostTrShareSlot::new());
         let reshare_hook: Arc<dyn ReshareHookPort> = Arc::new(
@@ -404,13 +445,39 @@ impl VaultRuntime {
             .with_share_store(share_store.clone())
             .with_governance(accrue_governance.clone()),
         );
-        let daily_rotation: Arc<dyn DailyRotationPort> = Arc::new(QuorumDailyRotation::with_persist(
-            clock.clone(),
-            rotation_quorum,
-            config.node_id.as_str(),
-            reshare_hook.clone(),
-            data_root.join("day_epoch"),
-        ));
+
+        let day_vote_transport: Arc<dyn crate::adapters::DayVoteTransport> =
+            if peer_count == 0 {
+                Arc::new(NoopDayVoteTransport)
+            } else {
+                match config.auth_mode {
+                    AuthMode::StaticToken => Arc::new(HttpDayVoteTransport::with_peer_http(
+                        day_vote_peers,
+                        peer_auth_token,
+                        config.peer_http.clone(),
+                    )),
+                    AuthMode::MutualTls => {
+                        let (cert, key, ca) = config.require_mtls_client_identity()?;
+                        Arc::new(HttpDayVoteTransport::with_mtls(
+                            day_vote_peers,
+                            config.peer_http.clone(),
+                            std::path::Path::new(cert),
+                            std::path::Path::new(key),
+                            std::path::Path::new(ca),
+                            &config.tls_verify_policy,
+                        )?)
+                    }
+                }
+            };
+        let daily_rotation: Arc<dyn DailyRotationPort> =
+            Arc::new(QuorumDailyRotation::with_persist_and_transport(
+                clock.clone(),
+                rotation_quorum,
+                config.node_id.as_str(),
+                reshare_hook.clone(),
+                data_root.join("day_epoch"),
+                day_vote_transport,
+            ));
 
         // Wire DKG fan-out only to seated peers (not waiting-set seeds cut by tier).
         let mut peer_addrs = BTreeMap::new();

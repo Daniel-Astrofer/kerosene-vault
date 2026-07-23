@@ -10,13 +10,13 @@ use crate::domain::{BucketKind, BucketPolicy, DomainError};
 /// In-memory per-bucket spend + policies (lab). Consumed intent ids are tracked
 /// under a single mutex; prefer [`PersistedBucketLedger`] for durable replay safety.
 pub struct InMemoryBucketLedger {
-    inner: Mutex<BucketState>,
+    pub(crate) inner: Mutex<BucketState>,
 }
 
-struct BucketState {
-    policies: HashMap<BucketKind, BucketPolicy>,
-    spent_today: HashMap<BucketKind, u64>,
-    consumed: HashSet<String>,
+pub(crate) struct BucketState {
+    pub(crate) policies: HashMap<BucketKind, BucketPolicy>,
+    pub(crate) spent_today: HashMap<BucketKind, u64>,
+    pub(crate) consumed: HashSet<String>,
 }
 
 impl InMemoryBucketLedger {
@@ -135,7 +135,7 @@ impl BucketLedgerPort for InMemoryBucketLedger {
 /// via [`BucketLedgerPort::authorize_spend_and_consume`].
 pub struct PersistedBucketLedger {
     path: PathBuf,
-    inner: InMemoryBucketLedger,
+    pub(crate) inner: InMemoryBucketLedger,
 }
 
 impl PersistedBucketLedger {
@@ -176,6 +176,22 @@ impl PersistedBucketLedger {
         file.sync_all()
             .map_err(|e| DomainError::ThresholdError(format!("intent-consume sync: {e}")))?;
         Ok(())
+    }
+
+    /// Durable check-and-insert for peer prepare. Returns `true` if already present.
+    pub fn prepare_consume(&self, intent_id: &str) -> Result<bool, DomainError> {
+        let g = self.inner.inner.lock().expect("bucket lock");
+        if g.consumed.contains(intent_id) {
+            return Ok(true);
+        }
+        drop(g);
+        self.append_consumed(intent_id)?;
+        let mut g = self.inner.inner.lock().expect("bucket lock");
+        if g.consumed.contains(intent_id) {
+            return Ok(true);
+        }
+        g.consumed.insert(intent_id.to_string());
+        Ok(false)
     }
 }
 

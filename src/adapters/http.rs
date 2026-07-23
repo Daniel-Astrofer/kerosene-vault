@@ -42,6 +42,7 @@ pub fn build_router(runtime: Arc<VaultRuntime>) -> Router {
         .route("/v1/anti-nonce/prepare", post(v1_anti_nonce_prepare))
         // Legacy alias — same durable prepare semantics as `/prepare`.
         .route("/v1/anti-nonce/ingest", post(v1_anti_nonce_prepare))
+        .route("/v1/intent/consume/prepare", post(v1_intent_consume_prepare))
         .route("/v1/day/advance", post(v1_day_advance))
         .route("/v1/day/vote", post(v1_day_vote))
         .route("/v1/day/current", get(v1_day_current))
@@ -314,6 +315,29 @@ async fn v1_anti_nonce_prepare(State(state): State<AppState>, body: Bytes) -> im
     }
 }
 
+async fn v1_intent_consume_prepare(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    #[derive(serde::Deserialize)]
+    struct PrepareBody {
+        intent_id: String,
+    }
+    let req: PrepareBody = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!(r#"{{"error":"invalid json: {e}"}}"#),
+            )
+        }
+    };
+    match state.runtime.buckets.prepare_remote(&req.intent_id) {
+        Ok(already_seen) => (
+            StatusCode::OK,
+            format!(r#"{{"ok":true,"already_seen":{already_seen}}}"#),
+        ),
+        Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+    }
+}
+
 async fn v1_day_current(State(state): State<AppState>) -> impl IntoResponse {
     match state.runtime.daily_rotation.current_day_epoch() {
         Ok(d) => (
@@ -324,7 +348,11 @@ async fn v1_day_current(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
-async fn v1_day_vote(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+async fn v1_day_vote(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> impl IntoResponse {
     #[derive(serde::Deserialize)]
     struct VoteBody {
         /// Optional; if present must match authenticated vault identity (no client spoofing).
@@ -347,9 +375,29 @@ async fn v1_day_vote(State(state): State<AppState>, body: Bytes) -> impl IntoRes
             return (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#))
         }
     };
-    // Derive voter from authenticated vault identity (node id bound to this process /
-    // mTLS token binding). Never trust a free-form client-supplied peer id under shared auth.
-    let voter = match bind_day_voter(state.runtime.config.node_id.as_str(), req.voter.as_deref()) {
+    let header_node = headers
+        .get("X-Vault-Node-Id")
+        .and_then(|v| v.to_str().ok());
+    // Optional hook: when a future mTLS layer maps client cert → node id, plumb it here.
+    let mtls_peer_hook = headers
+        .get("X-Vault-Mtls-Peer-Node")
+        .and_then(|v| v.to_str().ok());
+    let allowed = crate::adapters::mesh_allowed_node_ids(
+        state.runtime.config.node_id.as_str(),
+        state
+            .runtime
+            .config
+            .seed_peers
+            .iter()
+            .map(|(id, _)| id.as_str()),
+    );
+    let voter = match crate::adapters::resolve_mesh_caller_identity(
+        state.runtime.config.node_id.as_str(),
+        &allowed,
+        header_node,
+        req.voter.as_deref(),
+        mtls_peer_hook,
+    ) {
         Ok(v) => v,
         Err(e) => {
             return (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#))
@@ -358,52 +406,14 @@ async fn v1_day_vote(State(state): State<AppState>, body: Bytes) -> impl IntoRes
     match state.runtime.daily_rotation.record_vote(&voter, &target) {
         Ok(()) => (
             StatusCode::OK,
-            format!(r#"{{"ok":true,"voter":"{}"}}"#, voter),
+            format!(
+                r#"{{"ok":true,"voter":"{}","self_voter":"{}","self_day_epoch":"{}"}}"#,
+                voter,
+                state.runtime.config.node_id.as_str(),
+                target.as_str()
+            ),
         ),
         Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
-    }
-}
-
-/// Authenticated day-vote identity: this vault's `VAULT_NODE_ID`.
-/// Optional body claim must match; mismatch → reject (anti-spoof).
-fn bind_day_voter(
-    identity: &str,
-    claimed: Option<&str>,
-) -> Result<String, crate::domain::DomainError> {
-    if let Some(raw) = claimed.map(str::trim).filter(|s| !s.is_empty()) {
-        if raw != identity {
-            return Err(crate::domain::DomainError::AuthRejected(format!(
-                "voter {raw} does not match authenticated vault identity {identity}"
-            )));
-        }
-    }
-    Ok(identity.to_string())
-}
-
-#[cfg(test)]
-mod day_vote_tests {
-    use super::bind_day_voter;
-    use crate::domain::DomainError;
-
-    #[test]
-    fn derives_local_identity_when_voter_omitted() {
-        assert_eq!(bind_day_voter("vault-1", None).unwrap(), "vault-1");
-        assert_eq!(bind_day_voter("vault-1", Some("")).unwrap(), "vault-1");
-    }
-
-    #[test]
-    fn accepts_matching_claimed_voter() {
-        assert_eq!(
-            bind_day_voter("vault-2", Some("vault-2")).unwrap(),
-            "vault-2"
-        );
-    }
-
-    #[test]
-    fn rejects_spoofed_peer_voter() {
-        let err = bind_day_voter("vault-1", Some("vault-2")).unwrap_err();
-        assert!(matches!(err, DomainError::AuthRejected(_)));
-        assert!(err.to_string().contains("does not match"));
     }
 }
 
