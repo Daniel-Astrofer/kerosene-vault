@@ -92,6 +92,7 @@ fn sim_forbidden_when_refuse_sim() {
         attestation_staging_stub: false,
         ceremony_mode: kerosene_vault::bootstrap::CeremonyMode::Lab,
         open_economy: false,
+        miner_payout_cadence: kerosene_vault::domain::MinerPayoutCadence::Manual,
         bitcoin_network: kerosene_vault::domain::BitcoinNetwork::Testnet3,
         auth_mode: kerosene_vault::bootstrap::AuthMode::MutualTls,
         vault_token: None,

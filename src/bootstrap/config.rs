@@ -1289,6 +1289,9 @@ mod tests {
         cfg.auth_mode = AuthMode::MutualTls;
         cfg = with_mtls_paths(cfg);
         cfg.share_store_mode = ShareStoreMode::AeadDisk;
+        // Production hygiene checks audit key allowlist first; ensure it's non-empty
+        // so we hit the `TeeRequired` branch asserted below.
+        cfg.audit_key_allowlist = MeshAuditKeyAllowlist::from_hex_list(["aa"]);
         assert!(matches!(
             cfg.validate_hygiene(),
             Err(DomainError::TeeRequired(_))

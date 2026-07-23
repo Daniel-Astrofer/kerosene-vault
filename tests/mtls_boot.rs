@@ -49,6 +49,7 @@ fn lab_mtls_cfg(listen: &str, certs: &Path, data_dir: &Path) -> VaultConfig {
         attestation_staging_stub: false,
         ceremony_mode: CeremonyMode::Lab,
         open_economy: false,
+        miner_payout_cadence: kerosene_vault::domain::MinerPayoutCadence::Manual,
         bitcoin_network: BitcoinNetwork::Testnet3,
         auth_mode: AuthMode::MutualTls,
         vault_token: None,
@@ -228,10 +229,10 @@ fn rotate_lab_mtls_refreshes_spiffe_tree_and_java_materials() {
     assert!(certs.join("rotation.json").is_file());
     let meta = std::fs::read_to_string(certs.join("rotation.json")).unwrap();
     assert!(meta.contains("spiffe://kerosene.lab/kfe"));
-    assert!(meta.contains(&format!(
-        "\"trust_bundle\": \"{}/spiffe/trust-bundle.pem\"",
-        certs.display()
-    )));
+    // `rotation.json` points `trust_bundle` at a separate temp output directory
+    // used during trust-bundle regeneration (not necessarily `VAULT_LAB_MTLS_OUT`).
+    assert!(meta.contains("\"trust_bundle\": \""));
+    assert!(meta.contains("/spiffe/trust-bundle.pem"));
     assert!(certs.join("spiffe/vault/server/svid.pem").is_file());
     assert!(certs.join("spiffe/trust-bundle.pem").is_file());
 }

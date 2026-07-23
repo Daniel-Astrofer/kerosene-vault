@@ -3,8 +3,17 @@
 use kerosene_vault::bootstrap::{AuthMode, CeremonyMode, DkgMode, ShareStoreMode, VaultConfig, VaultRuntime};
 use kerosene_vault::domain::{AttestationMode, BitcoinNetwork, NodeId, ResharePolicy, VaultNodeTier};
 use std::collections::BTreeMap;
+use std::fs;
 
 fn base_lab() -> VaultConfig {
+    // The runtime persists a share-store to `data_dir`; ensure it exists to avoid
+    // filesystem rename failures on fresh test runs.
+    let unique = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    let data_dir = std::env::temp_dir().join(format!("kerosene-vault-test-data-{}-{}", std::process::id(), unique));
+    let _ = fs::create_dir_all(&data_dir);
     VaultConfig {
         node_id: NodeId::new("vault-home").unwrap(),
         node_tier: VaultNodeTier::Domestic,
@@ -32,6 +41,7 @@ fn base_lab() -> VaultConfig {
         attestation_staging_stub: false,
         ceremony_mode: CeremonyMode::Lab,
         open_economy: false,
+        miner_payout_cadence: kerosene_vault::domain::MinerPayoutCadence::Manual,
         bitcoin_network: BitcoinNetwork::Testnet3,
         auth_mode: AuthMode::StaticToken,
         vault_token: Some("t".into()),
@@ -51,7 +61,7 @@ fn base_lab() -> VaultConfig {
         share_tpm_seal: false,
         share_tpm_stub: false,
         share_tpm_clear_fallback: false,
-        data_dir: None,
+        // set below from unique test dir
         anti_nonce_shared_dir: None,
         measurement_pin_hex: None,
         dealer_requested: false,
@@ -62,6 +72,7 @@ fn base_lab() -> VaultConfig {
         transport: kerosene_vault::adapters::VaultTransport::Clearnet,
         peer_http: kerosene_vault::adapters::PeerHttpSettings::clearnet_defaults(),
         clearnet_publish: false,
+        data_dir: Some(data_dir.display().to_string()),
     }
 }
 
