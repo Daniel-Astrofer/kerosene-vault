@@ -1,15 +1,27 @@
 #!/usr/bin/env bash
 # Lab: run over-wire FROST DKG across 3 vault peers (no dealer).
-# Expects vault-mesh-lab.compose.yaml with VAULT_DKG_MODE=distributed_wire
-# and matching VAULT_API_TOKEN on all nodes.
+# Expects vault-mesh-lab.compose.yaml with VAULT_DKG_MODE=distributed_wire.
+#
+# Auth (peer rounds):
+#   VAULT_AUTH_MODE=static_token  → X-Vault-Token (default lab)
+#   VAULT_AUTH_MODE=mtls          → HTTPS + client cert (no X-Vault-Token)
 #
 # Usage (repo root):
 #   VAULT_DKG_MODE=distributed_wire docker compose -f infra/docker/compose/vault-mesh-lab.compose.yaml up --build -d
 #   ./backend/kerosene-vault/scripts/lab_dkg_wire.sh
 #
+# mTLS lab (after ./backend/kerosene-vault/scripts/gen_lab_mtls_certs.sh):
+#   VAULT_AUTH_MODE=mtls \
+#   VAULT_TLS_CLIENT_CERT=./backend/kerosene-vault/lab-certs/vault-client.crt \
+#   VAULT_TLS_CLIENT_KEY=./backend/kerosene-vault/lab-certs/vault-client.key \
+#   VAULT_TLS_CA=./backend/kerosene-vault/lab-certs/ca.crt \
+#   VAULT1_URL=https://127.0.0.1:7701 VAULT2_URL=https://127.0.0.1:7702 VAULT3_URL=https://127.0.0.1:7703 \
+#   ./backend/kerosene-vault/scripts/lab_dkg_wire.sh
+#
 # In-process fallback (no compose peers): VAULT_DKG_MODE=distributed inside one process.
 set -euo pipefail
 
+AUTH_MODE="${VAULT_AUTH_MODE:-static_token}"
 TOKEN="${VAULT_API_TOKEN:-kerosene-vault-lab-only}"
 SESSION_ID="${VAULT_DKG_SESSION:-lab-dkg-$(date -u +%Y%m%dT%H%M%SZ)}"
 ROSTER='["vault-1","vault-2","vault-3"]'
@@ -22,17 +34,36 @@ BASES=(
   "${VAULT3_URL:-http://127.0.0.1:7703}"
 )
 
+CURL_AUTH=()
+case "$AUTH_MODE" in
+  mtls|mutual_tls)
+    CERT="${VAULT_TLS_CLIENT_CERT:-${VAULT_TLS_CLIENT_CERT_PATH:-}}"
+    KEY="${VAULT_TLS_CLIENT_KEY:-${VAULT_TLS_CLIENT_KEY_PATH:-}}"
+    CA="${VAULT_TLS_CA:-${VAULT_TLS_CLIENT_CA_PATH:-}}"
+    if [[ -z "$CERT" || -z "$KEY" || -z "$CA" ]]; then
+      echo "mTLS lab requires VAULT_TLS_CLIENT_CERT, VAULT_TLS_CLIENT_KEY, VAULT_TLS_CA" >&2
+      exit 1
+    fi
+    CURL_AUTH=(--cert "$CERT" --key "$KEY" --cacert "$CA")
+    # Host driver must not send static token (vault refuses it in mTLS mode).
+    ;;
+  static_token|*)
+    CURL_AUTH=(-H "X-Vault-Token: ${TOKEN}")
+    ;;
+esac
+
 post_json() {
   local url="$1"
   local body="$2"
   curl -fsS -X POST \
-    -H "X-Vault-Token: ${TOKEN}" \
+    "${CURL_AUTH[@]}" \
     -H "Content-Type: application/json" \
     -d "$body" \
     "$url"
 }
 
-echo "== Over-wire DKG session=$SESSION_ID (n=$MAX t=$MIN, no dealer) =="
+echo "== Over-wire DKG session=$SESSION_ID (n=$MAX t=$MIN, auth=$AUTH_MODE, no dealer) =="
+echo "   ToB: roster+threshold frozen at round1; transcript bound on wire messages"
 
 echo "-- Round1 start on each vault"
 declare -a R1_MSGS=()
@@ -46,7 +77,7 @@ EOF
   echo "  started at $base"
 done
 
-echo "-- Round1 ingest (cross-post packages)"
+echo "-- Round1 ingest (cross-post packages; rejects threshold bump / late join)"
 for base in "${BASES[@]}"; do
   for msg in "${R1_MSGS[@]}"; do
     post_json "${base}/v1/dkg/round1" "$msg" >/dev/null

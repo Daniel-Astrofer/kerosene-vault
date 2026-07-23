@@ -6,8 +6,9 @@
 //! after part3.
 //!
 //! - `VAULT_DKG_MODE=distributed` — in-process multi-party simulation (single process).
-//! - `VAULT_DKG_MODE=distributed_wire` — over-wire HTTP round exchange (`dkg_wire` +
-//!   `/v1/dkg/round{1,2,3}`); each vault holds only its own share after protocol.
+//! - `VAULT_DKG_MODE=distributed_wire` — over-wire HTTP(S) round exchange (`dkg_wire` +
+//!   `/v1/dkg/round{1,2,3}`); peer auth via `X-Vault-Token` or mTLS; each vault holds
+//!   only its own share after protocol. ToB: frozen roster/threshold + transcript binding.
 
 use std::collections::BTreeMap;
 
@@ -250,7 +251,7 @@ mod tests {
             bundle.pubkey_package,
             2,
             Box::new(anti),
-            Box::new(rotation),
+            Arc::new(rotation),
         );
         let r = orch.sign_lab_quorum("dkg-sess-1", b"distributed-dkg-msg").unwrap();
         assert_eq!(r.participants, 2);

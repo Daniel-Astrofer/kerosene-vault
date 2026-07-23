@@ -48,6 +48,8 @@ fn lab_mtls_cfg(listen: &str, certs: &Path, data_dir: &Path) -> VaultConfig {
         tls_cert_path: Some(certs.join("vault-server.crt").display().to_string()),
         tls_key_path: Some(certs.join("vault-server.key").display().to_string()),
         tls_client_ca_path: Some(certs.join("ca.crt").display().to_string()),
+        tls_client_cert_path: Some(certs.join("vault-client.crt").display().to_string()),
+        tls_client_key_path: Some(certs.join("vault-client.key").display().to_string()),
         share_store_mode: ShareStoreMode::AeadDisk,
         share_passphrase: Some("kerosene-vault-lab-passphrase".into()),
         data_dir: Some(data_dir.display().to_string()),
@@ -55,6 +57,7 @@ fn lab_mtls_cfg(listen: &str, certs: &Path, data_dir: &Path) -> VaultConfig {
         measurement_pin_hex: None,
         dealer_requested: true,
         dkg_mode: DkgMode::DealerLab,
+        reshare_policy: kerosene_vault::domain::ResharePolicy::Manual,
     }
 }
 

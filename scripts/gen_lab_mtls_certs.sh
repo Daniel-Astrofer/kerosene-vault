@@ -53,6 +53,9 @@ cat <<EOF
   VAULT_TLS_CERT_PATH=$OUT_DIR/vault-server.crt
   VAULT_TLS_KEY_PATH=$OUT_DIR/vault-server.key
   VAULT_TLS_CLIENT_CA_PATH=$OUT_DIR/ca.crt
+  # vault↔vault peer DKG (required when VAULT_AUTH_MODE=mtls):
+  VAULT_TLS_CLIENT_CERT_PATH=$OUT_DIR/vault-client.crt
+  VAULT_TLS_CLIENT_KEY_PATH=$OUT_DIR/vault-client.key
   # client (kfe / curl):
   #   --cert $OUT_DIR/vault-client.crt --key $OUT_DIR/vault-client.key --cacert $OUT_DIR/ca.crt
 Lab mTLS materials written to $OUT_DIR (not for go-live).

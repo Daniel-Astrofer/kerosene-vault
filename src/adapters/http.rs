@@ -41,6 +41,7 @@ pub fn build_router(runtime: Arc<VaultRuntime>) -> Router {
         .route("/v1/day/advance", post(v1_day_advance))
         .route("/v1/day/vote", post(v1_day_vote))
         .route("/v1/day/current", get(v1_day_current))
+        .route("/v1/reshare/trigger", post(v1_reshare_trigger))
         .route("/health", get(legacy_dispatch))
         .route("/ledger", get(legacy_dispatch))
         .route("/threshold", get(legacy_dispatch))
@@ -181,6 +182,29 @@ async fn v1_day_advance(State(state): State<AppState>) -> impl IntoResponse {
         Ok(d) => (
             StatusCode::OK,
             format!(r#"{{"day_epoch":"{}","advanced":true}}"#, d.as_str()),
+        ),
+        Err(e) => (StatusCode::CONFLICT, format!(r#"{{"error":"{e}"}}"#)),
+    }
+}
+
+async fn v1_reshare_trigger(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    #[derive(serde::Deserialize)]
+    struct TriggerBody {
+        #[serde(default)]
+        reason: Option<String>,
+    }
+    let reason = match serde_json::from_slice::<TriggerBody>(&body) {
+        Ok(r) => r.reason.unwrap_or_else(|| "manual".into()),
+        Err(_) => "manual".into(),
+    };
+    match state.runtime.reshare_hook.trigger_manual(&reason) {
+        Ok(()) => (
+            StatusCode::OK,
+            format!(
+                r#"{{"reshared":true,"policy":"{}","reason":"{}"}}"#,
+                state.runtime.reshare_hook.policy().as_str(),
+                reason
+            ),
         ),
         Err(e) => (StatusCode::CONFLICT, format!(r#"{{"error":"{e}"}}"#)),
     }

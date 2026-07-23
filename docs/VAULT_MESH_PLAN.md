@@ -753,5 +753,5 @@ Itens **não fechados** na conversa — precisam de decisão explícita:
 | TEE seal shares | **advanced** (HW fail-closed) | `TeeSealAdapter` `KVSEAL01` versionado; unseal só após attestation OK; lab stub só com `ATTESTATION_STAGING_STUB` (recusado sob `--features production` / cerimônia prod); feature `tee_hw` compila SEV SNP derived-key (+ SGX fail-closed até SDK enclave); CI sem HW **fail-closed** sem stub — não é go-live |
 | mTLS auth | refuse stub | `MutualTlsAuthAdapter` |
 | HW attestation | **started** (staging stub) | `TeeAttestationAdapter` + `constitution.measurement_pin` (default = hash); sim forbidden when hardened; HW real ainda fail-closed |
-| Daily rotation + reshare hook | **started** | `QuorumDailyRotation`: advance com quorum stub, rejeita day sessions stale; `ReshareHookPort` + teste |
+| Daily rotation + reshare policy | **landed** | `QuorumDailyRotation` (governance_t quorum, stale day reject on sign); `VAULT_RESHARE_POLICY=daily\|manual`; `PolicyReshareHook` + FROST `refresh_dkg` n=3; ledger `day_advanced` / `reshare_completed` |
 | Anti-nonce replicated | **landed** (quorum) | `QuorumAntiNonce`: append-only `session_id` log + HTTP `/v1/anti-nonce/prepare` ACKs (`ceil(2n/3)`); refuse if seen on ≥1 peer or before quorum; persists across restart; multi-node sim tests |
