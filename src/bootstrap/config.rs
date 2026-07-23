@@ -161,6 +161,12 @@ pub struct VaultConfig {
     pub tls_client_key_path: Option<String>,
     pub share_store_mode: ShareStoreMode,
     pub share_passphrase: Option<String>,
+    /// Wrap AEAD passphrase with TPM seal (`VAULT_SHARE_TPM_SEAL=1`). Off by default.
+    pub share_tpm_seal: bool,
+    /// Lab mock TPM seal (`VAULT_SHARE_TPM_STUB=1`); refused when hardened/production.
+    pub share_tpm_stub: bool,
+    /// Lab-only clear passphrase if TPM unavailable (`VAULT_SHARE_TPM_CLEAR_FALLBACK=1`).
+    pub share_tpm_clear_fallback: bool,
     /// Share / anti-nonce disk root (`VAULT_DATA_DIR`); lab default under `lab_root`.
     pub data_dir: Option<String>,
     /// Deprecated/ignored: anti-nonce uses quorum HTTP prepare among `VAULT_SEED_PEERS`
@@ -321,6 +327,9 @@ impl VaultConfig {
         // Lab P0: VAULT_DATA_PASSPHRASE (preferred); VAULT_SHARE_PASSPHRASE legacy alias.
         let share_passphrase =
             env_nonempty_first(&["VAULT_DATA_PASSPHRASE", "VAULT_SHARE_PASSPHRASE"]);
+        let share_tpm_seal = env_flag("VAULT_SHARE_TPM_SEAL");
+        let share_tpm_stub = env_flag("VAULT_SHARE_TPM_STUB");
+        let share_tpm_clear_fallback = env_flag("VAULT_SHARE_TPM_CLEAR_FALLBACK");
         let data_dir = env_nonempty_first(&["VAULT_DATA_DIR"]);
         let anti_nonce_shared_dir = env_nonempty_first(&["VAULT_ANTI_NONCE_SHARED_DIR"]);
         let measurement_pin_hex = env_nonempty_first(&["VAULT_MEASUREMENT_PIN"]);
@@ -430,6 +439,9 @@ impl VaultConfig {
             tls_client_key_path,
             share_store_mode,
             share_passphrase,
+            share_tpm_seal,
+            share_tpm_stub,
+            share_tpm_clear_fallback,
             data_dir,
             anti_nonce_shared_dir,
             measurement_pin_hex,
@@ -528,7 +540,50 @@ impl VaultConfig {
             self.require_mtls_paths()?;
             self.require_mtls_client_identity()?;
         }
+        self.validate_tpm_seal_hygiene()?;
         self.validate_transport_hygiene()?;
+        Ok(())
+    }
+
+    /// TPM seal optional for domestic AEAD. Stub/clear-fallback lab-only. TPM ≠ SEV.
+    pub fn validate_tpm_seal_hygiene(&self) -> Result<(), DomainError> {
+        if self.share_tpm_clear_fallback {
+            if self.hardened
+                || matches!(self.ceremony_mode, CeremonyMode::Production)
+                || cfg!(feature = "production")
+            {
+                return Err(DomainError::LabFlagForbidden(
+                    "VAULT_SHARE_TPM_CLEAR_FALLBACK".into(),
+                ));
+            }
+            if !self.share_tpm_seal {
+                return Err(DomainError::ShareStoreForbidden(
+                    "VAULT_SHARE_TPM_CLEAR_FALLBACK requires VAULT_SHARE_TPM_SEAL=1".into(),
+                ));
+            }
+        }
+        if self.share_tpm_stub {
+            if matches!(self.ceremony_mode, CeremonyMode::Production) || cfg!(feature = "production")
+            {
+                return Err(DomainError::LabFlagForbidden(
+                    "VAULT_SHARE_TPM_STUB in production ceremony".into(),
+                ));
+            }
+            if self.hardened {
+                return Err(DomainError::LabFlagForbidden("VAULT_SHARE_TPM_STUB".into()));
+            }
+            if !self.share_tpm_seal {
+                return Err(DomainError::ShareStoreForbidden(
+                    "VAULT_SHARE_TPM_STUB requires VAULT_SHARE_TPM_SEAL=1".into(),
+                ));
+            }
+        }
+        if self.share_tpm_seal && self.share_store_mode != ShareStoreMode::AeadDisk {
+            return Err(DomainError::ShareStoreForbidden(
+                "VAULT_SHARE_TPM_SEAL applies only to VAULT_SHARE_STORE=aead_disk (TEE uses tee_seal; TPM ≠ SEV)"
+                    .into(),
+            ));
+        }
         Ok(())
     }
 
@@ -767,6 +822,9 @@ mod tests {
             tls_client_key_path: None,
             share_store_mode: ShareStoreMode::AeadDisk,
             share_passphrase: Some("pass".into()),
+            share_tpm_seal: false,
+            share_tpm_stub: false,
+            share_tpm_clear_fallback: false,
             data_dir: None,
             anti_nonce_shared_dir: None,
             measurement_pin_hex: None,
@@ -1112,5 +1170,39 @@ mod tests {
                 mode
             );
         }
+    }
+
+    #[test]
+    fn lab_allows_tpm_seal_stub() {
+        let mut cfg = base();
+        cfg.share_tpm_seal = true;
+        cfg.share_tpm_stub = true;
+        assert!(cfg.validate_tpm_seal_hygiene().is_ok());
+        assert!(cfg.validate_hygiene().is_ok());
+    }
+
+    #[test]
+    fn hardened_rejects_tpm_clear_fallback() {
+        let mut cfg = base();
+        cfg.hardened = true;
+        cfg.refuse_sim = true;
+        cfg.attestation_mode = AttestationMode::Software;
+        cfg.share_tpm_seal = true;
+        cfg.share_tpm_clear_fallback = true;
+        assert!(matches!(
+            cfg.validate_tpm_seal_hygiene(),
+            Err(DomainError::LabFlagForbidden(_))
+        ));
+    }
+
+    #[test]
+    fn tpm_seal_refused_for_tee_store() {
+        let mut cfg = base();
+        cfg.share_store_mode = ShareStoreMode::TeeSeal;
+        cfg.share_tpm_seal = true;
+        assert!(matches!(
+            cfg.validate_tpm_seal_hygiene(),
+            Err(DomainError::ShareStoreForbidden(_))
+        ));
     }
 }

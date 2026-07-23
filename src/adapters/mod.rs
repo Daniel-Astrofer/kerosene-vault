@@ -23,6 +23,7 @@ mod release_memory;
 mod session_persist;
 mod share_aead;
 mod share_tee;
+mod share_tpm;
 mod threshold_state;
 
 pub use attestation_sim::SimAttestationAdapter;
@@ -65,4 +66,8 @@ pub use session_persist::{
 };
 pub use share_aead::AeadDiskShareStore;
 pub use share_tee::{TeeSealAdapter, TeeSealShareStore};
+pub use share_tpm::{
+    build_tpm_seal_port, resolve_aead_passphrase, sealed_passphrase_path, tpm_device_present,
+    ResolvedPassphrase, TpmSealAdapter, TpmSealPort,
+};
 pub use threshold_state::ThresholdVaultState;

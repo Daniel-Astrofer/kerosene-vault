@@ -2,13 +2,13 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::adapters::{
-    AeadDiskShareStore, DistributedDkgAdapter, DistributedWireDkgPort, FrostShareSlot,
-    FrostShareState, FrostSignOrchestrator, FrostTrBitcoinOrchestrator, FrostTrShareSlot,
-    HttpAntiNonceTransport, InMemoryBucketLedger, InMemoryEconomy, InMemoryLedger,
-    InMemoryPeerDirectory, InMemoryReleaseMesh, MutualTlsAuthAdapter, PolicyReshareHook,
-    QuorumAntiNonce, QuorumDailyRotation, SharedAntiNonce, SimAttestationAdapter,
-    StaticTokenAuthAdapter, SystemClock, TeeAttestationAdapter, TeeSealAdapter,
-    ThresholdVaultState, WireDkgHub, WireDkgPeerAuth,
+    build_tpm_seal_port, resolve_aead_passphrase, AeadDiskShareStore, DistributedDkgAdapter,
+    DistributedWireDkgPort, FrostShareSlot, FrostShareState, FrostSignOrchestrator,
+    FrostTrBitcoinOrchestrator, FrostTrShareSlot, HttpAntiNonceTransport, InMemoryBucketLedger,
+    InMemoryEconomy, InMemoryLedger, InMemoryPeerDirectory, InMemoryReleaseMesh,
+    MutualTlsAuthAdapter, PolicyReshareHook, QuorumAntiNonce, QuorumDailyRotation, SharedAntiNonce,
+    SimAttestationAdapter, StaticTokenAuthAdapter, SystemClock, TeeAttestationAdapter,
+    TeeSealAdapter, ThresholdVaultState, WireDkgHub, WireDkgPeerAuth,
 };
 #[cfg(feature = "dealer_lab")]
 use crate::adapters::{
@@ -218,14 +218,45 @@ impl VaultRuntime {
         let data_root = config.effective_data_dir();
         let share_store: Arc<dyn ShareStorePort> = match config.share_store_mode {
             ShareStoreMode::AeadDisk => {
-                let pass = config
-                    .share_passphrase
-                    .clone()
-                    .unwrap_or_else(|| "kerosene-vault-lab-passphrase".into());
-                Arc::new(AeadDiskShareStore::new(
-                    data_root.join("shares"),
-                    pass,
-                ))
+                if config.share_tpm_seal {
+                    let refuse_stub = config.hardened
+                        || matches!(config.ceremony_mode, CeremonyMode::Production)
+                        || cfg!(feature = "production");
+                    let tpm = build_tpm_seal_port(
+                        true,
+                        config.share_tpm_stub,
+                        refuse_stub,
+                    )?
+                    .expect("TPM seal port when VAULT_SHARE_TPM_SEAL=1");
+                    let resolved = resolve_aead_passphrase(
+                        &data_root,
+                        config.share_passphrase.as_deref(),
+                        tpm.as_ref(),
+                        config.share_tpm_clear_fallback,
+                    )?;
+                    if resolved.used_clear_fallback {
+                        eprintln!(
+                            "WARN share_tpm=clear_fallback backend={} (lab only; TPM ≠ SEV)",
+                            resolved.tpm_backend
+                        );
+                    } else {
+                        eprintln!(
+                            "share_tpm=sealed backend={} (disk-at-rest only; TPM ≠ SEV)",
+                            resolved.tpm_backend
+                        );
+                    }
+                    Arc::new(AeadDiskShareStore::with_tpm_seal(
+                        data_root.join("shares"),
+                        resolved.passphrase,
+                        !resolved.used_clear_fallback,
+                    ))
+                } else {
+                    let pass = config
+                        .share_passphrase
+                        .clone()
+                        .unwrap_or_else(|| "kerosene-vault-lab-passphrase".into());
+                    Arc::new(AeadDiskShareStore::new(data_root.join("shares"), pass))
+                }
             }
             ShareStoreMode::TeeSeal => {
                 #[cfg(feature = "production")]

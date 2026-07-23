@@ -10,6 +10,7 @@ Only config / attestation / auth differ. Dealer and `ATTESTATION_MODE=sim` are r
    - `VAULT_NODE_TIER=domestic` (or `auto` with no `/dev/sev-guest`)
    - `ATTESTATION_MODE=software`
    - `VAULT_SHARE_STORE=aead_disk`
+   - Optional TPM seal (disk-at-rest; **not** SEV): `VAULT_SHARE_TPM_SEAL=1` + real TPM, or lab mock `VAULT_SHARE_TPM_STUB=1`. Fail-closed without TPM unless lab `VAULT_SHARE_TPM_CLEAR_FALLBACK=1`.
    - `VAULT_DKG_MODE=distributed_wire`
    - `VAULT_AUTH_MODE=mtls` + TLS paths
    - `VAULT_GENESIS_N=3` + reciprocal `VAULT_SEED_PEERS`
@@ -41,3 +42,13 @@ Only config / attestation / auth differ. Dealer and `ATTESTATION_MODE=sim` are r
 **Tor runbook:** `docs/CEREMONY_TOR.md`. `deploy.sh` still starts clearnet `vault-mesh-lab` — not the Tor ceremony profile.
 
 See `VAULT_MESH_PLAN.md` §3.1.
+
+### Optional TPM seal (domestic AEAD)
+
+| Var | Meaning |
+| --- | --- |
+| `VAULT_SHARE_TPM_SEAL=1` | Seal AEAD passphrase before `AeadDiskShareStore` (off by default) |
+| `VAULT_SHARE_TPM_STUB=1` | Lab/mock TPM envelope (no HW); refused in production ceremony |
+| `VAULT_SHARE_TPM_CLEAR_FALLBACK=1` | Lab only: clear passphrase if TPM unavailable; refused when hardened |
+
+TPM binds disk-at-rest to the machine; it does **not** isolate share RAM after unseal (unlike SEV-SNP).

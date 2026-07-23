@@ -95,6 +95,7 @@ case "$MODE" in
     echo "     - VAULT_TRANSPORT=tor VAULT_SOCKS_PROXY=socks5h://127.0.0.1:9050"
     echo "     - VAULT_SEED_PEERS=id=http://….onion:7701 (no clearnet publish)"
     echo "     - All domestic: VAULT_NODE_TIER=domestic ATTESTATION_MODE=software VAULT_SHARE_STORE=aead_disk"
+    echo "     - Optional TPM: VAULT_SHARE_TPM_SEAL=1 (fail-closed without TPM; lab stub VAULT_SHARE_TPM_STUB=1; clear fallback lab-only)"
     echo "     - Mixed: set VAULT_PEER_TIERS=id=sev,... so seating prefers SEV > SGX > domestic"
     echo "     - Lab Tor smoke: ./backend/kerosene-vault/scripts/lab_dkg_wire_tor.sh (see docs/CEREMONY_TOR.md)"
     echo "  2. Verify honest labels on GET /v1/health (node_tier, attestation_mode, tee_available, genesis_roster)"

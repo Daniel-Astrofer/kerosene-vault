@@ -4,15 +4,11 @@
 //! Disk AEAD ≠ TEE. Domestic production may use this path; SEV/SGX nodes should use
 //! `VAULT_SHARE_STORE=tee_seal` when a real enclave seal is available.
 //!
-//! # Optional TPM 2.0 seal hook (not wired by default)
-//! On home PCs, operators can wrap the Argon2-derived key (or the on-disk blob) with a
-//! TPM 2.0 sealed object bound to PCR policy / NV index for **disk-at-rest + identity**:
-//! 1. Create a primary storage key in the TPM owner hierarchy.
-//! 2. Seal the passphrase (or DEK) under a PCR policy matching measured boot.
-//! 3. Unseal at vault start before constructing [`AeadDiskShareStore`].
-//!
-//! That improves anti-theft of the SSD and node identity; it does **not** isolate share
-//! plaintext from the host OS after unseal (unlike SEV-SNP). See `VAULT_MESH_PLAN.md` §3.1.
+//! # Optional TPM 2.0 seal (`VAULT_SHARE_TPM_SEAL=1`)
+//! Off by default. When enabled, wiring seals the AEAD passphrase under a TPM-bound
+//! envelope (see [`super::share_tpm`]) **before** constructing this store.
+//! TPM ≠ SEV: disk-at-rest only; clear fallback is lab-only (`VAULT_SHARE_TPM_CLEAR_FALLBACK=1`).
+//! See `VAULT_MESH_PLAN.md` §3.1.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -31,13 +27,23 @@ use crate::domain::DomainError;
 pub struct AeadDiskShareStore {
     root: PathBuf,
     passphrase: SecretString,
+    tpm_sealed_passphrase: bool,
 }
 
 impl AeadDiskShareStore {
     pub fn new(root: impl Into<PathBuf>, passphrase: impl Into<String>) -> Self {
+        Self::with_tpm_seal(root, passphrase, false)
+    }
+
+    pub fn with_tpm_seal(
+        root: impl Into<PathBuf>,
+        passphrase: impl Into<String>,
+        tpm_sealed_passphrase: bool,
+    ) -> Self {
         Self {
             root: root.into(),
             passphrase: SecretString::from(passphrase.into()),
+            tpm_sealed_passphrase,
         }
     }
 
@@ -61,7 +67,7 @@ impl AeadDiskShareStore {
 
 impl ShareStorePort for AeadDiskShareStore {
     fn store_kind(&self) -> &'static str {
-        "aead_disk"
+        if self.tpm_sealed_passphrase { "aead_disk_tpm" } else { "aead_disk" }
     }
 
     fn put_share(&self, share_id: &str, plaintext: &[u8]) -> Result<(), DomainError> {
@@ -84,14 +90,11 @@ impl ShareStorePort for AeadDiskShareStore {
         out.extend_from_slice(&salt);
         out.extend_from_slice(&nonce_bytes);
         out.extend_from_slice(&ciphertext);
-        let path = self.path_for(share_id);
-        atomic_write(&path, &out)?;
-        Ok(())
+        atomic_write(&self.path_for(share_id), &out)
     }
 
     fn get_share(&self, share_id: &str) -> Result<Vec<u8>, DomainError> {
-        let path = self.path_for(share_id);
-        let bytes = fs::read(&path).map_err(|e| {
+        let bytes = fs::read(&self.path_for(share_id)).map_err(|e| {
             DomainError::ShareStoreForbidden(format!("read share: {e}"))
         })?;
         if bytes.len() < 16 + 12 + 16 {

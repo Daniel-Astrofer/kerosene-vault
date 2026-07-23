@@ -47,6 +47,8 @@ pub enum DomainError {
     ShareStoreForbidden(String),
     DealerForbidden(String),
     TeeRequired(String),
+    /// Domestic TPM seal required / unavailable (honest: TPM ≠ SEV).
+    TpmRequired(String),
     BitcoinNetworkMismatch(String),
     DayEpochStale { have: String, need: String },
     ProductionGate(String),
@@ -123,6 +125,7 @@ impl fmt::Display for DomainError {
             Self::ShareStoreForbidden(r) => write!(f, "share store forbidden: {r}"),
             Self::DealerForbidden(r) => write!(f, "dealer DKG forbidden: {r}"),
             Self::TeeRequired(r) => write!(f, "TEE sealing required: {r}"),
+            Self::TpmRequired(r) => write!(f, "TPM sealing required: {r}"),
             Self::BitcoinNetworkMismatch(r) => write!(f, "bitcoin network mismatch: {r}"),
             Self::DayEpochStale { have, need } => {
                 write!(f, "day_epoch stale: have {have}, need {need}")
