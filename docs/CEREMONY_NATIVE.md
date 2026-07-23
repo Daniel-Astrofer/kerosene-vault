@@ -52,3 +52,13 @@ See `VAULT_MESH_PLAN.md` §3.1.
 | `VAULT_SHARE_TPM_CLEAR_FALLBACK=1` | Lab only: clear passphrase if TPM unavailable; refused when hardened |
 
 TPM binds disk-at-rest to the machine; it does **not** isolate share RAM after unseal (unlike SEV-SNP).
+
+## Gaps (planned — do not claim shipped)
+
+| Gap | Notes |
+| --- | --- |
+| **Full SNP VCEK verification** | HW path fail-closed without real `/dev/sev-guest` + VCEK chain; staging stub is lab-only |
+| **CHANNELS → LND inject** | CHANNELS bucket cannot spend shared Taproot key; LND channel gateway fail-closed when REST off — inject wiring still planned |
+| **Deposit xpub vs `tb1p`** | Ceremony yields stable mesh `tb1p` deposit (`tr()`); user-visible xpub / HD from group VK is not implemented |
+
+Go-live kfe: `kfe-service-vaultmesh-go-live.properties` sets `mesh-only` + `require-mtls` (refuses `api-token`). Vault hygiene refuses `static_token` / `ATTESTATION_MODE=sim` / clearnet under staging/production; production ceremony requires `VAULT_TRANSPORT=tor` + mTLS.

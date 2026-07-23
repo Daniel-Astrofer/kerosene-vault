@@ -841,3 +841,12 @@ Itens **não fechados** na conversa — precisam de decisão explícita:
 | Governance job rewards | **landed** | `AccrueGovernanceWork` on day/reshare + release cosign/activate; `VAULT_GOVERNANCE_REWARD_SATS`/`_BPS`; ledger `governance_reward_accrued`; `/economy/status` `pending_governance_reward_sats` |
 | Anti-nonce replicated | **landed** (quorum) | `QuorumAntiNonce`: append-only `session_id` log + HTTP `/v1/anti-nonce/prepare` ACKs (`ceil(2n/3)`); refuse if seen on ≥1 peer or before quorum; persists across restart; multi-node sim tests |
 | Intent consume replicated | **landed** (quorum) | `QuorumBucketLedger`: durable `consumed_intents.log` + HTTP `/v1/intent/consume/prepare` ACKs (`ceil(2n/3)`); cross-node double-spend → Intent replay; fail-closed if peers unreachable when configured |
+| Go-live guard (kfe) | **landed** | `KfeVaultMeshGoLiveGuard` + prod safety: mesh-only ⇒ mesh on + mpc off; go-live `require-mtls` refuses `api-token`; vault hygiene refuses `sim`/`static_token`; production ceremony ⇒ Tor + mTLS |
+
+### Gaps ainda planejados (não fingir shipped)
+
+| Gap | Status | Notas honestas |
+| --- | --- | --- |
+| **SNP VCEK / quote HW completo** | planned | Adapter SEV existe; sem VCEK chain / quote de chip em prod — fail-closed ou stub de staging só |
+| **CHANNELS → LND inject** | planned | Bucket CHANNELS + gateway LN fail-closed sem LND; **não** há inject automático mesh→abertura de canal |
+| **Deposit xpub vs `tb1p`** | planned | Depósito mesh = `tr()` / `tb1p` estável pós-DKG/reshare; xpub HD de produto (KFE) **≠** group VK ainda — não unificar no docs como feito |

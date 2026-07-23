@@ -606,6 +606,7 @@ impl VaultConfig {
     }
 
     /// Production ceremony requires private Tor mesh (onion peers + SOCKS); refuse clearnet publish.
+    /// Staging/production Tor also requires mTLS (lab Tor smoke may keep static_token).
     pub fn validate_transport_hygiene(&self) -> Result<(), DomainError> {
         if self.transport.is_tor() {
             let socks = self.peer_http.socks_proxy.as_deref().unwrap_or("");
@@ -622,6 +623,16 @@ impl VaultConfig {
                     )));
                 }
             }
+            if matches!(
+                self.ceremony_mode,
+                CeremonyMode::Staging | CeremonyMode::Production
+            ) && self.auth_mode != AuthMode::MutualTls
+            {
+                return Err(DomainError::AuthRejected(
+                    "VAULT_TRANSPORT=tor under staging/production requires VAULT_AUTH_MODE=mtls (static_token refused)"
+                        .into(),
+                ));
+            }
             if self.auth_mode == AuthMode::MutualTls
                 && matches!(self.tls_verify_policy, TlsPeerVerifyPolicy::Hostname)
             {
@@ -637,6 +648,11 @@ impl VaultConfig {
                 return Err(DomainError::LabFlagForbidden(
                     "production ceremony requires VAULT_TRANSPORT=tor (private Tor mesh; not clearnet LAN)"
                         .into(),
+                ));
+            }
+            if self.auth_mode != AuthMode::MutualTls {
+                return Err(DomainError::AuthRejected(
+                    "production ceremony requires VAULT_AUTH_MODE=mtls".into(),
                 ));
             }
             if self.clearnet_publish {
