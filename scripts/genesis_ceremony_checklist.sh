@@ -49,6 +49,16 @@ case "$MODE" in
       "VAULT_SOCKS_PROXY set (${VAULT_SOCKS_PROXY:-${VAULT_TOR_SOCKS:-unset}})"
     check "$([[ "${VAULT_CLEARNET_PUBLISH:-0}" != "1" ]] && echo 1 || echo 0)" \
       "VAULT_CLEARNET_PUBLISH not enabled (no clearnet public vault bind)"
+    VERIFY_MODE="${VAULT_TLS_VERIFY_MODE:-onion_or_spiffe}"
+    check "$([[ "${VERIFY_MODE}" == "onion_or_spiffe" || "${VERIFY_MODE}" == "spiffe" || "${VERIFY_MODE}" == "tor" ]] && echo 1 || echo 0)" \
+      "VAULT_TLS_VERIFY_MODE=onion_or_spiffe|spiffe for Tor ceremony (got ${VERIFY_MODE})"
+    check "$([[ -n "${VAULT_TLS_CERT_PATH:-}" && -n "${VAULT_TLS_KEY_PATH:-}" && -n "${VAULT_TLS_CLIENT_CA_PATH:-}" ]] && echo 1 || echo 0)" \
+      "VAULT_TLS_CERT_PATH / KEY / CLIENT_CA set for mTLS serve"
+    check "$([[ -n "${VAULT_TLS_CLIENT_CERT_PATH:-}" && -n "${VAULT_TLS_CLIENT_KEY_PATH:-}" ]] && echo 1 || echo 0)" \
+      "VAULT_TLS_CLIENT_CERT_PATH / KEY set for outbound peer mTLS"
+    SPIFFE_ID="${VAULT_TLS_PEER_SPIFFE_ID:-${VAULT_MTLS_SPIFFE_VAULT:-}}"
+    check "$([[ -n "${SPIFFE_ID}" && "${SPIFFE_ID}" == spiffe://* ]] && echo 1 || echo 0)" \
+      "VAULT_TLS_PEER_SPIFFE_ID (or VAULT_MTLS_SPIFFE_VAULT) is spiffe://… (${SPIFFE_ID:-unset})"
     if [[ -n "${VAULT_SEED_PEERS:-}" ]]; then
       if echo "${VAULT_SEED_PEERS}" | grep -q '\.onion'; then
         check 1 "VAULT_SEED_PEERS contain .onion addresses"
@@ -93,13 +103,15 @@ case "$MODE" in
     echo "Manual ceremony steps (same FROST wire path as lab; config only differs):"
     echo "  1. Bring N vaults with identical constitution seed / peer set on **private Tor mesh**"
     echo "     - VAULT_TRANSPORT=tor VAULT_SOCKS_PROXY=socks5h://127.0.0.1:9050"
-    echo "     - VAULT_SEED_PEERS=id=http://….onion:7701 (no clearnet publish)"
+    echo "     - VAULT_SEED_PEERS=id=http://….onion:7701 (no clearnet publish; https under mTLS)"
+    echo "     - VAULT_AUTH_MODE=mtls + VAULT_TLS_* + VAULT_TLS_VERIFY_MODE=onion_or_spiffe"
+    echo "     - VAULT_TLS_PEER_SPIFFE_ID=spiffe://…/vault/server (see docs/MTLS_SPIFFE_LAYOUT.md)"
     echo "     - All domestic: VAULT_NODE_TIER=domestic ATTESTATION_MODE=software VAULT_SHARE_STORE=aead_disk"
     echo "     - Optional TPM: VAULT_SHARE_TPM_SEAL=1 (fail-closed without TPM; lab stub VAULT_SHARE_TPM_STUB=1; clear fallback lab-only)"
     echo "     - Mixed: set VAULT_PEER_TIERS=id=sev,... so seating prefers SEV > SGX > domestic"
-    echo "     - Lab Tor smoke: ./backend/kerosene-vault/scripts/lab_dkg_wire_tor.sh (see docs/CEREMONY_TOR.md)"
+    echo "     - Lab Tor mTLS: VAULT_AUTH_MODE=mtls ./backend/kerosene-vault/scripts/lab_dkg_wire_tor.sh"
     echo "  2. Verify honest labels on GET /v1/health (node_tier, attestation_mode, tee_available, genesis_roster)"
-    echo "  3. Run ./backend/kerosene-vault/scripts/genesis_dkg_wire.sh via SOCKS to onions (VAULT_DKG_MODE=distributed_wire)"
+    echo "  3. Run ./backend/kerosene-vault/scripts/genesis_dkg_wire.sh via SOCKS to onions (mTLS client certs)"
     echo "  4. Freeze mpc-sidecar / HashiCorp wallet-arming (kfe.mpc.signing-enabled=false)"
     echo "  5. Enable kfe.vaultmesh.enabled=true + mesh-only=true (no hard tee_hw require)"
     echo "  6. Smoke Intent → Receipt; confirm fail-stop runbook"
@@ -113,13 +125,22 @@ case "$MODE" in
       "LAB_TIMELOCK_SCALE unset"
     check "$([[ "${DKG}" == "distributed_wire" || "${DKG}" == "wire" || "${DKG}" == "over_wire" || -z "${DKG}" ]] && echo 1 || echo 0)" \
       "VAULT_DKG_MODE is distributed_wire or default (got ${DKG:-default})"
+    check "$([[ "${VAULT_AUTH_MODE:-}" == "mtls" || "${VAULT_AUTH_MODE:-}" == "mutual_tls" ]] && echo 1 || echo 0)" \
+      "VAULT_AUTH_MODE=mtls for staging ceremony (got ${VAULT_AUTH_MODE:-unset}; static_token refused)"
+    if [[ "${VAULT_TRANSPORT:-clearnet}" == "tor" || "${VAULT_TRANSPORT:-}" == "onion" || "${VAULT_TRANSPORT:-}" == "socks" ]]; then
+      VERIFY_MODE="${VAULT_TLS_VERIFY_MODE:-onion_or_spiffe}"
+      check "$([[ "${VERIFY_MODE}" == "onion_or_spiffe" || "${VERIFY_MODE}" == "spiffe" || "${VERIFY_MODE}" == "tor" ]] && echo 1 || echo 0)" \
+        "staging Tor: VAULT_TLS_VERIFY_MODE=onion_or_spiffe|spiffe (got ${VERIFY_MODE})"
+    fi
     echo "Staging may use ATTESTATION_STAGING_STUB=1 for TEE claims until hardware arrives."
     echo "Domestic staging: VAULT_NODE_TIER=domestic ATTESTATION_MODE=software (no stub)."
     ;;
   *)
     echo "Lab mode: no production gates. Compose sets VAULT_NODE_TIER=domestic + ATTESTATION_MODE=sim."
     echo "Clearnet visualize: VAULT_DKG_MODE=distributed_wire + lab_dkg_wire.sh"
-    echo "Tor variability: ./backend/kerosene-vault/scripts/lab_dkg_wire_tor.sh (docs/CEREMONY_TOR.md)."
+    echo "Tor variability (token): ./backend/kerosene-vault/scripts/lab_dkg_wire_tor.sh"
+    echo "Tor ceremony-shaped mTLS: VAULT_AUTH_MODE=mtls ./backend/kerosene-vault/scripts/lab_dkg_wire_tor.sh"
+    echo "  (docs/CEREMONY_TOR.md — onion SAN / SPIFFE verify)."
     ;;
 esac
 

@@ -149,7 +149,8 @@ async fn v1_bitcoin_sign_sighash(State(state): State<AppState>, body: Bytes) -> 
     if let Err(e) = state.runtime.auth.authorize_treasury_sign() {
         return (StatusCode::UNAUTHORIZED, format!(r#"{{"error":"{e}"}}"#));
     }
-    // Raw sighash cannot bind Intent outputs — lab visualize only.
+    // Raw sighash cannot bind PSBT outputs — lab visualize only, and still
+    // requires Intent gate (caps / replay / allowlist) before signing.
     if !matches!(state.runtime.config.ceremony_mode, CeremonyMode::Lab) {
         return (
             StatusCode::FORBIDDEN,
@@ -326,7 +327,9 @@ async fn v1_day_current(State(state): State<AppState>) -> impl IntoResponse {
 async fn v1_day_vote(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
     #[derive(serde::Deserialize)]
     struct VoteBody {
-        voter: String,
+        /// Optional; if present must match authenticated vault identity (no client spoofing).
+        #[serde(default)]
+        voter: Option<String>,
         day_epoch: String,
     }
     let req: VoteBody = match serde_json::from_slice(&body) {
@@ -344,13 +347,63 @@ async fn v1_day_vote(State(state): State<AppState>, body: Bytes) -> impl IntoRes
             return (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#))
         }
     };
-    match state
-        .runtime
-        .daily_rotation
-        .record_vote(&req.voter, &target)
-    {
-        Ok(()) => (StatusCode::OK, r#"{"ok":true}"#.to_string()),
+    // Derive voter from authenticated vault identity (node id bound to this process /
+    // mTLS token binding). Never trust a free-form client-supplied peer id under shared auth.
+    let voter = match bind_day_voter(state.runtime.config.node_id.as_str(), req.voter.as_deref()) {
+        Ok(v) => v,
+        Err(e) => {
+            return (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#))
+        }
+    };
+    match state.runtime.daily_rotation.record_vote(&voter, &target) {
+        Ok(()) => (
+            StatusCode::OK,
+            format!(r#"{{"ok":true,"voter":"{}"}}"#, voter),
+        ),
         Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+    }
+}
+
+/// Authenticated day-vote identity: this vault's `VAULT_NODE_ID`.
+/// Optional body claim must match; mismatch → reject (anti-spoof).
+fn bind_day_voter(
+    identity: &str,
+    claimed: Option<&str>,
+) -> Result<String, crate::domain::DomainError> {
+    if let Some(raw) = claimed.map(str::trim).filter(|s| !s.is_empty()) {
+        if raw != identity {
+            return Err(crate::domain::DomainError::AuthRejected(format!(
+                "voter {raw} does not match authenticated vault identity {identity}"
+            )));
+        }
+    }
+    Ok(identity.to_string())
+}
+
+#[cfg(test)]
+mod day_vote_tests {
+    use super::bind_day_voter;
+    use crate::domain::DomainError;
+
+    #[test]
+    fn derives_local_identity_when_voter_omitted() {
+        assert_eq!(bind_day_voter("vault-1", None).unwrap(), "vault-1");
+        assert_eq!(bind_day_voter("vault-1", Some("")).unwrap(), "vault-1");
+    }
+
+    #[test]
+    fn accepts_matching_claimed_voter() {
+        assert_eq!(
+            bind_day_voter("vault-2", Some("vault-2")).unwrap(),
+            "vault-2"
+        );
+    }
+
+    #[test]
+    fn rejects_spoofed_peer_voter() {
+        let err = bind_day_voter("vault-1", Some("vault-2")).unwrap_err();
+        assert!(matches!(err, DomainError::AuthRejected(_)));
+        assert!(err.to_string().contains("does not match"));
     }
 }
 

@@ -57,6 +57,28 @@ Hook receives env: `VAULT_LAB_MTLS_OUT`, `VAULT_TLS_CERT_PATH`, `VAULT_TLS_KEY_P
 Production Gate still requires operational cert rotation (SPIRE or equivalent) before ceremony —
 these scripts are the **Gate visualize** path, not the ceremony CA.
 
+## Tor / onion peers
+
+When `VAULT_TRANSPORT=tor`, outbound mTLS defaults to
+`VAULT_TLS_VERIFY_MODE=onion_or_spiffe`:
+
+1. Verify the leaf chains to `VAULT_TLS_CLIENT_CA_PATH`.
+2. Accept if **either**:
+   - webpki hostname matches (including a DNS SAN equal to the peer `.onion`), **or**
+   - a URI SAN equals `VAULT_TLS_PEER_SPIFFE_ID` (default `spiffe://kerosene.lab/vault/server`).
+
+Mint onion DNS SANs after HS discovery:
+
+```bash
+VAULT_LAB_MTLS_ONION_SANS=a.onion,b.onion,c.onion \
+  ./backend/kerosene-vault/scripts/gen_lab_mtls_certs.sh
+# or rotate leaves:
+VAULT_LAB_MTLS_ONION_SANS=… ./backend/kerosene-vault/scripts/rotate_lab_mtls_certs.sh
+```
+
+`VAULT_AUTH_MODE=mtls ./backend/kerosene-vault/scripts/lab_dkg_wire_tor.sh` does this automatically.
+See `docs/CEREMONY_TOR.md`. Staging/production ceremony modes refuse `static_token`.
+
 ## kfe TLS properties
 
 When vaults run `VAULT_AUTH_MODE=mtls`, kfe must present a client cert and **must not**

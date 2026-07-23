@@ -26,9 +26,21 @@ openssl req -x509 -new -nodes -key ca.key -sha256 -days "$DAYS" -out ca.crt \
   -subj "/C=CH/ST=Zurich/L=Zurich/O=Kerosene Lab/OU=Vault Mesh/CN=Kerosene Lab Vault CA"
 
 echo "[2/5] Vault server cert (CN=$CN_SERVER, SPIFFE=$SPIFFE_VAULT)"
+# Optional onion DNS SANs (comma-separated) for Tor mTLS hostname verify.
+# SPIFFE URI is always present — Tor clients may verify URI when onions change.
+EXTRA_SAN="DNS:localhost,DNS:vault-1,DNS:vault-2,DNS:vault-3,DNS:$CN_SERVER,IP:127.0.0.1"
+if [[ -n "${VAULT_LAB_MTLS_ONION_SANS:-}" ]]; then
+  IFS=',' read -r -a _onions <<< "${VAULT_LAB_MTLS_ONION_SANS}"
+  for o in "${_onions[@]}"; do
+    o="$(echo "$o" | tr -d '[:space:]')"
+    o="${o#http://}"; o="${o#https://}"; o="${o%%:*}"; o="${o%%/*}"
+    [[ -n "$o" ]] || continue
+    EXTRA_SAN="${EXTRA_SAN},DNS:${o}"
+  done
+fi
 mtls_issue_leaf \
   "vault-server" "$CN_SERVER" "serverAuth" "$SPIFFE_VAULT" "$DAYS" \
-  "DNS:localhost,DNS:vault-1,DNS:vault-2,DNS:vault-3,DNS:$CN_SERVER,IP:127.0.0.1"
+  "$EXTRA_SAN"
 
 echo "[3/5] Vault client cert for kfe↔vault (CN=$CN_CLIENT, SPIFFE=$SPIFFE_KFE)"
 mtls_issue_leaf \

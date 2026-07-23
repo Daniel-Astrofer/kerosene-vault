@@ -810,6 +810,92 @@ mod tests {
     }
 
     #[test]
+    fn tr_rejects_non_mesh_change_output() {
+        use bitcoin::absolute::LockTime;
+        use bitcoin::{Amount, Sequence, Transaction, TxIn, TxOut, Witness};
+
+        let state = generate_tr_dealer(3, 2).unwrap();
+        let tmp = TempProbe::new("change-escape");
+        let anti = PersistedAntiNonce::open(tmp.0.join("sessions.log")).unwrap();
+        let rotation: Arc<dyn DailyRotationPort> =
+            Arc::new(LedgerDayEpochStub::new(Arc::new(SystemClock)));
+        let slot = Arc::new(FrostTrShareSlot::new());
+        slot.install(state);
+        let orch = FrostTrBitcoinOrchestrator::new(
+            slot,
+            Box::new(anti),
+            rotation,
+            BitcoinNetwork::Testnet3,
+        );
+        let deposit = orch.deposit_info().unwrap();
+        let output = XOnlyPublicKey::from_slice(&hex::decode(&deposit.output_pubkey_hex).unwrap())
+            .unwrap();
+        let dest = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
+        let payment_spk =
+            crate::domain::destination_script_pubkey(BitcoinNetwork::Testnet3, dest).unwrap();
+        // Core-style change to a different testnet address (not mesh tr()).
+        let core_change = "tb1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3q0sl5k7";
+        let change_spk =
+            crate::domain::destination_script_pubkey(BitcoinNetwork::Testnet3, core_change)
+                .unwrap();
+        let mesh_spk =
+            ScriptBuf::new_p2tr_tweaked(TweakedPublicKey::dangerous_assume_tweaked(output));
+        let amount_sats = 1_000u64;
+        let fee = 500u64;
+        let change = 200u64;
+        let prev_tx = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: bitcoin::OutPoint::null(),
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::new(),
+            }],
+            output: vec![TxOut {
+                value: Amount::from_sat(amount_sats + fee + change),
+                script_pubkey: mesh_spk.clone(),
+            }],
+        };
+        let spend = Transaction {
+            version: bitcoin::transaction::Version::TWO,
+            lock_time: LockTime::ZERO,
+            input: vec![TxIn {
+                previous_output: bitcoin::OutPoint {
+                    txid: prev_tx.compute_txid(),
+                    vout: 0,
+                },
+                script_sig: ScriptBuf::new(),
+                sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
+                witness: Witness::new(),
+            }],
+            output: vec![
+                TxOut {
+                    value: Amount::from_sat(amount_sats),
+                    script_pubkey: payment_spk,
+                },
+                TxOut {
+                    value: Amount::from_sat(change),
+                    script_pubkey: change_spk,
+                },
+            ],
+        };
+        let mut psbt = Psbt::from_unsigned_tx(spend).unwrap();
+        psbt.inputs[0].witness_utxo = Some(TxOut {
+            value: Amount::from_sat(amount_sats + fee + change),
+            script_pubkey: mesh_spk,
+        });
+        let err = orch
+            .sign_psbt("btc-psbt-chg", &psbt.to_string(), dest, amount_sats)
+            .unwrap_err();
+        assert!(matches!(err, DomainError::InvalidIntent(_)));
+        assert!(
+            err.to_string().contains("change") || err.to_string().contains("non-tr"),
+            "got {err}"
+        );
+    }
+
+    #[test]
     fn tr_rejects_session_reuse() {
         let state = generate_tr_dealer(3, 2).unwrap();
         let tmp = TempProbe::new("reuse");

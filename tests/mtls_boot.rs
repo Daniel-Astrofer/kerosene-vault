@@ -48,6 +48,7 @@ fn lab_mtls_cfg(listen: &str, certs: &Path, data_dir: &Path) -> VaultConfig {
         bitcoin_network: BitcoinNetwork::Testnet3,
         auth_mode: AuthMode::MutualTls,
         vault_token: None,
+        users_destination_allowlist: vec![],
         tls_cert_path: Some(certs.join("vault-server.crt").display().to_string()),
         tls_key_path: Some(certs.join("vault-server.key").display().to_string()),
         tls_client_ca_path: Some(certs.join("ca.crt").display().to_string()),

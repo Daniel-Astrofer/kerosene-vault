@@ -149,6 +149,9 @@ pub struct VaultConfig {
     pub bitcoin_network: BitcoinNetwork,
     pub auth_mode: AuthMode,
     pub vault_token: Option<String>,
+    /// Explicit USERS withdraw destinations (`VAULT_USERS_DESTINATION_ALLOWLIST`, comma-separated).
+    /// Soft "any parseable address" is refused — destinations must be listed here and/or lab defaults.
+    pub users_destination_allowlist: Vec<String>,
     /// PEM server certificate (`VAULT_TLS_CERT_PATH`) — required when `auth_mode=mtls`.
     pub tls_cert_path: Option<String>,
     /// PEM server private key (`VAULT_TLS_KEY_PATH`) — required when `auth_mode=mtls`.
@@ -296,6 +299,16 @@ impl VaultConfig {
             DomainError::BitcoinNetworkMismatch(format!("unknown BITCOIN_NETWORK={btc_raw}"))
         })?;
 
+        let users_destination_allowlist = std::env::var("VAULT_USERS_DESTINATION_ALLOWLIST")
+            .ok()
+            .map(|raw| {
+                raw.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
         let auth_raw = std::env::var("VAULT_AUTH_MODE").unwrap_or_else(|_| {
             if hardened {
                 "mtls".into()
@@ -432,6 +445,7 @@ impl VaultConfig {
             bitcoin_network,
             auth_mode,
             vault_token,
+            users_destination_allowlist,
             tls_cert_path,
             tls_key_path,
             tls_client_ca_path,
@@ -815,6 +829,7 @@ mod tests {
             bitcoin_network: BitcoinNetwork::Testnet3,
             auth_mode: AuthMode::StaticToken,
             vault_token: Some("t".into()),
+            users_destination_allowlist: vec![],
             tls_cert_path: None,
             tls_key_path: None,
             tls_client_ca_path: None,

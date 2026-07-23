@@ -44,9 +44,19 @@ cp -f "$OUT_DIR/ca.crt" "$OUT_DIR/ca.key" "$STAGING/"
 cd "$STAGING"
 
 echo "[rotate] issuing leaves TTL≈${TTL_HOURS}h (openssl days=${DAYS}) → $OUT_DIR"
+EXTRA_SAN="DNS:localhost,DNS:vault-1,DNS:vault-2,DNS:vault-3,DNS:$CN_SERVER,IP:127.0.0.1"
+if [[ -n "${VAULT_LAB_MTLS_ONION_SANS:-}" ]]; then
+  IFS=',' read -r -a _onions <<< "${VAULT_LAB_MTLS_ONION_SANS}"
+  for o in "${_onions[@]}"; do
+    o="$(echo "$o" | tr -d '[:space:]')"
+    o="${o#http://}"; o="${o#https://}"; o="${o%%:*}"; o="${o%%/*}"
+    [[ -n "$o" ]] || continue
+    EXTRA_SAN="${EXTRA_SAN},DNS:${o}"
+  done
+fi
 mtls_issue_leaf \
   "vault-server" "$CN_SERVER" "serverAuth" "$SPIFFE_VAULT" "$DAYS" \
-  "DNS:localhost,DNS:vault-1,DNS:vault-2,DNS:vault-3,DNS:$CN_SERVER,IP:127.0.0.1"
+  "$EXTRA_SAN"
 mtls_issue_leaf \
   "vault-client" "$CN_CLIENT" "clientAuth" "$SPIFFE_KFE" "$DAYS" \
   "DNS:localhost,DNS:$CN_CLIENT"

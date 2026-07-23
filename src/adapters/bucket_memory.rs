@@ -221,7 +221,7 @@ impl BucketLedgerPort for PersistedBucketLedger {
     }
 
     fn try_consume(&self, intent_id: &str) -> Result<(), DomainError> {
-        let mut g = self.inner.inner.lock().expect("bucket lock");
+        let g = self.inner.inner.lock().expect("bucket lock");
         if g.consumed.contains(intent_id) {
             return Err(DomainError::IntentReplay(intent_id.to_string()));
         }

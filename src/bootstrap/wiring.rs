@@ -4,9 +4,9 @@ use std::sync::Arc;
 use crate::adapters::{
     build_tpm_seal_port, resolve_aead_passphrase, AeadDiskShareStore, DistributedDkgAdapter,
     DistributedWireDkgPort, FrostShareSlot, FrostShareState, FrostSignOrchestrator,
-    FrostTrBitcoinOrchestrator, FrostTrShareSlot, HttpAntiNonceTransport, InMemoryBucketLedger,
-    InMemoryEconomy, InMemoryLedger, InMemoryPeerDirectory, InMemoryReleaseMesh,
-    MutualTlsAuthAdapter, PolicyReshareHook, QuorumAntiNonce, QuorumDailyRotation, SharedAntiNonce,
+    FrostTrBitcoinOrchestrator, FrostTrShareSlot, HttpAntiNonceTransport, InMemoryEconomy,
+    InMemoryLedger, InMemoryPeerDirectory, InMemoryReleaseMesh, MutualTlsAuthAdapter,
+    PersistedBucketLedger, PolicyReshareHook, QuorumAntiNonce, QuorumDailyRotation, SharedAntiNonce,
     SimAttestationAdapter, StaticTokenAuthAdapter, SystemClock, TeeAttestationAdapter,
     TeeSealAdapter, ThresholdVaultState, WireDkgHub, WireDkgPeerAuth,
 };
@@ -53,7 +53,7 @@ pub struct VaultRuntime {
     pub threshold: Arc<ThresholdVaultState>,
     pub online: Arc<StaticOnlineCount>,
     pub release_mesh: Arc<InMemoryReleaseMesh>,
-    pub buckets: Arc<InMemoryBucketLedger>,
+    pub buckets: Arc<PersistedBucketLedger>,
     pub economy: Arc<InMemoryEconomy>,
     pub auth: Arc<dyn VaultAuthPort>,
     pub share_store: Arc<dyn ShareStorePort>,
@@ -121,7 +121,10 @@ impl VaultRuntime {
         let max_tx = constitution.max_withdraw_per_tx_sats;
         let max_day = constitution.max_withdraw_per_day_sats;
         let t = constitution.signing_t;
-        let rotation_quorum = constitution.governance_t.max(1);
+        // Day-advance votes are bound to this vault's authenticated identity only
+        // (no client-spoofed peer voters under shared auth). Mesh day sync = kfe
+        // asks each vault to self-vote + advance; local quorum is t=1.
+        let rotation_quorum = 1usize;
         let dkg_set = active_set.clone();
         let ledger = Arc::new(InMemoryLedger::genesis(
             constitution,
@@ -184,9 +187,6 @@ impl VaultRuntime {
         let release_port: Arc<dyn crate::application::ReleaseStorePort> = release_mesh.clone();
         let blob_port: Arc<dyn crate::application::BlobStorePort> = release_mesh.clone();
 
-        let buckets = Arc::new(InMemoryBucketLedger::from_constitution_caps(max_tx, max_day));
-        let bucket_port: Arc<dyn crate::application::BucketLedgerPort> = buckets.clone();
-
         let economy = Arc::new(InMemoryEconomy::new(EconomyState::new_open()));
         let economy_port: Arc<dyn crate::application::EconomyPort> = economy.clone();
         let governance_reward = config.governance_reward_config();
@@ -216,6 +216,18 @@ impl VaultRuntime {
         };
 
         let data_root = config.effective_data_dir();
+        let buckets = Arc::new(PersistedBucketLedger::open(
+            data_root.join("consumed_intents.log"),
+            max_tx,
+            max_day,
+        )?);
+        if !config.users_destination_allowlist.is_empty() {
+            buckets.admit_destinations(
+                crate::domain::BucketKind::Users,
+                config.users_destination_allowlist.clone(),
+            )?;
+        }
+        let bucket_port: Arc<dyn crate::application::BucketLedgerPort> = buckets.clone();
         let share_store: Arc<dyn ShareStorePort> = match config.share_store_mode {
             ShareStoreMode::AeadDisk => {
                 if config.share_tpm_seal {

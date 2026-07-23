@@ -4,26 +4,29 @@
 #
 # Usage (repo root):
 #   ./backend/kerosene-vault/scripts/lab_dkg_wire_tor.sh
+#   VAULT_AUTH_MODE=mtls ./backend/kerosene-vault/scripts/lab_dkg_wire_tor.sh
 #
 # Env:
 #   SKIP_COMPOSE=1          — reuse already-running mesh; needs VAULT{1,2,3}_ONION
-#   VAULT_API_TOKEN         — lab token (default kerosene-vault-lab-only)
+#   VAULT_AUTH_MODE         — static_token (lab smoke, default) | mtls (ceremony path)
+#   VAULT_API_TOKEN         — lab token when static_token (default kerosene-vault-lab-only)
 #   TOR_SOCKS_HOST_PORT     — host SOCKS for operator curl (default 127.0.0.1:19051)
+#   VAULT_LAB_MTLS_OUT       — cert dir for mtls (default backend/kerosene-vault/lab-certs)
 #
-# deploy.sh / ensure-vault-mesh-lab.sh still start clearnet vault-mesh-lab (dealer_lab).
-# This profile is the private Tor ceremony path — see docs/CEREMONY_TOR.md.
+# See docs/CEREMONY_TOR.md.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 COMPOSE_FILE="$ROOT/infra/docker/compose/vault-mesh-tor.compose.yaml"
+AUTH_MODE="${VAULT_AUTH_MODE:-static_token}"
 TOKEN="${VAULT_API_TOKEN:-kerosene-vault-lab-only}"
 SESSION_ID="${VAULT_DKG_SESSION:-tor-dkg-$(date -u +%Y%m%dT%H%M%SZ)}"
 ROSTER='["vault-1","vault-2","vault-3"]'
 MAX=3
 MIN=2
 SOCKS="${TOR_SOCKS_HOST_PORT:-127.0.0.1:19051}"
+CERTS="${VAULT_LAB_MTLS_OUT:-$ROOT/backend/kerosene-vault/lab-certs}"
 CURL_SOCKS=(--socks5-hostname "$SOCKS")
-CURL_AUTH=(-H "X-Vault-Token: ${TOKEN}")
 
 compose() {
   docker compose -f "$COMPOSE_FILE" "$@"
@@ -61,9 +64,39 @@ wait_onions() {
   done
 }
 
+ensure_mtls_certs() {
+  mkdir -p "$CERTS"
+  export VAULT_LAB_MTLS_OUT="$CERTS"
+  export VAULT_LAB_MTLS_ONION_SANS="${VAULT1_ONION},${VAULT2_ONION},${VAULT3_ONION}"
+  if [[ -f "$CERTS/ca.crt" && -f "$CERTS/vault-server.crt" ]]; then
+    echo "== Rotating lab mTLS leaves with onion DNS SANs =="
+    "$ROOT/backend/kerosene-vault/scripts/rotate_lab_mtls_certs.sh"
+  else
+    echo "== Generating lab mTLS certs (SPIFFE URI + onion DNS SANs) =="
+    "$ROOT/backend/kerosene-vault/scripts/gen_lab_mtls_certs.sh"
+  fi
+}
+
+setup_curl_auth() {
+  case "$AUTH_MODE" in
+    mtls|mutual_tls)
+      CURL_AUTH=(
+        --cert "$CERTS/vault-client.crt"
+        --key "$CERTS/vault-client.key"
+        --cacert "$CERTS/ca.crt"
+      )
+      SCHEME=https
+      ;;
+    static_token|*)
+      CURL_AUTH=(-H "X-Vault-Token: ${TOKEN}")
+      SCHEME=http
+      ;;
+  esac
+}
+
 wait_health_onion() {
   local onion="$1"
-  local url="http://${onion}:7701/v1/health"
+  local url="${SCHEME}://${onion}:7701/v1/health"
   local deadline=$(( $(date +%s) + 300 ))
   echo "== Waiting for vault health via Tor: $url =="
   while true; do
@@ -107,7 +140,12 @@ if [[ "${SKIP_COMPOSE:-0}" != "1" ]]; then
   echo "== Building/starting Tor sidecars =="
   compose up --build -d tor-1 tor-2 tor-3
   wait_onions
-  echo "== Starting vaults with onion peer seeds (no clearnet host ports) =="
+  if [[ "$AUTH_MODE" == "mtls" || "$AUTH_MODE" == "mutual_tls" ]]; then
+    ensure_mtls_certs
+    export VAULT_AUTH_MODE=mtls
+    export VAULT_TLS_VERIFY_MODE="${VAULT_TLS_VERIFY_MODE:-onion_or_spiffe}"
+  fi
+  echo "== Starting vaults with onion peer seeds (no clearnet host ports, auth=$AUTH_MODE) =="
   compose up --build -d vault-1 vault-2 vault-3
 else
   : "${VAULT1_ONION:?VAULT1_ONION required when SKIP_COMPOSE=1}"
@@ -116,17 +154,19 @@ else
   export VAULT1_ONION VAULT2_ONION VAULT3_ONION
 fi
 
+setup_curl_auth
+
 BASES=(
-  "http://${VAULT1_ONION}:7701"
-  "http://${VAULT2_ONION}:7701"
-  "http://${VAULT3_ONION}:7701"
+  "${SCHEME}://${VAULT1_ONION}:7701"
+  "${SCHEME}://${VAULT2_ONION}:7701"
+  "${SCHEME}://${VAULT3_ONION}:7701"
 )
 
 wait_health_onion "$VAULT1_ONION"
 wait_health_onion "$VAULT2_ONION"
 wait_health_onion "$VAULT3_ONION"
 
-echo "== Over-wire DKG session=$SESSION_ID via Tor SOCKS $SOCKS (n=$MAX t=$MIN, distributed_wire) =="
+echo "== Over-wire DKG session=$SESSION_ID via Tor SOCKS $SOCKS (n=$MAX t=$MIN, distributed_wire, auth=$AUTH_MODE) =="
 
 echo "-- Round1 start on each vault"
 declare -a R1_MSGS=()
@@ -173,6 +213,6 @@ for base in "${BASES[@]}"; do
   echo "  $base -> $st"
 done
 
-echo "OK: over-wire DKG complete over real Tor (lab profile)."
-echo "    Production ceremony: VAULT_CEREMONY_MODE=production + mTLS + same Tor mesh — docs/CEREMONY_TOR.md"
+echo "OK: over-wire DKG complete over real Tor (auth=$AUTH_MODE)."
+echo "    Production ceremony: VAULT_CEREMONY_MODE=production + mTLS + onion_or_spiffe — docs/CEREMONY_TOR.md"
 echo "    deploy.sh still uses vault-mesh-lab (clearnet dealer_lab visualize), not this profile."

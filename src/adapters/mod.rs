@@ -30,7 +30,7 @@ pub use attestation_sim::SimAttestationAdapter;
 pub use attestation_tee::TeeAttestationAdapter;
 pub use auth_mtls::{build_mtls_server_config, MutualTlsAuthAdapter};
 pub use auth_static::StaticTokenAuthAdapter;
-pub use bucket_memory::InMemoryBucketLedger;
+pub use bucket_memory::{InMemoryBucketLedger, PersistedBucketLedger};
 pub use clock::SystemClock;
 pub use daily_rotation::{
     LedgerDayEpochStub, NoopReshareHook, QuorumDailyRotation, RecordingReshareHook,

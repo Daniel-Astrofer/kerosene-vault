@@ -31,6 +31,7 @@ fn base_lab() -> VaultConfig {
         bitcoin_network: BitcoinNetwork::Testnet3,
         auth_mode: AuthMode::StaticToken,
         vault_token: Some("t".into()),
+        users_destination_allowlist: vec![],
         tls_cert_path: None,
         tls_key_path: None,
         tls_client_ca_path: None,

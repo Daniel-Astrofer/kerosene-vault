@@ -38,6 +38,7 @@ curl -s -H "X-Vault-Token: $TOKEN" "$VAULT/v1/bitcoin/deposit"
 - Online &lt; t → vault returns fail-stop; kfe marks provider failure (no mpc fallback)
 - `mesh-only=true` disables local Core `walletprocesspsbt` signing even if the flag is set
 - Intent↔PSBT bind: vault refuses sign unless PSBT pays Intent `destination`/`amount_sats` (change only back to mesh `tr()`)
+- USERS destinations must be on the allowlist (`VAULT_USERS_DESTINATION_ALLOWLIST` + lab defaults); parseable alone is not enough
 - Shared Taproot key: only `bucket=USERS` until per-bucket keys exist (CHANNELS/INFRA escape rejected)
 - Staging/prod: mTLS required; static lab token cannot authorize treasury signing
 
