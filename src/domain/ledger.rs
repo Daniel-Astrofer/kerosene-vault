@@ -47,6 +47,10 @@ pub enum LedgerEventKind {
     Genesis,
     EpochAdvanced,
     VoteRecorded,
+    /// Quorum day_epoch advanced (constitution rotation event).
+    DayAdvanced,
+    /// FROST share refresh completed (group verifying key unchanged).
+    ReshareCompleted,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +110,8 @@ fn kind_str(k: &LedgerEventKind) -> &'static str {
         LedgerEventKind::Genesis => "genesis",
         LedgerEventKind::EpochAdvanced => "epoch_advanced",
         LedgerEventKind::VoteRecorded => "vote_recorded",
+        LedgerEventKind::DayAdvanced => "day_advanced",
+        LedgerEventKind::ReshareCompleted => "reshare_completed",
     }
 }
 

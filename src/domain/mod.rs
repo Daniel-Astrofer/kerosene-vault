@@ -11,10 +11,13 @@ mod health;
 mod ledger;
 mod peer;
 mod release;
+mod reshare_policy;
 mod reward;
 mod threshold;
 
-pub use attestation::{AttestationMode, AttestationQuote, Measurement};
+pub use attestation::{
+    admits_attestation_measurement, AttestationMode, AttestationQuote, Measurement,
+};
 pub use bitcoin_net::{validate_destination, BitcoinNetwork};
 pub use bucket::{
     evaluate_intent, BucketKind, BucketPolicy, ProfitSplits, SettlementIntent,
@@ -30,6 +33,7 @@ pub use release::{
     lab_rebuild_binary_hash, AllowlistEntry, ContentHash, ReleaseCandidate, ReleasePhase,
     ReleasePolicy,
 };
+pub use reshare_policy::ResharePolicy;
 pub use reward::{
     assert_bank_issued_miner_payout, EconomyState, MinerOperator, MinerPayoutShare, RewardPolicy,
 };

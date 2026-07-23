@@ -1,4 +1,4 @@
-//! UTC day-epoch binding for daily rotation stub (Lab P0).
+//! UTC day-epoch binding for daily rotation (Gate).
 
 use crate::domain::DomainError;
 

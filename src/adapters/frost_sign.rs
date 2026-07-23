@@ -1,6 +1,7 @@
 //! FROST round1 / round2 / aggregate with anti-nonce + day_epoch binding + zeroize.
 
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use frost_secp256k1 as frost;
 use frost_secp256k1::keys::{KeyPackage, PublicKeyPackage};
@@ -9,6 +10,7 @@ use frost_secp256k1::{Identifier, Signature, SigningPackage};
 use rand::rngs::OsRng;
 use zeroize::Zeroize;
 
+use crate::adapters::frost_reshare::{FrostShareSlot, FrostShareState};
 use crate::application::{AntiNoncePort, DailyRotationPort};
 use crate::domain::DomainError;
 
@@ -21,11 +23,9 @@ pub struct FrostAggregateResult {
 }
 
 pub struct FrostSignOrchestrator {
-    key_packages: BTreeMap<Identifier, KeyPackage>,
-    pubkey_package: PublicKeyPackage,
-    min_signers: usize,
+    shares: Arc<FrostShareSlot>,
     anti_nonce: Box<dyn AntiNoncePort>,
-    rotation: Box<dyn DailyRotationPort>,
+    rotation: Arc<dyn DailyRotationPort>,
 }
 
 impl FrostSignOrchestrator {
@@ -34,15 +34,35 @@ impl FrostSignOrchestrator {
         pubkey_package: PublicKeyPackage,
         min_signers: usize,
         anti_nonce: Box<dyn AntiNoncePort>,
-        rotation: Box<dyn DailyRotationPort>,
+        rotation: Arc<dyn DailyRotationPort>,
     ) -> Self {
-        Self {
+        let shares = Arc::new(FrostShareSlot::new());
+        shares.install(FrostShareState {
             key_packages,
             pubkey_package,
             min_signers,
+        });
+        Self {
+            shares,
             anti_nonce,
             rotation,
         }
+    }
+
+    pub fn from_share_slot(
+        shares: Arc<FrostShareSlot>,
+        anti_nonce: Box<dyn AntiNoncePort>,
+        rotation: Arc<dyn DailyRotationPort>,
+    ) -> Self {
+        Self {
+            shares,
+            anti_nonce,
+            rotation,
+        }
+    }
+
+    pub fn share_slot(&self) -> Arc<FrostShareSlot> {
+        self.shares.clone()
     }
 
     /// Lab helper: run round1+round2+aggregate for `min_signers` participants in-process.
@@ -53,23 +73,28 @@ impl FrostSignOrchestrator {
     ) -> Result<FrostAggregateResult, DomainError> {
         self.anti_nonce.claim_session(session_id)?;
         let day_epoch = self.rotation.current_day_epoch()?;
+        self.rotation.require_epoch(&day_epoch)?;
         let mut bound_message = bind_message(message, session_id, day_epoch.as_str());
+
+        let snap = self.shares.snapshot()?;
+        let key_packages = &snap.key_packages;
+        let pubkey_package = &snap.pubkey_package;
+        let min_signers = snap.min_signers;
 
         let mut rng = OsRng;
         let mut nonces_map = BTreeMap::new();
         let mut commitments_map = BTreeMap::new();
 
-        let identifiers: Vec<Identifier> = self.key_packages.keys().copied().collect();
-        if identifiers.len() < self.min_signers {
+        let identifiers: Vec<Identifier> = key_packages.keys().copied().collect();
+        if identifiers.len() < min_signers {
             return Err(DomainError::FailStop {
                 online: identifiers.len(),
-                need: self.min_signers,
+                need: min_signers,
             });
         }
 
-        for id in identifiers.iter().take(self.min_signers) {
-            let kp = self
-                .key_packages
+        for id in identifiers.iter().take(min_signers) {
+            let kp = key_packages
                 .get(id)
                 .ok_or_else(|| DomainError::ThresholdError("missing key package".into()))?;
             let (nonces, commitments) = frost::round1::commit(kp.signing_share(), &mut rng);
@@ -81,23 +106,22 @@ impl FrostSignOrchestrator {
         let mut signature_shares: BTreeMap<Identifier, SignatureShare> = BTreeMap::new();
 
         for id in nonces_map.keys().copied().collect::<Vec<_>>() {
-            let kp = &self.key_packages[&id];
+            let kp = &key_packages[&id];
             let nonces = &nonces_map[&id];
             let share = frost::round2::sign(&signing_package, nonces, kp)
                 .map_err(|e| DomainError::ThresholdError(format!("frost round2: {e}")))?;
             signature_shares.insert(id, share);
         }
 
-        // Drop/zeroize nonces after round2 — never reuse across sessions.
         for (_, mut n) in nonces_map {
             n.zeroize();
         }
 
         let signature: Signature =
-            frost::aggregate(&signing_package, &signature_shares, &self.pubkey_package)
+            frost::aggregate(&signing_package, &signature_shares, pubkey_package)
                 .map_err(|e| DomainError::ThresholdError(format!("frost aggregate: {e}")))?;
 
-        self.pubkey_package
+        pubkey_package
             .verifying_key()
             .verify(&bound_message, &signature)
             .map_err(|e| DomainError::ThresholdError(format!("frost verify: {e}")))?;
@@ -138,10 +162,13 @@ fn bind_message(message: &[u8], session_id: &str, day_epoch: &str) -> Vec<u8> {
 #[cfg(all(test, feature = "dealer_lab"))]
 mod tests {
     use super::*;
-    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU64, Ordering};
     use crate::adapters::{
-        DealerLabAdapter, LedgerDayEpochStub, PersistedAntiNonce, SystemClock,
+        DealerLabAdapter, LedgerDayEpochStub, PersistedAntiNonce, QuorumDailyRotation,
+        RecordingReshareHook, SystemClock,
     };
+    use crate::application::ClockPort;
+    use crate::domain::DomainError;
 
     struct TempProbe(std::path::PathBuf);
     impl TempProbe {
@@ -161,23 +188,56 @@ mod tests {
         }
     }
 
+    struct FakeClock(AtomicU64);
+    impl ClockPort for FakeClock {
+        fn unix_now_secs(&self) -> u64 {
+            self.0.load(Ordering::SeqCst)
+        }
+    }
+
     #[test]
     fn frost_sign_and_reject_session_reuse() {
         let bundle = DealerLabAdapter::generate(3, 2).unwrap();
         let tmp = TempProbe::new("sign");
         let anti = PersistedAntiNonce::open(tmp.0.join("sessions.log")).unwrap();
-        let rotation = LedgerDayEpochStub::new(Arc::new(SystemClock));
+        let rotation: Arc<dyn DailyRotationPort> =
+            Arc::new(LedgerDayEpochStub::new(Arc::new(SystemClock)));
         let orch = FrostSignOrchestrator::new(
             bundle.key_packages,
             bundle.pubkey_package,
             2,
             Box::new(anti),
-            Box::new(rotation),
+            rotation,
         );
         let r = orch.sign_lab_quorum("sess-a", b"hello").unwrap();
         assert_eq!(r.participants, 2);
         assert!(!r.signature_hex.is_empty());
         let err = orch.sign_lab_quorum("sess-a", b"hello2").unwrap_err();
         assert!(matches!(err, DomainError::NonceReuse(_)));
+    }
+
+    #[test]
+    fn frost_sign_rejects_stale_day_epoch() {
+        let bundle = DealerLabAdapter::generate(3, 2).unwrap();
+        let tmp = TempProbe::new("stale");
+        let anti = PersistedAntiNonce::open(tmp.0.join("sessions.log")).unwrap();
+        let clock = Arc::new(FakeClock(AtomicU64::new(1_704_067_200)));
+        let rotation: Arc<dyn DailyRotationPort> = Arc::new(QuorumDailyRotation::new(
+            clock.clone(),
+            1,
+            "local",
+            Arc::new(RecordingReshareHook::new()),
+        ));
+        let orch = FrostSignOrchestrator::new(
+            bundle.key_packages,
+            bundle.pubkey_package,
+            2,
+            Box::new(anti),
+            rotation,
+        );
+        orch.sign_lab_quorum("sess-ok", b"hello").unwrap();
+        clock.0.store(1_704_067_200 + 86_400, Ordering::SeqCst);
+        let err = orch.sign_lab_quorum("sess-stale", b"hello").unwrap_err();
+        assert!(matches!(err, DomainError::DayEpochStale { .. }));
     }
 }
