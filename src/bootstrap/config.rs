@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use crate::adapters::{peer_addr_is_onion, PeerHttpSettings, VaultTransport};
+use crate::adapters::{peer_addr_is_onion, PeerHttpSettings, TlsPeerVerifyPolicy, VaultTransport};
 use crate::domain::{
     resolve_node_tier, seat_genesis_by_tier, AttestationMode, BitcoinNetwork, DomainError,
     GovernanceRewardConfig, NodeId, ResharePolicy, SeatingCandidate, VaultNodeTier,
@@ -162,6 +162,8 @@ pub struct VaultConfig {
     pub tls_client_cert_path: Option<String>,
     /// PEM client private key for outbound peer calls (`VAULT_TLS_CLIENT_KEY_PATH`) — mTLS peer DKG.
     pub tls_client_key_path: Option<String>,
+    /// Outbound peer server-cert verify (`VAULT_TLS_VERIFY_MODE`): hostname | spiffe | onion_or_spiffe.
+    pub tls_verify_policy: TlsPeerVerifyPolicy,
     pub share_store_mode: ShareStoreMode,
     pub share_passphrase: Option<String>,
     /// Wrap AEAD passphrase with TPM seal (`VAULT_SHARE_TPM_SEAL=1`). Off by default.
@@ -421,6 +423,7 @@ impl VaultConfig {
             }
         }
         let clearnet_publish = env_flag("VAULT_CLEARNET_PUBLISH");
+        let tls_verify_policy = resolve_tls_verify_policy(transport)?;
 
         let cfg = Self {
             node_id,
@@ -451,6 +454,7 @@ impl VaultConfig {
             tls_client_ca_path,
             tls_client_cert_path,
             tls_client_key_path,
+            tls_verify_policy,
             share_store_mode,
             share_passphrase,
             share_tpm_seal,
@@ -617,6 +621,14 @@ impl VaultConfig {
                         "VAULT_TRANSPORT=tor requires onion VAULT_SEED_PEERS (peer {id}={addr})"
                     )));
                 }
+            }
+            if self.auth_mode == AuthMode::MutualTls
+                && matches!(self.tls_verify_policy, TlsPeerVerifyPolicy::Hostname)
+            {
+                return Err(DomainError::AuthRejected(
+                    "VAULT_TRANSPORT=tor with mTLS requires VAULT_TLS_VERIFY_MODE=onion_or_spiffe|spiffe (not hostname-only)"
+                        .into(),
+                ));
             }
         }
 
@@ -801,6 +813,20 @@ fn env_nonempty_first(names: &[&str]) -> Option<String> {
     None
 }
 
+fn resolve_tls_verify_policy(transport: VaultTransport) -> Result<TlsPeerVerifyPolicy, DomainError> {
+    let expected = env_nonempty_first(&["VAULT_TLS_PEER_SPIFFE_ID", "VAULT_MTLS_SPIFFE_VAULT"])
+        .unwrap_or_else(|| "spiffe://kerosene.lab/vault/server".into());
+    let default_mode = if transport.is_tor() {
+        "onion_or_spiffe"
+    } else {
+        "hostname"
+    };
+    let raw = std::env::var("VAULT_TLS_VERIFY_MODE").unwrap_or_else(|_| default_mode.into());
+    TlsPeerVerifyPolicy::parse(&raw, &expected).ok_or_else(|| {
+        DomainError::AuthRejected(format!("unknown VAULT_TLS_VERIFY_MODE={raw}"))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -835,6 +861,7 @@ mod tests {
             tls_client_ca_path: None,
             tls_client_cert_path: None,
             tls_client_key_path: None,
+            tls_verify_policy: TlsPeerVerifyPolicy::Hostname,
             share_store_mode: ShareStoreMode::AeadDisk,
             share_passphrase: Some("pass".into()),
             share_tpm_seal: false,
@@ -867,6 +894,9 @@ mod tests {
         cfg.transport = VaultTransport::Tor;
         cfg.peer_http = PeerHttpSettings::tor_defaults();
         cfg.clearnet_publish = false;
+        cfg.tls_verify_policy = TlsPeerVerifyPolicy::OnionOrSpiffe {
+            expected: "spiffe://kerosene.lab/vault/server".into(),
+        };
         cfg.seed_peers = vec![
             (
                 "vault-2".into(),

@@ -17,6 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use super::http_peer::PeerHttpSettings;
+use super::tls_peer_verify::{build_mtls_rustls_client_config, TlsPeerVerifyPolicy};
 use crate::application::AntiNoncePort;
 use crate::domain::{quorum_two_thirds, DomainError};
 
@@ -104,6 +105,8 @@ pub struct HttpAntiNonceTransport {
     peer_prepare_urls: Vec<String>,
     auth_token: Option<String>,
     peer_http: PeerHttpSettings,
+    /// When set, outbound prepare uses rustls mTLS (Tor onion / SPIFFE verify).
+    tls: Option<rustls::ClientConfig>,
 }
 
 impl HttpAntiNonceTransport {
@@ -128,7 +131,40 @@ impl HttpAntiNonceTransport {
             peer_prepare_urls,
             auth_token,
             peer_http,
+            tls: None,
         }
+    }
+
+    pub fn with_mtls(
+        peer_prepare_urls: Vec<String>,
+        peer_http: PeerHttpSettings,
+        client_cert_path: &Path,
+        client_key_path: &Path,
+        ca_path: &Path,
+        verify: &TlsPeerVerifyPolicy,
+    ) -> Result<Self, DomainError> {
+        let tls = build_mtls_rustls_client_config(
+            client_cert_path,
+            client_key_path,
+            ca_path,
+            verify,
+        )?;
+        Ok(Self {
+            peer_prepare_urls,
+            auth_token: None,
+            peer_http,
+            tls: Some(tls),
+        })
+    }
+
+    fn build_blocking_client(&self) -> Result<reqwest::blocking::Client, DomainError> {
+        let mut builder = self.peer_http.apply_blocking_builder(reqwest::blocking::Client::builder())?;
+        if let Some(tls) = self.tls.clone() {
+            builder = builder.use_preconfigured_tls(tls);
+        }
+        builder
+            .build()
+            .map_err(|e| DomainError::ThresholdError(format!("anti-nonce http client: {e}")))
     }
 }
 
@@ -138,7 +174,7 @@ impl AntiNonceQuorumTransport for HttpAntiNonceTransport {
         if self.peer_prepare_urls.is_empty() {
             return Ok(out);
         }
-        let client = self.peer_http.build_blocking_client()?;
+        let client = self.build_blocking_client()?;
         let body = serde_json::json!({ "session_id": session_id }).to_string();
         for url in &self.peer_prepare_urls {
             let attempts = self.peer_http.max_retries.max(1);

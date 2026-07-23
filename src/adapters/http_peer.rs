@@ -104,14 +104,11 @@ impl PeerHttpSettings {
         Ok(builder)
     }
 
-    pub fn build_async_client(&self) -> Result<reqwest::Client, DomainError> {
-        self.apply_builder(reqwest::Client::builder())?
-            .build()
-            .map_err(|e| DomainError::ThresholdError(format!("peer http client: {e}")))
-    }
-
-    pub fn build_blocking_client(&self) -> Result<reqwest::blocking::Client, DomainError> {
-        let mut builder = reqwest::blocking::Client::builder()
+    pub fn apply_blocking_builder(
+        &self,
+        mut builder: reqwest::blocking::ClientBuilder,
+    ) -> Result<reqwest::blocking::ClientBuilder, DomainError> {
+        builder = builder
             .timeout(self.timeout)
             .connect_timeout(self.connect_timeout);
         if let Some(proxy_url) = self.socks_proxy.as_deref() {
@@ -120,7 +117,17 @@ impl PeerHttpSettings {
             })?;
             builder = builder.proxy(proxy);
         }
-        builder
+        Ok(builder)
+    }
+
+    pub fn build_async_client(&self) -> Result<reqwest::Client, DomainError> {
+        self.apply_builder(reqwest::Client::builder())?
+            .build()
+            .map_err(|e| DomainError::ThresholdError(format!("peer http client: {e}")))
+    }
+
+    pub fn build_blocking_client(&self) -> Result<reqwest::blocking::Client, DomainError> {
+        self.apply_blocking_builder(reqwest::blocking::Client::builder())?
             .build()
             .map_err(|e| DomainError::ThresholdError(format!("peer http client: {e}")))
     }

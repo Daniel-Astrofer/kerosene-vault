@@ -37,6 +37,7 @@ fn base_lab() -> VaultConfig {
         tls_client_ca_path: None,
         tls_client_cert_path: None,
         tls_client_key_path: None,
+        tls_verify_policy: kerosene_vault::adapters::TlsPeerVerifyPolicy::Hostname,
         share_store_mode: ShareStoreMode::AeadDisk,
         share_passphrase: Some("pass".into()),
         share_tpm_seal: false,

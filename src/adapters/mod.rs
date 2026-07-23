@@ -25,6 +25,7 @@ mod share_aead;
 mod share_tee;
 mod share_tpm;
 mod threshold_state;
+mod tls_peer_verify;
 
 pub use attestation_sim::SimAttestationAdapter;
 pub use attestation_tee::TeeAttestationAdapter;
@@ -71,3 +72,4 @@ pub use share_tpm::{
     ResolvedPassphrase, TpmSealAdapter, TpmSealPort,
 };
 pub use threshold_state::ThresholdVaultState;
+pub use tls_peer_verify::{build_mtls_rustls_client_config, TlsPeerVerifyPolicy};

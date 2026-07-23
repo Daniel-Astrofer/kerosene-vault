@@ -29,6 +29,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
 use super::http_peer::{post_json_with_retry, PeerHttpSettings};
+use super::tls_peer_verify::{build_mtls_rustls_client_config, TlsPeerVerifyPolicy};
 use crate::application::ShareStorePort;
 use crate::domain::DomainError;
 
@@ -59,6 +60,7 @@ pub enum WireDkgPeerAuth {
         client_cert_path: PathBuf,
         client_key_path: PathBuf,
         ca_path: PathBuf,
+        verify: TlsPeerVerifyPolicy,
     },
 }
 
@@ -264,35 +266,16 @@ fn build_http_client(
             client_cert_path,
             client_key_path,
             ca_path,
+            verify,
         } => {
-            let mut pem = std::fs::read(client_cert_path).map_err(|e| {
-                DomainError::AuthRejected(format!(
-                    "read VAULT_TLS_CLIENT_CERT_PATH {}: {e}",
-                    client_cert_path.display()
-                ))
-            })?;
-            pem.push(b'\n');
-            pem.extend(std::fs::read(client_key_path).map_err(|e| {
-                DomainError::AuthRejected(format!(
-                    "read VAULT_TLS_CLIENT_KEY_PATH {}: {e}",
-                    client_key_path.display()
-                ))
-            })?);
-            let identity = reqwest::Identity::from_pem(&pem).map_err(|e| {
-                DomainError::AuthRejected(format!("mTLS client identity PEM: {e}"))
-            })?;
-            let ca_bytes = std::fs::read(ca_path).map_err(|e| {
-                DomainError::AuthRejected(format!(
-                    "read VAULT_TLS_CLIENT_CA_PATH {}: {e}",
-                    ca_path.display()
-                ))
-            })?;
-            let ca = reqwest::Certificate::from_pem(&ca_bytes).map_err(|e| {
-                DomainError::AuthRejected(format!("parse peer CA PEM: {e}"))
-            })?;
+            let tls = build_mtls_rustls_client_config(
+                client_cert_path,
+                client_key_path,
+                ca_path,
+                verify,
+            )?;
             builder
-                .identity(identity)
-                .add_root_certificate(ca)
+                .use_preconfigured_tls(tls)
                 .build()
                 .map_err(|e| DomainError::ThresholdError(format!("dkg mTLS http client: {e}")))
         }
@@ -1024,6 +1007,7 @@ mod tests {
                 client_cert_path: PathBuf::from("/no/such/client.crt"),
                 client_key_path: PathBuf::from("/no/such/client.key"),
                 ca_path: PathBuf::from("/no/such/ca.crt"),
+                verify: TlsPeerVerifyPolicy::Hostname,
             },
         ) else {
             panic!("expected AuthRejected when mTLS files missing");

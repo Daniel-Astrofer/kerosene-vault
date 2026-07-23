@@ -347,9 +347,16 @@ impl VaultRuntime {
             .unwrap_or("kerosene-vault-lab-only")
             .to_string();
         let mut peer_prepare = Vec::new();
+        let mtls = matches!(config.auth_mode, AuthMode::MutualTls);
         for (_, addr) in &config.seed_peers {
             let base = if addr.starts_with("http://") || addr.starts_with("https://") {
-                addr.clone()
+                if mtls && addr.starts_with("http://") {
+                    format!("https://{}", addr.trim_start_matches("http://"))
+                } else {
+                    addr.clone()
+                }
+            } else if mtls {
+                format!("https://{addr}")
             } else {
                 format!("http://{addr}")
             };
@@ -361,11 +368,24 @@ impl VaultRuntime {
             AuthMode::MutualTls => None,
         };
         let peer_count = peer_prepare.len();
-        let anti_transport = Arc::new(HttpAntiNonceTransport::with_peer_http(
-            peer_prepare,
-            peer_auth_token,
-            config.peer_http.clone(),
-        ));
+        let anti_transport = match config.auth_mode {
+            AuthMode::StaticToken => Arc::new(HttpAntiNonceTransport::with_peer_http(
+                peer_prepare,
+                peer_auth_token,
+                config.peer_http.clone(),
+            )),
+            AuthMode::MutualTls => {
+                let (cert, key, ca) = config.require_mtls_client_identity()?;
+                Arc::new(HttpAntiNonceTransport::with_mtls(
+                    peer_prepare,
+                    config.peer_http.clone(),
+                    std::path::Path::new(cert),
+                    std::path::Path::new(key),
+                    std::path::Path::new(ca),
+                    &config.tls_verify_policy,
+                )?)
+            }
+        };
         let anti_nonce: Arc<dyn AntiNoncePort> = Arc::new(QuorumAntiNonce::open(
             data_root.join("used_sessions.log"),
             anti_transport,
@@ -407,6 +427,7 @@ impl VaultRuntime {
                     client_cert_path: std::path::PathBuf::from(cert),
                     client_key_path: std::path::PathBuf::from(key),
                     ca_path: std::path::PathBuf::from(ca),
+                    verify: config.tls_verify_policy.clone(),
                 }
             }
         };
