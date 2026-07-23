@@ -549,6 +549,8 @@ F0 spec ──► F1 vault skeleton + lab N nós
 
 **Status (lab):** ports em `kerosene-contracts`; client HTTP `KfeVaultMeshSettlementClient` + fallback `MESH_DISABLED` (`KfeVaultMeshConfiguration`); endpoint interno `POST /internal/kfe/vault-mesh/intent`; flags `kfe.vaultmesh.*` (default off). Rails/mpc intactos. Hook opt-in no submit outbound via `KfeVaultMeshIntentService` (`submit-on-outbound`).
 
+**Status (lab — day rotation orchestration):** kfe **requests** daily day-advance + reshare; vaults **execute**. Worker `KfeVaultMeshDayRotationWorker` (`kfe.vaultmesh.day-rotation.*`) polls GET `/v1/day/current`; if mesh day &lt; UTC today → POST `/v1/day/vote` + `/v1/day/advance` + `/v1/reshare/trigger`. Idempotent same-day no-op. Auth = existing vaultmesh token / mTLS. Vaults do not self-cron the calendar day. mpc stays off on mesh-only path.
+
 **Status (lab / testnet3 — PSBT on-chain):** mesh-only outbound builds funded PSBT via Bitcoin Core (`includeWatching`, `change_type=bech32m`) → vault `POST /v1/bitcoin/sign-psbt` (Intent gate + `frost-secp256k1-tr` Taproot key-path sighashes) → finalize/broadcast. Deposit: `GET /v1/bitcoin/deposit` (`tr()` + `tb1p…`). mpc-sidecar permanece off.
 
 **Entrega**
@@ -757,5 +759,5 @@ Itens **não fechados** na conversa — precisam de decisão explícita:
 | TEE seal shares | **advanced** (HW fail-closed) | `TeeSealAdapter` `KVSEAL01` versionado; unseal só após attestation OK; lab stub só com `ATTESTATION_STAGING_STUB` (recusado sob `--features production` / cerimônia prod); feature `tee_hw` compila SEV SNP derived-key (+ SGX fail-closed até SDK enclave); CI sem HW **fail-closed** sem stub — não é go-live |
 | mTLS auth | **landed** (lab/staging) | `MutualTlsAuthAdapter` + rustls; `gen_lab_mtls_certs.sh` / `rotate_lab_mtls_certs.sh`; SPIFFE-like layout `docs/MTLS_SPIFFE_LAYOUT.md`; kfe `kfe.vaultmesh.tls.*` (PEM/PKCS12); staging compose mTLS e2e |
 | HW attestation | **started** (quote verify path) | `TeeAttestationAdapter` SEV-SNP/SGX envelope + verify structure; `tee_hw` feature; bind `measurement_pin` + allowlist Hb; prod refuses sim/stub; CI fail-closed |
-| Daily rotation + reshare policy | **landed** | `QuorumDailyRotation` (governance_t quorum, stale day reject on sign); `VAULT_RESHARE_POLICY=daily\|manual`; `PolicyReshareHook` + FROST `refresh_dkg` n=3; ledger `day_advanced` / `reshare_completed` |
+| Daily rotation + reshare policy | **landed** | Vault: persists `day_epoch` under `VAULT_DATA_DIR` (load on boot); peer vote/advance APIs; `PolicyReshareHook` refreshes **Intent + Taproot** (`frost-secp256k1-tr`, group VK invariant → same `tb1p`); TR packages via `ShareStorePort` (no fresh dealer TR every boot); `VAULT_RESHARE_POLICY=daily\|manual`; docs `DAY_ADVANCE_RESHARE.md`. **kfe orchestration:** `KfeVaultMeshDayRotationWorker` requests vote/advance/reshare via mesh HTTP; vaults do not self-cron the day. |
 | Anti-nonce replicated | **landed** (quorum) | `QuorumAntiNonce`: append-only `session_id` log + HTTP `/v1/anti-nonce/prepare` ACKs (`ceil(2n/3)`); refuse if seen on ≥1 peer or before quorum; persists across restart; multi-node sim tests |
