@@ -116,7 +116,7 @@ case "$MODE" in
     echo "  5. Enable kfe.vaultmesh.enabled=true + mesh-only=true (no hard tee_hw require)"
     echo "  6. Smoke Intent → Receipt; confirm fail-stop runbook"
     echo "  7. Do NOT re-enable mpc as silent rollback"
-    echo "  Note: deploy.sh still starts vault-mesh-lab clearnet — not this Tor ceremony path."
+    echo "  Note: deploy default is vault-mesh-lab; use KEROSENE_VAULT_MESH_PROFILE=tor for Tor mesh."
     ;;
   staging)
     check "$([[ "${ATT}" == "sev" || "${ATT}" == "sgx" || "${ATT}" == "software" ]] && echo 1 || echo 0)" \

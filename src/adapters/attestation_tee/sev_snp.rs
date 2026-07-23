@@ -7,7 +7,8 @@
 //! - No `/dev/sev-guest` device → reject with a clear error.
 //! - Empty or malformed reports → reject.
 //! - Certificate chain + ECDSA signature → verified by `sev-snp-utilities`.
-//! - Report measurement is bound to the pinned `Measurement` here (pin-only gate).
+//! - Constitution pin is bound via SNP `REPORT_DATA` (user data), not the guest
+//!   launch digest (`MEASUREMENT` field — that is firmware/VMM owned).
 //!
 //! Residual honesty: fetching and validating the AMD KDS cert chain depends on
 //! `sev-snp-utilities`' internal wiring / cache. If that path errors, verification fails.
@@ -16,6 +17,25 @@ use crate::domain::{DomainError, Measurement};
 
 #[cfg(feature = "tee_hw")]
 use std::io::Cursor;
+
+#[cfg(feature = "tee_hw")]
+use sev_snp_utilities::{AttestationReport, Policy, Requester, Verification};
+
+/// Pack our SHA-256 measurement (32 bytes) into SNP REPORT_DATA (64 bytes).
+#[cfg(feature = "tee_hw")]
+fn measurement_report_data(measurement: &Measurement) -> Result<[u8; 64], DomainError> {
+    let digest = hex::decode(measurement.as_hex()).map_err(|e| {
+        DomainError::AttestationRejected(format!("SEV-SNP measurement hex decode: {e}"))
+    })?;
+    if digest.len() != 32 {
+        return Err(DomainError::AttestationRejected(
+            "SEV-SNP measurement must be 32-byte SHA-256".into(),
+        ));
+    }
+    let mut user_data = [0u8; 64];
+    user_data[..32].copy_from_slice(&digest);
+    Ok(user_data)
+}
 
 /// Issue a platform attestation report for `measurement`.
 pub fn issue_report(measurement: &Measurement) -> Result<Vec<u8>, DomainError> {
@@ -28,10 +48,8 @@ pub fn issue_report(measurement: &Measurement) -> Result<Vec<u8>, DomainError> {
             ));
         }
 
-        // We just request the raw report bytes here; verification binds the report measurement
-        // to the pinned `Measurement`.
-        let _ = measurement;
-        let report_bytes = sev_snp_utilities::AttestationReport::request_raw().map_err(|e| {
+        let user_data = measurement_report_data(measurement)?;
+        let report_bytes = AttestationReport::request_raw(&user_data).map_err(|e| {
             DomainError::AttestationRejected(format!("SEV-SNP request_raw failed: {e}"))
         })?;
         Ok(report_bytes)
@@ -70,20 +88,20 @@ fn verify_report_structure(measurement: &Measurement, report: &[u8]) -> Result<(
         ));
     }
 
-    // Parse report and immediately bind the report measurement to our pinned pin.
-    let parsed = sev_snp_utilities::AttestationReport::from_reader(Cursor::new(report)).map_err(|e| {
+    let parsed = AttestationReport::from_reader(Cursor::new(report)).map_err(|e| {
         DomainError::AttestationRejected(format!("SEV-SNP report parse failed: {e}"))
     })?;
 
-    if parsed.measurement_hex() != measurement.as_hex() {
+    let expected = measurement_report_data(measurement)?;
+    if parsed.report_data.len() < 32 || parsed.report_data[..32] != expected[..32] {
         return Err(DomainError::AttestationRejected(
-            "SEV-SNP measurement mismatch".into(),
+            "SEV-SNP REPORT_DATA measurement mismatch".into(),
         ));
     }
 
     // Verify certificate chain + ECDSA signature.
     let verify_fut = async {
-        let policy = sev_snp_utilities::Policy::permissive();
+        let policy = Policy::permissive();
         parsed.verify(Some(policy)).await
     };
 
@@ -92,7 +110,8 @@ fn verify_report_structure(measurement: &Measurement, report: &[u8]) -> Result<(
         Err(_) => tokio::runtime::Runtime::new()
             .map_err(|e| DomainError::AttestationRejected(format!("tokio runtime init: {e}")))?
             .block_on(verify_fut),
-    }?;
+    }
+    .map_err(|e| DomainError::AttestationRejected(format!("SEV-SNP verify failed: {e}")))?;
 
     if !verified {
         return Err(DomainError::AttestationRejected(
@@ -117,5 +136,15 @@ mod tests {
         let m = pin();
         let err = verify_report(&m, &[]).unwrap_err();
         assert!(err.to_string().contains("report empty"));
+    }
+
+    #[test]
+    fn measurement_report_data_is_32_byte_prefix() {
+        let m = pin();
+        let data = measurement_report_data(&m).expect("pack");
+        assert_eq!(data.len(), 64);
+        assert_eq!(&data[32..], &[0u8; 32]);
+        let digest = hex::decode(m.as_hex()).unwrap();
+        assert_eq!(&data[..32], digest.as_slice());
     }
 }

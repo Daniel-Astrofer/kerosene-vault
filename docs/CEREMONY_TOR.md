@@ -3,15 +3,23 @@
 Minimum-viable **real Tor** path for vault↔vault (and operator→vault) traffic.
 Same FROST `VAULT_DKG_MODE=distributed_wire` binary path as lab/production — not `dealer_lab`.
 
-## What deploy.sh still does
+## What deploy.sh / ensure-vault-mesh does
 
 | Path | Compose | Transport | DKG | Auth |
 | --- | --- | --- | --- | --- |
-| `bash infra/deploy.sh` / `ensure-vault-mesh-lab.sh` | `vault-mesh-lab.compose.yaml` | Clearnet host ports `:7701–7703` | default `dealer_lab` | `static_token` |
-| Staging opt-in | `vault-mesh-staging.compose.yaml` | Clearnet published ports | `distributed_wire` | mTLS |
-| **This profile** | `vault-mesh-tor.compose.yaml` | Real Tor HS + SOCKS; **no vault host ports** | `distributed_wire` | lab smoke: `static_token`; **ceremony: mTLS + onion/SPIFFE** |
+| Default `bash infra/deploy.sh` / `ensure-vault-mesh-lab.sh` | `vault-mesh-lab.compose.yaml` | Clearnet host ports `:7701–7703` | default `dealer_lab` | `static_token` |
+| `KEROSENE_VAULT_MESH_PROFILE=staging` | `vault-mesh-staging.compose.yaml` | Clearnet published ports | `distributed_wire` | mTLS |
+| `KEROSENE_VAULT_MESH_PROFILE=tor` | `vault-mesh-tor.compose.yaml` | Real Tor HS + SOCKS; **no vault host ports** | `distributed_wire` | lab smoke: `static_token`; **ceremony: mTLS + onion/SPIFFE** |
 
-Lab clearnet remains the local-full / kfe visualize path. **Production genesis ceremony must use Tor** (`VAULT_TRANSPORT=tor`) **and mTLS** (`VAULT_AUTH_MODE=mtls`). Staging/production binary hygiene **refuses** `static_token`.
+Lab clearnet remains the local-full / kfe visualize default. Opt into Tor mesh without leaving deploy:
+
+```bash
+KEROSENE_VAULT_MESH_PROFILE=tor bash infra/deploy.sh --wait
+# or only the mesh helper:
+KEROSENE_VAULT_MESH_PROFILE=tor bash infra/kubernetes/scripts/ensure-vault-mesh-lab.sh
+```
+
+Tor profile does **not** publish `:7701–7703` on the host, so the local-full kfe Endpoints bridge is for lab/staging only. **Production genesis ceremony must use Tor** (`VAULT_TRANSPORT=tor`) **and mTLS** (`VAULT_AUTH_MODE=mtls`). Staging/production binary hygiene **refuses** `static_token`.
 
 ## Operator: Tor lab smoke (token) vs ceremony mTLS
 

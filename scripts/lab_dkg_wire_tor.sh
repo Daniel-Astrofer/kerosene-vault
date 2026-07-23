@@ -215,4 +215,4 @@ done
 
 echo "OK: over-wire DKG complete over real Tor (auth=$AUTH_MODE)."
 echo "    Production ceremony: VAULT_CEREMONY_MODE=production + mTLS + onion_or_spiffe — docs/CEREMONY_TOR.md"
-echo "    deploy.sh still uses vault-mesh-lab (clearnet dealer_lab visualize), not this profile."
+echo "    Deploy default is vault-mesh-lab; opt-in: KEROSENE_VAULT_MESH_PROFILE=tor bash infra/deploy.sh"

@@ -54,7 +54,7 @@ without a quote, seating treats the peer as `domestic`.
 | Auth | static token OK | mTLS |
 | Seating | same algorithm | same algorithm |
 
-**Tor runbook:** `docs/CEREMONY_TOR.md`. `deploy.sh` still starts clearnet `vault-mesh-lab` — not the Tor ceremony profile.
+**Tor runbook:** `docs/CEREMONY_TOR.md`. Deploy default is clearnet `vault-mesh-lab`; opt into Tor with `KEROSENE_VAULT_MESH_PROFILE=tor`.
 
 See `VAULT_MESH_PLAN.md` §3.1.
 
