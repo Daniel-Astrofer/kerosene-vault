@@ -139,7 +139,14 @@ impl BucketLedgerPort for InMemoryBucketLedger {
     ) -> Result<(), DomainError> {
         let mut g = self.inner.lock().expect("bucket lock");
         Self::sweep_expired(&mut g);
-        if g.consumed.contains(intent_id) || g.reserved.contains_key(intent_id) {
+        if g.consumed.contains(intent_id) {
+            return Err(DomainError::IntentReplay(intent_id.to_string()));
+        }
+        if let Some((k, amt, _)) = g.reserved.get(intent_id) {
+            // Idempotent resume (CHANNELS open crash after reserve / before open).
+            if *k == kind && *amt == amount_sats {
+                return Ok(());
+            }
             return Err(DomainError::IntentReplay(intent_id.to_string()));
         }
         let policy = g
@@ -162,7 +169,8 @@ impl BucketLedgerPort for InMemoryBucketLedger {
         let mut g = self.inner.lock().expect("bucket lock");
         Self::sweep_expired(&mut g);
         if g.consumed.contains(intent_id) {
-            return Err(DomainError::IntentReplay(intent_id.to_string()));
+            // Idempotent commit retry after open-ok / commit-fail.
+            return Ok(());
         }
         if !g.reserved.contains_key(intent_id) {
             return Err(DomainError::ReservationMissing(intent_id.to_string()));
@@ -384,7 +392,8 @@ impl BucketLedgerPort for PersistedBucketLedger {
             let mut g = self.inner.inner.lock().expect("bucket lock");
             InMemoryBucketLedger::sweep_expired(&mut g);
             if g.consumed.contains(intent_id) {
-                return Err(DomainError::IntentReplay(intent_id.to_string()));
+                // Idempotent commit retry.
+                return Ok(());
             }
             if !g.reserved.contains_key(intent_id) {
                 return Err(DomainError::ReservationMissing(intent_id.to_string()));

@@ -391,7 +391,8 @@ impl BucketLedgerPort for QuorumBucketLedger {
 
     fn commit_consume(&self, intent_id: &str) -> Result<(), DomainError> {
         if self.local.is_consumed(intent_id)? {
-            return Err(DomainError::IntentReplay(intent_id.to_string()));
+            // Idempotent commit retry (CHANNELS open-ok / commit-fail outbox).
+            return Ok(());
         }
         // Durable mesh burn (High #10) — reservation may be local soft or peer soft.
         self.claim_consume(intent_id)
