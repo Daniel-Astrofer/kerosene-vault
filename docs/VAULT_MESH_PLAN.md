@@ -735,6 +735,8 @@ Itens **não fechados** na conversa — precisam de decisão explícita:
 | --- | --- | --- |
 | **Distributed DKG (in-process)** | **landed** | `VAULT_DKG_MODE=distributed`: FROST `part1/2/3` multi-party sim (n=3,t=2), **sem** `generate_with_dealer`; ToB check `min_signers` == constituição; shares só via `ShareStorePort` |
 | **Over-wire DKG HTTP** | **landed (lab)** | `/v1/dkg/round{1,2,3}` + `VAULT_DKG_MODE=distributed_wire`; peer exchange com `X-Vault-Token`; cada vault só com seu share; compose notes + `scripts/lab_dkg_wire.sh`; in-process permanece fallback |
-| TEE seal shares | refuse | `TeeSealShareStore` fail-closed |
+| TEE seal shares | **started** (staging stub) | `TeeSealAdapter` envelope `KVSEAL01`; lab/staging + `ATTESTATION_STAGING_STUB` sela measurement-bound; production ceremonial **fail-closed** sem TEE real |
 | mTLS auth | refuse stub | `MutualTlsAuthAdapter` |
-| HW attestation | staging stub / refuse | sim forbidden when hardened |
+| HW attestation | **started** (staging stub) | `TeeAttestationAdapter` + `constitution.measurement_pin` (default = hash); sim forbidden when hardened; HW real ainda fail-closed |
+| Daily rotation + reshare hook | **started** | `QuorumDailyRotation`: advance com quorum stub, rejeita day sessions stale; `ReshareHookPort` + teste |
+| Anti-nonce replicated | **started** (best-effort) | `ReplicatedAntiNonce`: volume lab compartilhado + gossip `/v1/anti-nonce/ingest` |
