@@ -14,9 +14,11 @@ A implementação nasce com **contratos, hygiene e fail-closed de produção**. 
 | Ambiente | O que roda | O que é proibido |
 | --- | --- | --- |
 | **Local / lab / testnet3** | Mesmo código; `dealer_lab` + token + AEAD disk + `ATTESTATION_MODE=sim` para ver quorum/Intent/FROST | Rotular como go-live; mainnet |
-| **Production build** (`--features production`) | Sem `dealer_lab` linkado; exige mTLS mode, TEE seal path, HW attestation, DKG distributed | Dealer, static token, sim attestation, share em disco host |
+| **Production build** (`--features production`) | Sem `dealer_lab` linkado; exige mTLS, DKG distributed, share seal por **tier** (TPM doméstico e/ou TEE SEV/SGX), atestação honesta ao tier | Dealer, static token, `sim` em prod, claim SEV/SGX **sem** HW, share em claro no host |
 
 **Lab ≠ go-live.** Lab P0 exercita o caminho; o Production Gate (abaixo) é obrigatório antes de cerimônia / mainnet.
+
+**Operadores = PCs domésticos (maioria).** A mesh **não** assume EPYC/SEV em todo nó. Segurança de produção = **threshold FROST** + **allowlist de release** + **TPM seal/identity** (doméstico) + **caps/fail-stop**. **SEV-SNP (ou SGX) é upgrade preferido**, não requisito universal. Cerimônia **nativa** fecha com set só doméstico; nós SEV, quando presentes, têm **prioridade de seating** (genesis/admissão). Detalhe: §3.1.
 
 ```mermaid
 flowchart LR
@@ -33,10 +35,11 @@ flowchart LR
 
 | Critério | Lab P0 (visualização local / testnet3) | Production Gate (obrigatório go-live) | Risco se ignorado + fonte |
 | --- | --- | --- | --- |
-| DKG | Dealer single-process (`feature = dealer_lab` **só**); banner + production **não compila** dealer | DKG distribuído multi-round over-wire (**sem** dealer) | ToB 2024: threshold manipulation |
-| Share protection | AEAD Argon2 + ChaCha20-Poly1305 + secrecy/zeroize | **TEE sealing** (SEV/SGX) desde genesis | Host compromise pós-unseal |
-| Auth kfe ↔ vault | `X-Vault-Token` / `VAULT_AUTH_MODE=static_token` (lab) | **mTLS mútuo** + cert rotation (SPIFFE-like) | Token leak → signing |
-| Attestation | Stub / measurement SHA-256 básico | **HW quote** + predicados na constituição | Supply chain / binary tamper |
+| DKG | Dealer single-process (`feature = dealer_lab` **só**); banner + production **não compila** dealer | DKG distribuído multi-round over-wire (**sem** dealer); cerimônia nativa OK em set **doméstico** | ToB 2024: threshold manipulation |
+| Share protection | AEAD Argon2 + ChaCha20-Poly1305 + secrecy/zeroize | **Seal por tier:** TPM 2.0 (+ AEAD) no PC doméstico; **SEV/SGX seal** quando o nó declara TEE | Host compromise pós-unseal (pior sem TPM/TEE) |
+| Auth kfe ↔ vault | `X-Vault-Token` / `VAULT_AUTH_MODE=static_token` (lab) | **mTLS mútuo** + cert rotation (SPIFFE-like); TPM pode ancorar identidade do nó | Token leak → signing |
+| Attestation | Stub / measurement SHA-256 básico | **Honesta ao tier:** measured boot / TPM identity no doméstico; **HW quote** SEV/SGX só em nós TEE; + predicados / allowlist | Supply chain / binary tamper; **não** exigir quote SEV em todo nó |
+| Seating / tiers | N/A (lab homogêneo) | Nós SEV/SGX com **prioridade de seating** quando presentes; set 100% doméstico **admitido** | Concentrar genesis só em VPS frágeis sem tiering |
 | Rotação diária | Session material stub (epoch diário no ledger; signing bind ao day-epoch) | Rotação **completa** session + **reshare policy** | Nonce reuse em escala + stale shares |
 | Anti-nonce | Determinístico + persistência local | + **replicated** anti-replay log | Key extraction (Schnorr) |
 | FROST | `frost-secp256k1` 3.x | Mesma + pin de versão auditada + **concurrent-safe** sessions | Forgery (Drijvers et al.) |
@@ -51,8 +54,8 @@ Gate visualize (staging mTLS): `VAULT_AUTH_MODE=mtls` + `VAULT_TLS_*`; certs via
 1. **Nonce reuse FROST/Schnorr (crítico)** — reuso ⇒ extração algébrica de share. Lib ZF faz binding message+participants; **nossa** orquestração ainda pode errar (reusar nonces map, resign após abort, `session_id` recycle). Controles: `session_id` único persistido; nonces zeroize pós-uso; nunca resign com mesmos nonces; preferir commit bound a `session_id || message`. Detalhe operacional em §4.3.
 2. **DKG dealer / Pedersen DKG — Trail of Bits (2024)** — participante malicioso pode **aumentar o threshold silenciosamente**. Dealer single-process e DKG ingênuo são inaceitáveis em prod. Gate: DKG distribuído multi-round **com** verificações contra threshold manipulation (protocolo ZF atualizado + regressão).
 3. **FROST ZF** — auditorias NCC (2023) e Least Authority (2025); sem falhas críticas graves no resumo público, mas atenção a **DKG** e **concurrent signing**. Evitar signing paralelo inseguro na mesma key sem isolamento de sessão.
-4. **Disk AEAD ≪ TEE sealing** — Argon2+ChaCha ajuda lab; host compromise pós-unseal expõe share. Prod: seal no enclave desde genesis.
-5. **Custody threshold** — risco dominante costuma ser **coordenação, rotação e policy**, não só crypto. Rotação diária + caps + fail-stop + governance são parte do Gate, não afterthought.
+4. **Disk AEAD ≪ TPM seal ≪ TEE sealing** — Argon2+ChaCha ajuda lab; TPM no PC doméstico amarra unseal à máquina/boot (ainda deixa share na RAM do host pós-unseal). SEV/SGX isola melhor a memória do vault. Prod doméstico: **TPM + threshold**; SEV = upgrade preferido, não falso equivalente ao TPM.
+5. **Custody threshold** — risco dominante costuma ser **coordenação, rotação e policy**, não só crypto. Rotação diária + caps + fail-stop + governance são parte do Gate, não afterthought. Um PC doméstico comprometido ≠ cofre inteiro (precisa `≥ t` shares).
 
 ---
 
@@ -82,7 +85,7 @@ Gate visualize (staging mTLS): `VAULT_AUTH_MODE=mtls` + `VAULT_TLS_*`; certs via
 | **`adapters/`** | Rails externos (Bitcoin Core, Lightning, …) — sem shard FROST em claro |
 | **`mpc-sidecar` (Go)** | Signer legado → **não entra no path novo**; desligar no go-live da mesh |
 | **HashiCorp Vault** | Opcional só para secrets de ops **não**-tesouraria; **não** arma shares da carteira no desenho novo |
-| **Vault mesh (Rust+TEE)** | Detém os shares (genesis DKG), reshare, atestação, repo, cosign, FROST `2/3` |
+| **Vault mesh (Rust; TEE opcional)** | Detém os shares (genesis DKG), reshare, atestação, repo, cosign, FROST `2/3`; operadores em geral = **PCs domésticos** (+ nós SEV preferidos) |
 
 Quando este doc diz “banco”, lê-se sobretudo **`kfe-service`** (+ app/contracts). Não confundir com “servidor completo”.
 
@@ -98,7 +101,7 @@ Todo código **novo** deste plano (`kerosene-vault` Rust, contratos Intent/Recei
 | --- | --- |
 | **S** Single Responsibility | Um módulo = uma razão de mudar (ex.: FROST ≠ gossip Tor ≠ allowlist de release) |
 | **O** Open/Closed | Novas suites crypto / predicados via extensão (strategy/port), sem reescrever o núcleo de época |
-| **L** Liskov | Adapters (sim TEE vs SEV/SGX, Tor real vs lab) substituíveis sem quebrar use cases |
+| **L** Liskov | Adapters (sim / TPM doméstico / SEV/SGX, Tor real vs lab) substituíveis sem quebrar use cases |
 | **I** Interface Segregation | Ports finos (`SignIntent`, `PutBlob`, `CosignRelease`) — sem “God trait” de vault |
 | **D** Dependency Inversion | Domínio/use cases dependem de **traits/ports**; Tor, TEE, disk, gRPC são **adapters** |
 
@@ -161,9 +164,48 @@ Espelhar a separação já buscada em contracts/shared/kfe — **não** regredir
 | **Ledger de vaults** | Allowlist, épocas, constituição, admissão/revogação, âncoras, elegibilidade de reward |
 | **Seeds Tor** | Só discovery — **sem** superpermissão |
 
-**Genesis:** cerimônia DKG no **conjunto** inicial de vaults (vários peers). Não há “primeiro vault” com a chave inteira nem superpermissão — cada vault genesis fica só com **seu** share; a chave completa nunca existe.
+**Genesis:** cerimônia DKG no **conjunto** inicial de vaults (vários peers). Não há “primeiro vault” com a chave inteira nem superpermissão — cada vault genesis fica só com **seu** share; a chave completa nunca existe. Cerimônia **nativa** é suportada com set só doméstico; ver §3.1 para prioridade SEV.
 
 Não há vault primário em runtime. Líder de rodada FROST, se existir, é **rotativo** e sem poder extra de chave.
+
+### 3.1 Tiers de nó: doméstico vs SEV (modelo fechado)
+
+A maioria dos operadores de vault são **computadores domésticos** (ex. Ryzen desktop) **sem** SEV-SNP. Isso é **first-class**, não exceção.
+
+| Tier | Hardware típico | Papel |
+| --- | --- | --- |
+| **`domestic`** | PC / mini-PC com **TPM 2.0** (fTPM ou dTPM); sem enclave SEV/SGX | Maioria do set; cerimônia nativa e signing quorum |
+| **`sev` / `sgx`** | Host com SEV-SNP (EPYC/colo) ou SGX | **Upgrade preferido**; prioridade de seating quando presente |
+
+**Baseline de segurança (não é “todo nó = HW TEE”):**
+
+1. Threshold FROST `2/3` (um host doméstico comprometido ≠ chave completa).  
+2. Allowlist de release + rebuild + predicados (binário mentiroso fora do set).  
+3. **TPM 2.0:** selar material de disco / identidade do nó / measured boot onde disponível.  
+4. Caps, timelock, fail-stop, anti-nonce, governance.  
+5. **SEV-SNP (ou SGX):** preferido quando o operador puder — melhor isolamento de memória + quote — **não** requisito universal de Gate.
+
+**Cerimônia nativa**
+
+- Fecha com `n` nós **todos domésticos** (ex. genesis `n=3`).  
+- Se houver candidatos SEV/SGX no roster, eles têm **prioridade de seating** (preencher assentos genesis / waiting→active antes de domésticos equivalentes).  
+- Gate **recusa** claim falso (`ATTESTATION_MODE=sev|sgx` sem HW / stub em prod). Gate **não** recusa set só-doméstico honesto.  
+- `--features production` alinha com isso: proíbe dealer/`sim`/stub; **não** exige SEV em 100% dos nós.
+
+#### TPM 2.0 vs SEV-SNP (tabela honesta)
+
+| Capacidade | TPM 2.0 (PC doméstico) | SEV-SNP (servidor confidencial) |
+| --- | --- | --- |
+| Selar chave / share em disco à máquina | **Sim** (seal a PCR/chave TPM) | **Sim** (derived key / enclave seal) |
+| Measured boot / recusar unseal se boot trocou | **Parcial/sim** via PCR | **Sim** (measurement no report) |
+| Identidade do nó para mTLS / “sou o vault X” | **Sim** (chave no TPM) | **Sim** (quote + identidade de plataforma) |
+| Isolar share da RAM do Linux/root pós-unseal | **Não** — share fica na RAM do host | **Sim** (memória de guest confidencial) |
+| Impedir hypervisor/OS host de ler memória do vault | **Não** | **Sim** (modelo SEV) |
+| Attestation remota do binário vault com quote de chip | **Limitado** (TPM quote ≠ enclave app) | **Sim** (SNP attestation report) |
+| Anti-roubo de SSD sem o host | **Bom** | **Bom** |
+| Disponibilidade em miner/home PC | **Comum** | **Rara** (EPYC/colo; não Ryzen 5500 típico) |
+
+**Frase curta:** TPM reforça o nó doméstico; **não** substitui SEV. A rede depende do **quorum + policy**, não de todo operador ter EPYC.
 
 ---
 
@@ -180,7 +222,7 @@ Não há vault primário em runtime. Líder de rodada FROST, se existir, é **ro
 Os shares da carteira principal (e buckets FROST) **ficam nos vaults da mesh**, desde o **genesis**:
 
 1. **DKG sem dealer** no conjunto genesis — chave completa nunca é calculada.  
-2. Cada vault guarda **somente o seu** share em TEE/RAM segura; os outros vaults **não** recebem plaintext desse share.  
+2. Cada vault guarda **somente o seu** share em store selado ao tier (`TPM`/AEAD no doméstico; **TEE seal** em SEV/SGX); os outros vaults **não** recebem plaintext desse share.  
 3. Vaults **não** conseguem juntar e formar passphrase/chave (precisariam de `≥ t` shares em claro no mesmo lugar — proibido pelo protocolo).  
 4. **Servidores Java não são armados com shares FROST** (diferente do fluxo HashiCorp→servidor atual).  
 5. O que a mesh “prover” ao `kfe-service` = **pubkey/descriptor**, status de época, e **assinatura sob Intent** — não o share.  
@@ -228,7 +270,7 @@ Substitui gossip best-effort / volume compartilhado. Log append-only de `session
 #### O que isso NÃO resolve sozinho
 
 - Bug na lib FROST ou host que force o enclave a assinar fora do state machine.  
-- Por isso: measurement allowlisted + predicados + rebuild + TEE.
+- Por isso: measurement allowlisted + predicados + rebuild + seal por tier (TPM e/ou TEE).
 
 #### Critério de pronto (Fase 3)
 
@@ -401,8 +443,8 @@ Objetivo: **simular de fato o quorum** (várias imagens/VMs = vários vaults), m
 | Intent / Receipt (`kfe-service`) | **Real** |
 | Ledger, allowlist, épocas, caps | **Real** |
 | Release: `Hs`/`Hb`, rebuild ≥3, predicados, cosign, ativação | **Real** (atestação de **código/release**) |
-| Quote TEE de hardware (SGX/SEV) | **`ATTESTATION_MODE=sim`** no lab (mesmo verificador); prod **recusa** `sim` |
-| Hosts TEE reais | Staging separado (`sev`/`sgx`), não obrigatório no lab diário |
+| Quote TEE de hardware (SGX/SEV) | **`ATTESTATION_MODE=sim`** no lab (mesmo verificador); prod **recusa** `sim` e claim SEV sem HW |  
+| Hosts TEE reais | Staging / colo opcional (`sev`/`sgx`); **não** obrigatório no lab diário **nem** em 100% dos nós de cerimônia nativa (doméstico first-class; §3.1) |
 
 “Simular a blockchain de vaults” = **muitos nós + partições + nó mau**.  
 **Não** significa fake de crypto/release: isso roda o protocolo de verdade.
@@ -445,7 +487,7 @@ Pentest: Hb adulterado, rebuild divergente, vault mentiroso, release sem `2/3` c
 - Replay de Intent.  
 - **Nonce reuse:** tentativa de reusar commitment / sessão ⇒ reject; crash mid-sign ⇒ nova sessão sem reuso.  
 
-Hardware-chip break = fora do lab diário (staging TEE).
+Hardware-chip break (SEV quote forge) = fora do lab diário (staging TEE). Lab doméstico exercita TPM/software path sem fingir SNP.
 
 ### 13.5 Regra de higiene
 
@@ -628,15 +670,16 @@ cd backend/kerosene-vault && ./scripts/lab_pentest.sh
 
 ### Fase 8 — Staging TEE + go-live prod (corte limpo) (3–6 semanas)
 
-**Status (staging scaffold):** adapters TEE `sev|sgx` (`TeeAttestationAdapter`) com stub de staging (`ATTESTATION_STAGING_STUB`); produção ceremonial **recusa** stub; compose `vault-mesh-staging.compose.yaml` (**mTLS default** + cert gen/rotate); checklist `scripts/genesis_ceremony_checklist.sh`; kfe `mesh-only` + `kfe.mpc.signing-enabled=false` + `KfeVaultMeshGoLiveGuard` + client TLS `kfe.vaultmesh.tls.*`. HW quote real ainda fail-closed sem stub.
+**Status (staging scaffold):** adapters TEE `sev|sgx` (`TeeAttestationAdapter`) com stub de staging (`ATTESTATION_STAGING_STUB`); produção ceremonial **recusa** stub e claim SEV sem HW; compose `vault-mesh-staging.compose.yaml` (**mTLS default** + cert gen/rotate) — staging TEE **não** implica que todo nó de prod seja SEV; checklist `scripts/genesis_ceremony_checklist.sh`; kfe `mesh-only` + `kfe.mpc.signing-enabled=false` + `KfeVaultMeshGoLiveGuard` + client TLS `kfe.vaultmesh.tls.*`. Cerimônia **nativa** com set doméstico (TPM) é Gate-válida; SEV nodes = prioridade de seating (§3.1).
 
 **Entrega**
 
-- 1–N nós com `ATTESTATION_MODE=sev|sgx` (decisão TEE).  
+- Cerimônia nativa com set **doméstico** e/ou misto; nós `ATTESTATION_MODE=sev|sgx` quando HW real existir (upgrade preferido, não cota 100%).  
 - Genesis DKG de **produção** (cerimônia).  
 - Wire `kfe-service` → **somente** mesh.  
 - **Desligar** mpc-sidecar / armamento HashiCorp de carteira (sem dual-run).  
-- Monitoramento/audit keys separadas.
+- Monitoramento/audit keys separadas.  
+- Policy de seating: SEV/SGX antes de doméstico equivalente quando ambos candidatarem.
 
 **Critério de pronto:** saque real testnet/mainnet conforme política; legado de signing off; rollback = só fail-stop + runbook (não “voltar mpc” silencioso).
 
@@ -691,7 +734,7 @@ VAULT_GOVERNANCE_REWARD_SATS=1000 cargo test --test governance_rewards
 | Contracts Intent (F0/F4) | Vault skeleton (F1) |
 | Lab Compose/VMs (F1) | Ledger design (F2) |
 | Pentest harness (F6) | Buckets policy (F6) |
-| Escolha SGX/SEV + colo (ops) | F3–F7 eng |
+| Escolha colo SEV (ops, **upgrade**) vs frota doméstica TPM | F3–F7 eng + seating policy (§3.1) |
 
 ### O que não fazer cedo
 
@@ -706,7 +749,7 @@ VAULT_GOVERNANCE_REWARD_SATS=1000 cargo test --test governance_rewards
 
 ### Marco “produção”
 
-**Fim da Fase 8:** TEE real (ou aceite explícito de risco), genesis prod, mpc off.
+**Fim da Fase 8:** cerimônia nativa prod (doméstico e/ou SEV com prioridade), mpc off; SEV opcional como upgrade — não Gate “100% TEE”.
 
 ---
 
@@ -726,7 +769,7 @@ Itens **não fechados** na conversa — precisam de decisão explícita:
    - Confirmar ML-KEM-768 + ML-DSA-65 + AES-256-GCM como v1, ou preferir 512/44.  
    - Ed25519 híbrido nas assinaturas no early: sim/não.
 
-5. **SGX vs SEV** como alvo TEE de produção (lab usa `sim`).
+5. **SEV/SGX como upgrade** — **fechado em princípio (§3.1):** não obrigatório em todo nó; preferido + prioridade de seating. Ainda aberto: quantos assentos SEV mirar no genesis inicial (0 vs ≥1) e SGX vs só SEV no path `tee_hw`.
 
 6. **Frequência de payout miners** — accrual diário / payout semanal / por época.
 
@@ -746,13 +789,14 @@ Itens **não fechados** na conversa — precisam de decisão explícita:
 - Buckets USERS / PROFIT / MINERS / CHANNELS / INFRA.  
 - Anti-cartel: cosign por predicado; caps no ledger.  
 - Release: council + rebuild + timelock; keys ≠ audit.  
-- Lab local = **várias imagens/VMs** simulando a blockchain de vaults; **comunicações + release/atestação de código + FROST reais**; só quote de chip TEE pode ser `sim`.  
+- Lab local = **várias imagens/VMs** simulando a blockchain de vaults; **comunicações + release/atestação de código + FROST reais**; quote de chip TEE pode ser `sim` no lab.  
 - Confiança = modelo + custo do ataque + teto de dano; não zero vuln.  
 - Quorum para **assinar transação** = **2/3** (`t = ⌈2n/3⌉`).  
 - **Anti-nonce-reuse** em FROST/Schnorr é requisito explícito (§4.3), não detalhe opcional.  
 - Código novo: **SOLID + Clean Architecture** (§2.1), camadas domain / application / adapters.  
-- **Lab ≠ go-live:** Lab P0 visualiza o binário de produção; Production Gate (ToB DKG, TEE seal, mTLS, HW attestation) é obrigatório antes de cerimônia.  
-- Threat notes: nonce reuse, ToB 2024 DKG threshold inflation, audits ZF (NCC/Least Authority), disk AEAD ≪ TEE.
+- **Lab ≠ go-live:** Lab P0 visualiza o binário de produção; Production Gate (ToB DKG, mTLS, seal/atestação **por tier**, caps) é obrigatório antes de cerimônia — **não** “HW TEE em todos os nós”.  
+- Threat notes: nonce reuse, ToB 2024 DKG threshold inflation, audits ZF (NCC/Least Authority), disk AEAD ≪ TPM ≪ TEE.  
+- **Operadores domésticos first-class** (§3.1): segurança = threshold + allowlist + TPM + caps; SEV = upgrade preferido + seating priority; cerimônia nativa OK sem EPYC.
 
 ### Production Gate — progresso (não é go-live)
 
@@ -760,9 +804,10 @@ Itens **não fechados** na conversa — precisam de decisão explícita:
 | --- | --- | --- |
 | **Distributed DKG (in-process)** | **landed** | `VAULT_DKG_MODE=distributed`: FROST `part1/2/3` multi-party sim (n=3,t=2), **sem** `generate_with_dealer`; ToB check `min_signers` == constituição; shares só via `ShareStorePort` |
 | **Over-wire DKG HTTP** | **landed (lab+Gate checks)** | `/v1/dkg/round{1,2,3}` + `VAULT_DKG_MODE=distributed_wire`; peer auth `static_token` **or** `mtls` (HTTPS client cert, no token); roster+threshold frozen at round1; transcript binding; reject threshold bump / late join; compose notes + `scripts/lab_dkg_wire.sh`; in-process permanece fallback |
-| TEE seal shares | **advanced** (HW fail-closed) | `TeeSealAdapter` `KVSEAL01` versionado; unseal só após attestation OK; lab stub só com `ATTESTATION_STAGING_STUB` (recusado sob `--features production` / cerimônia prod); feature `tee_hw` compila SEV SNP derived-key (+ SGX fail-closed até SDK enclave); CI sem HW **fail-closed** sem stub — não é go-live |
-| mTLS auth | **landed** (lab/staging) | `MutualTlsAuthAdapter` + rustls; `gen_lab_mtls_certs.sh` / `rotate_lab_mtls_certs.sh`; SPIFFE-like layout `docs/MTLS_SPIFFE_LAYOUT.md`; kfe `kfe.vaultmesh.tls.*` (PEM/PKCS12); staging compose mTLS e2e |
-| HW attestation | **started** (quote verify path) | `TeeAttestationAdapter` SEV-SNP/SGX envelope + verify structure; `tee_hw` feature; bind `measurement_pin` + allowlist Hb; prod refuses sim/stub; CI fail-closed |
+| TEE / TPM seal shares | **advanced** (tiered) | `TeeSealAdapter` `KVSEAL01` para path SEV/SGX; doméstico = TPM seal + AEAD (não fingir SNP); unseal após atestação OK **do tier**; lab stub só com `ATTESTATION_STAGING_STUB` (recusado sob `--features production` / cerimônia prod); `tee_hw` = SEV SNP derived-key (+ SGX fail-closed até SDK); **Gate não exige** TEE em 100% dos nós |
+| mTLS auth | **landed** (lab/staging) | `MutualTlsAuthAdapter` + rustls; `gen_lab_mtls_certs.sh` / `rotate_lab_mtls_certs.sh`; SPIFFE-like layout `docs/MTLS_SPIFFE_LAYOUT.md`; kfe `kfe.vaultmesh.tls.*` (PEM/PKCS12); staging compose mTLS e2e; TPM pode ancorar identidade no doméstico |
+| HW / tier attestation | **started** (honest tiers) | `TeeAttestationAdapter` SEV-SNP/SGX quando HW; doméstico: TPM/software measurement **sem** claim `sev`; bind `measurement_pin` + allowlist Hb; prod refuses `sim`/stub e **fake SEV**; CI fail-closed para claims HW sem backend |
+| Domestic + SEV seating | **planned → sibling code** | Cerimônia nativa com set doméstico; SEV/SGX priority seating na admissão/genesis (§3.1) |
 | Daily rotation + reshare policy | **landed** | Vault: persists `day_epoch` under `VAULT_DATA_DIR` (load on boot); peer vote/advance APIs; `PolicyReshareHook` refreshes **Intent + Taproot** (`frost-secp256k1-tr`, group VK invariant → same `tb1p`); TR packages via `ShareStorePort` (no fresh dealer TR every boot); `VAULT_RESHARE_POLICY=daily\|manual`; docs `DAY_ADVANCE_RESHARE.md`. **kfe orchestration:** `KfeVaultMeshDayRotationWorker` requests vote/advance/reshare via mesh HTTP; vaults do not self-cron the day. |
 | Governance job rewards | **landed** | `AccrueGovernanceWork` on day/reshare + release cosign/activate; `VAULT_GOVERNANCE_REWARD_SATS`/`_BPS`; ledger `governance_reward_accrued`; `/economy/status` `pending_governance_reward_sats` |
 | Anti-nonce replicated | **landed** (quorum) | `QuorumAntiNonce`: append-only `session_id` log + HTTP `/v1/anti-nonce/prepare` ACKs (`ceil(2n/3)`); refuse if seen on ≥1 peer or before quorum; persists across restart; multi-node sim tests |
