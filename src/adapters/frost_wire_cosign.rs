@@ -559,6 +559,7 @@ pub fn tr_state_local_only(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "dealer_lab")]
     use crate::adapters::frost_tr_bitcoin::generate_tr_dealer;
 
     struct MemoryMesh {

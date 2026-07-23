@@ -7,7 +7,7 @@ license = "UNLICENSED"
 publish = false
 
 [features]
-default = ["dealer_lab"]
+default = []
 dealer_lab = []
 production = []
 # Compiles SEV/SGX HW seal + attestation quote verify structure (SEV via sev-snp-utilities).
