@@ -15,7 +15,8 @@ use frost_secp256k1::Identifier;
 use rand::rngs::OsRng;
 
 use crate::adapters::frost_tr_bitcoin::{
-    persist_tr_shares, refresh_tr_shares_in_process, FrostTrShareSlot, FrostTrShareState,
+    persist_tr_channels_shares, persist_tr_shares, refresh_tr_shares_in_process, FrostTrShareSlot,
+    FrostTrShareState,
 };
 use crate::application::{AccrueGovernanceWork, LedgerPort, ReshareHookPort, ShareStorePort};
 use crate::domain::{
@@ -191,6 +192,8 @@ pub struct PolicyReshareHook {
     writer: NodeId,
     shares: Arc<FrostShareSlot>,
     tr_shares: Arc<FrostTrShareSlot>,
+    /// Dedicated CHANNELS Taproot keyset (≠ USERS omnibus). Optional until installed.
+    tr_channels_shares: Option<Arc<FrostTrShareSlot>>,
     share_store: Option<Arc<dyn ShareStorePort>>,
     governance: Option<Arc<AccrueGovernanceWork>>,
     /// When false (distributed_wire / staging/prod), refuse in-process N-share reshare.
@@ -211,11 +214,17 @@ impl PolicyReshareHook {
             writer,
             shares,
             tr_shares,
+            tr_channels_shares: None,
             share_store: None,
             governance: None,
             // Default: dealer_lab feature may in-process; callers override for wire.
             allow_in_process_nshare_reshare: cfg!(feature = "dealer_lab"),
         }
+    }
+
+    pub fn with_channels_tr_shares(mut self, shares: Arc<FrostTrShareSlot>) -> Self {
+        self.tr_channels_shares = Some(shares);
+        self
     }
 
     pub fn with_allow_in_process_nshare_reshare(mut self, allow: bool) -> Self {
@@ -372,6 +381,64 @@ impl PolicyReshareHook {
         let constitution = self.ledger.constitution()?;
         let payload = format!(
             r#"{{"reason":"{}","suite":"frost-secp256k1-tr","participants":{},"min_signers":{},"verifying_key":"{}","constitution_hash":"{}","from_day":"{}","to_day":"{}"}}"#,
+            reason,
+            snap.key_packages.len(),
+            min_signers,
+            new_vk_hex,
+            constitution.hash,
+            from_day.map(|d| d.as_str()).unwrap_or(""),
+            to_day.map(|d| d.as_str()).unwrap_or(""),
+        );
+        append_ledger_event(
+            self.ledger.as_ref(),
+            &self.writer,
+            LedgerEventKind::ReshareCompleted,
+            &payload,
+        )?;
+        self.refresh_channels_taproot(reason, from_day, to_day)
+    }
+
+    fn refresh_channels_taproot(
+        &self,
+        reason: &str,
+        from_day: Option<&DayEpoch>,
+        to_day: Option<&DayEpoch>,
+    ) -> Result<(), DomainError> {
+        let Some(ch_shares) = self.tr_channels_shares.as_ref() else {
+            return Ok(());
+        };
+        if !ch_shares.is_installed() {
+            return Ok(());
+        }
+        let snap = ch_shares.snapshot()?;
+        let old_vk = *snap.pubkey_package.verifying_key();
+        let (new_packages, new_pubkey) =
+            refresh_tr_shares_in_process(&snap.key_packages, &snap.pubkey_package)?;
+        if *new_pubkey.verifying_key() != old_vk {
+            return Err(DomainError::ThresholdError(
+                "CHANNELS tr reshare verifying key mismatch (deposit would change)".into(),
+            ));
+        }
+        let new_vk_hex = hex::encode(
+            new_pubkey
+                .verifying_key()
+                .serialize()
+                .map_err(|e| DomainError::ThresholdError(format!("tr-ch vk serialize: {e}")))?,
+        );
+        let min_signers = snap.min_signers;
+        let new_state = FrostTrShareState {
+            key_packages: new_packages,
+            pubkey_package: new_pubkey,
+            min_signers,
+        };
+        if let Some(store) = self.share_store.as_ref() {
+            persist_tr_channels_shares(&new_state, store.as_ref())?;
+        }
+        ch_shares.replace(new_state);
+
+        let constitution = self.ledger.constitution()?;
+        let payload = format!(
+            r#"{{"reason":"{}","suite":"frost-secp256k1-tr-channels","participants":{},"min_signers":{},"verifying_key":"{}","constitution_hash":"{}","from_day":"{}","to_day":"{}"}}"#,
             reason,
             snap.key_packages.len(),
             min_signers,

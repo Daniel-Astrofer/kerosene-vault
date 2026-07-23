@@ -31,6 +31,11 @@ const TR_PUBKEY_SHARE_ID: &str = "frost-tr-dkg-pubkey";
 const TR_ROSTER_SHARE_ID: &str = "frost-tr-roster";
 const TR_MIN_SHARE_ID: &str = "frost-tr-min-signers";
 
+/// CHANNELS Taproot keyset — distinct from USERS omnibus (`frost-tr-*`).
+const TR_CHANNELS_PUBKEY_SHARE_ID: &str = "frost-tr-channels-dkg-pubkey";
+const TR_CHANNELS_ROSTER_SHARE_ID: &str = "frost-tr-channels-roster";
+const TR_CHANNELS_MIN_SHARE_ID: &str = "frost-tr-channels-min-signers";
+
 #[derive(Clone)]
 pub struct FrostTrShareState {
     pub key_packages: BTreeMap<Identifier, KeyPackage>,
@@ -128,6 +133,76 @@ pub fn load_tr_shares(store: &dyn ShareStorePort) -> Result<FrostTrShareState, D
     if key_packages.is_empty() {
         return Err(DomainError::ShareStoreForbidden(
             "frost-tr roster empty".into(),
+        ));
+    }
+    Ok(FrostTrShareState {
+        key_packages,
+        pubkey_package,
+        min_signers,
+    })
+}
+
+/// Persist CHANNELS Taproot FROST key packages (≠ USERS omnibus share ids).
+pub fn persist_tr_channels_shares(
+    state: &FrostTrShareState,
+    store: &dyn ShareStorePort,
+) -> Result<(), DomainError> {
+    let mut roster = Vec::new();
+    for (id, kp) in &state.key_packages {
+        let id_hex = hex::encode(id.serialize());
+        let bytes = kp
+            .serialize()
+            .map_err(|e| DomainError::ThresholdError(format!("tr-ch key package serialize: {e}")))?;
+        store.put_share(&format!("frost-tr-channels-dkg-id-{id_hex}"), &bytes)?;
+        roster.push(id_hex);
+    }
+    let pk_bytes = state.pubkey_package.serialize().map_err(|e| {
+        DomainError::ThresholdError(format!("tr-ch pubkey package serialize: {e}"))
+    })?;
+    store.put_share(TR_CHANNELS_PUBKEY_SHARE_ID, &pk_bytes)?;
+    store.put_share(TR_CHANNELS_ROSTER_SHARE_ID, roster.join(",").as_bytes())?;
+    store.put_share(
+        TR_CHANNELS_MIN_SHARE_ID,
+        state.min_signers.to_string().as_bytes(),
+    )?;
+    Ok(())
+}
+
+/// Load CHANNELS Taproot FROST material previously sealed by [`persist_tr_channels_shares`].
+pub fn load_tr_channels_shares(store: &dyn ShareStorePort) -> Result<FrostTrShareState, DomainError> {
+    let roster_raw = store.get_share(TR_CHANNELS_ROSTER_SHARE_ID)?;
+    let roster = String::from_utf8(roster_raw).map_err(|_| {
+        DomainError::ShareStoreForbidden("frost-tr-channels roster is not utf8".into())
+    })?;
+    let min_raw = store.get_share(TR_CHANNELS_MIN_SHARE_ID)?;
+    let min_signers: usize = String::from_utf8(min_raw)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .ok_or_else(|| {
+            DomainError::ShareStoreForbidden("frost-tr-channels min_signers corrupt".into())
+        })?;
+    let pk_bytes = store.get_share(TR_CHANNELS_PUBKEY_SHARE_ID)?;
+    let pubkey_package = PublicKeyPackage::deserialize(&pk_bytes).map_err(|e| {
+        DomainError::ThresholdError(format!("tr-ch pubkey package deserialize: {e}"))
+    })?;
+
+    let mut key_packages = BTreeMap::new();
+    for id_hex in roster.split(',').filter(|s| !s.is_empty()) {
+        let id_bytes = hex::decode(id_hex).map_err(|e| {
+            DomainError::ShareStoreForbidden(format!("frost-tr-channels roster id hex: {e}"))
+        })?;
+        let id = Identifier::deserialize(&id_bytes).map_err(|e| {
+            DomainError::ThresholdError(format!("tr-ch identifier deserialize: {e}"))
+        })?;
+        let kp_bytes = store.get_share(&format!("frost-tr-channels-dkg-id-{id_hex}"))?;
+        let kp = KeyPackage::deserialize(&kp_bytes).map_err(|e| {
+            DomainError::ThresholdError(format!("tr-ch key package deserialize: {e}"))
+        })?;
+        key_packages.insert(id, kp);
+    }
+    if key_packages.is_empty() {
+        return Err(DomainError::ShareStoreForbidden(
+            "frost-tr-channels roster empty".into(),
         ));
     }
     Ok(FrostTrShareState {

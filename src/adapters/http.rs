@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{DefaultBodyLimit, Extension, Request, State};
+use axum::extract::{DefaultBodyLimit, Extension, Query, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{from_fn_with_state, Next};
 use axum::response::{IntoResponse, Response};
@@ -17,12 +17,12 @@ use axum::Router;
 
 use crate::adapters::SlidingWindowLimiter;
 use crate::application::{
-    bind_session_to_intent, BlobStorePort, LedgerPort, ReleaseStorePort,
+    bind_session_to_intent, BlobStorePort, BucketLedgerPort, LedgerPort, ReleaseStorePort,
 };
 use crate::bootstrap::{AuthMode, CeremonyMode, VaultRuntime};
 use crate::domain::{
-    assert_shared_taproot_bucket, validate_destination, BucketKind, ContentHash, NodeId,
-    SettlementIntent,
+    assert_channels_taproot_bucket, assert_shared_taproot_bucket, validate_destination, BucketKind,
+    ContentHash, NodeId, SettlementIntent,
 };
 
 
@@ -211,17 +211,44 @@ async fn v1_sign(State(state): State<AppState>, body: Bytes) -> impl IntoRespons
     }
 }
 
-async fn v1_bitcoin_deposit(State(state): State<AppState>) -> impl IntoResponse {
-    let Some(tr) = state.runtime.frost_tr.as_ref() else {
+async fn v1_bitcoin_deposit(
+    State(state): State<AppState>,
+    Query(q): Query<DepositQuery>,
+) -> impl IntoResponse {
+    let bucket_raw = q.bucket.as_deref().unwrap_or("USERS");
+    let bucket = match BucketKind::parse(bucket_raw) {
+        Ok(b) => b,
+        Err(e) => return (StatusCode::BAD_REQUEST, json_err(e)),
+    };
+    let tr = match bucket {
+        BucketKind::Users => state.runtime.frost_tr.as_ref(),
+        BucketKind::Channels => state.runtime.frost_tr_channels.as_ref(),
+        other => {
+            return (
+                StatusCode::BAD_REQUEST,
+                json_err(format!(
+                    "bitcoin deposit Taproot key not available for bucket {}",
+                    other.as_str()
+                )),
+            );
+        }
+    };
+    let Some(tr) = tr else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            r#"{"error":"taproot FROST not installed (dealer_lab / DKG required)"}"#.into(),
+            r#"{"error":"taproot FROST not installed for bucket (dealer_lab / DKG required)"}"#.into(),
         );
     };
     match tr.deposit_info() {
         Ok(info) => (StatusCode::OK, info.to_json()),
         Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
+}
+
+#[derive(serde::Deserialize)]
+struct DepositQuery {
+    /// `USERS` (default, shared omnibus) or `CHANNELS` (dedicated key ≠ USERS).
+    bucket: Option<String>,
 }
 
 #[derive(serde::Deserialize)]
@@ -315,6 +342,14 @@ struct BitcoinPsbtBody {
     bucket: Option<String>,
     destination: Option<String>,
     amount_sats: Option<u64>,
+    /// When false, Intent must already be soft-reserved (CHANNELS→LND inject fund step).
+    /// Sign without reserve/commit so openChannel failure can still release.
+    #[serde(default = "default_commit_intent")]
+    commit_intent: bool,
+}
+
+fn default_commit_intent() -> bool {
+    true
 }
 
 async fn v1_bitcoin_sign_psbt(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
@@ -337,37 +372,108 @@ async fn v1_bitcoin_sign_psbt(State(state): State<AppState>, body: Bytes) -> imp
         .unwrap_or(req.session_id.as_str());
     let destination = req.destination.as_deref().unwrap_or("");
     let amount = req.amount_sats.unwrap_or(0);
-    let receipt = match maybe_reserve_intent(
-        &state,
-        Some(intent_id),
-        req.bucket.as_deref(),
-        Some(destination).filter(|s| !s.is_empty()),
-        req.amount_sats,
-        true,
-    ) {
-        Ok(r) => r,
+    let bucket_raw = req.bucket.as_deref().unwrap_or("USERS");
+    let bucket = match BucketKind::parse(bucket_raw) {
+        Ok(b) => b,
         Err(e) => return (StatusCode::BAD_REQUEST, json_err(e)),
     };
-    let Some(tr) = state.runtime.frost_tr.as_ref() else {
-        let _ = state.runtime.gate_intent.release(
-            &receipt.intent_id,
-            receipt.bucket,
-            receipt.amount_sats,
-        );
+
+    // Select Taproot keyset: USERS omnibus vs dedicated CHANNELS key.
+    let tr = match bucket {
+        BucketKind::Users => {
+            if let Err(e) = assert_shared_taproot_bucket(bucket) {
+                return (StatusCode::BAD_REQUEST, json_err(e));
+            }
+            state.runtime.frost_tr.as_ref()
+        }
+        BucketKind::Channels => {
+            if let Err(e) = assert_channels_taproot_bucket(bucket) {
+                return (StatusCode::BAD_REQUEST, json_err(e));
+            }
+            state.runtime.frost_tr_channels.as_ref()
+        }
+        other => {
+            return (
+                StatusCode::BAD_REQUEST,
+                json_err(format!(
+                    "bucket {} cannot spend Taproot; only USERS (shared) or CHANNELS (own key)",
+                    other.as_str()
+                )),
+            );
+        }
+    };
+
+    let receipt_bucket;
+    let receipt_amount;
+    let receipt_intent_id;
+    if req.commit_intent {
+        let require_shared = matches!(bucket, BucketKind::Users);
+        let receipt = match maybe_reserve_intent(
+            &state,
+            Some(intent_id),
+            Some(bucket_raw),
+            Some(destination).filter(|s| !s.is_empty()),
+            req.amount_sats,
+            require_shared,
+        ) {
+            Ok(r) => r,
+            Err(e) => return (StatusCode::BAD_REQUEST, json_err(e)),
+        };
+        receipt_bucket = receipt.bucket;
+        receipt_amount = receipt.amount_sats;
+        receipt_intent_id = receipt.intent_id;
+    } else {
+        // Already soft-reserved (CHANNELS inject): sign-only, no Intent mutate.
+        match state.runtime.buckets.has_reservation(intent_id) {
+            Ok(true) => {}
+            Ok(false) => {
+                return (
+                    StatusCode::BAD_REQUEST,
+                    json_err(format!(
+                        "commit_intent=false requires existing reservation for {intent_id}"
+                    )),
+                );
+            }
+            Err(e) => return (StatusCode::BAD_REQUEST, json_err(e)),
+        }
+        if destination.is_empty() || amount == 0 {
+            return (
+                StatusCode::BAD_REQUEST,
+                json_err("destination and amount_sats required for PSBT bind"),
+            );
+        }
+        if let Err(e) = validate_destination(state.runtime.config.bitcoin_network, destination) {
+            return (StatusCode::BAD_REQUEST, json_err(e));
+        }
+        receipt_bucket = bucket;
+        receipt_amount = amount;
+        receipt_intent_id = intent_id.to_string();
+    }
+
+    let Some(tr) = tr else {
+        if req.commit_intent {
+            let _ = state.runtime.gate_intent.release(
+                &receipt_intent_id,
+                receipt_bucket,
+                receipt_amount,
+            );
+        }
         return (
             StatusCode::SERVICE_UNAVAILABLE,
-            r#"{"error":"taproot FROST not installed"}"#.into(),
+            r#"{"error":"taproot FROST not installed for bucket"}"#.into(),
         );
     };
     // Fail-stop if online < t (probed liveness — High #7).
     let online = state.runtime.online.online_count();
     let need = state.runtime.threshold.group().t;
     if online < need {
-        let _ = state.runtime.gate_intent.release(
-            &receipt.intent_id,
-            receipt.bucket,
-            receipt.amount_sats,
-        );
+        if req.commit_intent {
+            let _ = state.runtime.gate_intent.release(
+                &receipt_intent_id,
+                receipt_bucket,
+                receipt_amount,
+            );
+        }
         return (
             StatusCode::BAD_REQUEST,
             json_err(format!("fail-stop: online {online} < t {need}")),
@@ -375,17 +481,21 @@ async fn v1_bitcoin_sign_psbt(State(state): State<AppState>, body: Bytes) -> imp
     }
     match tr.sign_psbt(&req.session_id, &req.psbt, destination, amount) {
         Ok(signed) => {
-            if let Err(e) = state.runtime.gate_intent.commit(&receipt.intent_id) {
-                return (StatusCode::BAD_REQUEST, json_err(e));
+            if req.commit_intent {
+                if let Err(e) = state.runtime.gate_intent.commit(&receipt_intent_id) {
+                    return (StatusCode::BAD_REQUEST, json_err(e));
+                }
             }
             (StatusCode::OK, signed.to_json())
         }
         Err(e) => {
-            let _ = state.runtime.gate_intent.release(
-                &receipt.intent_id,
-                receipt.bucket,
-                receipt.amount_sats,
-            );
+            if req.commit_intent {
+                let _ = state.runtime.gate_intent.release(
+                    &receipt_intent_id,
+                    receipt_bucket,
+                    receipt_amount,
+                );
+            }
             (StatusCode::BAD_REQUEST, json_err(e))
         }
     }

@@ -340,6 +340,10 @@ impl BucketLedgerPort for QuorumBucketLedger {
         self.claim_consume(intent_id)
     }
 
+    fn has_reservation(&self, intent_id: &str) -> Result<bool, DomainError> {
+        Ok(self.local.has_reservation(intent_id))
+    }
+
     fn reserve_spend(
         &self,
         intent_id: &str,

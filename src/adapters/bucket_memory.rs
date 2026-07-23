@@ -130,6 +130,12 @@ impl BucketLedgerPort for InMemoryBucketLedger {
         Ok(())
     }
 
+    fn has_reservation(&self, intent_id: &str) -> Result<bool, DomainError> {
+        let mut g = self.inner.lock().expect("bucket lock");
+        Self::sweep_expired(&mut g);
+        Ok(g.reserved.contains_key(intent_id))
+    }
+
     fn reserve_spend(
         &self,
         intent_id: &str,
