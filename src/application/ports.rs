@@ -69,7 +69,8 @@ pub trait EconomyPort: Send + Sync {
     fn debit_pool(&self, amount: u64) -> Result<(), DomainError>;
 }
 
-/// DKG / keygen port. Lab may use dealer behind `dealer_lab`; prod uses distributed (Gate).
+/// DKG / keygen port. Lab may use dealer behind `dealer_lab`; Gate uses
+/// distributed multi-round FROST (`VAULT_DKG_MODE=distributed`, no dealer).
 pub trait DkgPort: Send + Sync {
     fn mode_name(&self) -> &'static str;
     fn is_dealer(&self) -> bool;

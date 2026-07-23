@@ -79,6 +79,7 @@ fn sim_forbidden_when_refuse_sim() {
         share_passphrase: None,
         data_dir: None,
         dealer_requested: false,
+        dkg_mode: kerosene_vault::bootstrap::DkgMode::Distributed,
     };
     assert_eq!(
         cfg.validate_attestation_policy(),

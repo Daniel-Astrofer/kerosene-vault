@@ -28,6 +28,10 @@ pub fn build_router(runtime: Arc<VaultRuntime>) -> Router {
     let protected = Router::new()
         .route("/v1/sign", post(v1_sign))
         .route("/v1/intent", post(v1_intent))
+        // P1 wire stubs: over-wire DKG round exchange (in-process sim is the current Gate slice).
+        .route("/v1/dkg/round1", post(v1_dkg_round_stub))
+        .route("/v1/dkg/round2", post(v1_dkg_round_stub))
+        .route("/v1/dkg/round3", post(v1_dkg_round_stub))
         .route("/health", get(legacy_dispatch))
         .route("/ledger", get(legacy_dispatch))
         .route("/threshold", get(legacy_dispatch))
@@ -97,6 +101,15 @@ async fn v1_sign(State(state): State<AppState>, body: Bytes) -> impl IntoRespons
         Ok(sig) => (StatusCode::OK, sig.to_json()),
         Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
     }
+}
+
+/// Stub for over-wire DKG rounds (P1). In-process multi-party DKG is available via
+/// `VAULT_DKG_MODE=distributed`; HTTP package exchange is not go-live yet.
+async fn v1_dkg_round_stub() -> impl IntoResponse {
+    (
+        StatusCode::NOT_IMPLEMENTED,
+        r#"{"error":"production gate: over-wire DKG round exchange is P1; use VAULT_DKG_MODE=distributed in-process sim","status":"stub"}"#.to_string(),
+    )
 }
 
 #[derive(serde::Deserialize)]

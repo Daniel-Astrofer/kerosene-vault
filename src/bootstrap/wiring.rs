@@ -1,20 +1,20 @@
 use std::sync::Arc;
 
 use crate::adapters::{
-    AeadDiskShareStore, DistributedDkgAdapter, InMemoryBucketLedger, InMemoryEconomy,
-    InMemoryLedger, InMemoryPeerDirectory, InMemoryReleaseMesh, LedgerDayEpochStub,
+    AeadDiskShareStore, DistributedDkgAdapter, FrostSignOrchestrator, InMemoryBucketLedger,
+    InMemoryEconomy, InMemoryLedger, InMemoryPeerDirectory, InMemoryReleaseMesh, LedgerDayEpochStub,
     MutualTlsAuthAdapter, PersistedAntiNonce, SimAttestationAdapter, StaticTokenAuthAdapter,
     SystemClock, TeeAttestationAdapter, TeeSealShareStore, ThresholdVaultState,
 };
 #[cfg(feature = "dealer_lab")]
-use crate::adapters::{dealer_fatal_banner, DealerLabAdapter, FrostSignOrchestrator};
+use crate::adapters::{dealer_fatal_banner, DealerLabAdapter};
 use crate::application::{
     AccrueMinerRewards, AllocateProfit, AntiNoncePort, CosignRelease, DailyRotationPort, DkgPort,
     GateIntent, GetAllowlist, GetEconomyStatus, GetHealth, GetLedgerSnapshot, PingPeer,
     ProposeEpochAdvance, ProposeMinerPayouts, ProposeRelease, RebuildRelease, ShareStorePort,
     SignMessage, StaticOnlineCount, UpsertMiner, VaultAuthPort, VoteEpochAdvance, ActivateRelease,
 };
-use crate::bootstrap::{AuthMode, CeremonyMode, ShareStoreMode, VaultConfig};
+use crate::bootstrap::{AuthMode, CeremonyMode, DkgMode, ShareStoreMode, VaultConfig};
 use crate::domain::{
     run_dkg, Constitution, DomainError, EconomyState, Measurement, NodeId, PeerEndpoint, PeerInfo,
     ReleasePolicy,
@@ -51,7 +51,7 @@ pub struct VaultRuntime {
     pub dkg: Arc<dyn DkgPort>,
     pub daily_rotation: Arc<dyn DailyRotationPort>,
     pub anti_nonce: Arc<dyn AntiNoncePort>,
-    #[cfg(feature = "dealer_lab")]
+    /// Present after dealer_lab or distributed FROST DKG keygen.
     pub frost: Option<Arc<FrostSignOrchestrator>>,
 }
 
@@ -225,19 +225,21 @@ impl VaultRuntime {
                     Box::new(LedgerDayEpochStub::new(clock.clone())),
                 );
                 (Arc::new(adapter), Some(Arc::new(orch)))
+            } else if matches!(config.dkg_mode, DkgMode::Distributed) {
+                wire_distributed_dkg(n, t, &share_store, &data_root, clock.clone())?
             } else {
                 (Arc::new(DistributedDkgAdapter::new()), None)
             }
         };
 
         #[cfg(not(feature = "dealer_lab"))]
-        let dkg: Arc<dyn DkgPort> = {
-            if config.dealer_requested {
+        let (dkg, frost): (Arc<dyn DkgPort>, Option<Arc<FrostSignOrchestrator>>) = {
+            if config.dealer_requested || matches!(config.dkg_mode, DkgMode::DealerLab) {
                 return Err(DomainError::DealerForbidden(
                     "dealer DKG not compiled (build without dealer_lab)".into(),
                 ));
             }
-            Arc::new(DistributedDkgAdapter::new())
+            wire_distributed_dkg(n, t, &share_store, &data_root, clock.clone())?
         };
 
         let get_health = GetHealth::new(
@@ -316,8 +318,34 @@ impl VaultRuntime {
             dkg,
             daily_rotation,
             anti_nonce,
-            #[cfg(feature = "dealer_lab")]
             frost,
         })
     }
+}
+
+fn wire_distributed_dkg(
+    n: usize,
+    t: usize,
+    share_store: &Arc<dyn ShareStorePort>,
+    data_root: &std::path::Path,
+    clock: Arc<dyn crate::application::ClockPort>,
+) -> Result<(Arc<dyn DkgPort>, Option<Arc<FrostSignOrchestrator>>), DomainError> {
+    let max = n.min(u16::MAX as usize) as u16;
+    let min = t.min(u16::MAX as usize) as u16;
+    let max = max.max(2);
+    let min = min.max(2).min(max);
+    let bundle = DistributedDkgAdapter::run_in_process(max, min)?;
+    // Persist via ShareStorePort only (AEAD lab; TEE refuses in prod until Gate seal).
+    DistributedDkgAdapter::persist_shares(&bundle, share_store.as_ref())?;
+    let orch = FrostSignOrchestrator::new(
+        bundle.key_packages,
+        bundle.pubkey_package,
+        min as usize,
+        Box::new(PersistedAntiNonce::open(data_root.join("frost_sessions.log"))?),
+        Box::new(LedgerDayEpochStub::new(clock)),
+    );
+    Ok((
+        Arc::new(DistributedDkgAdapter::new()),
+        Some(Arc::new(orch)),
+    ))
 }

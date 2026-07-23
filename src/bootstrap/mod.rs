@@ -8,5 +8,5 @@ compile_error!(
 mod config;
 mod wiring;
 
-pub use config::{AuthMode, CeremonyMode, ShareStoreMode, VaultConfig};
+pub use config::{AuthMode, CeremonyMode, DkgMode, ShareStoreMode, VaultConfig};
 pub use wiring::VaultRuntime;

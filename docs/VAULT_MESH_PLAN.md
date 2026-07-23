@@ -728,3 +728,13 @@ Itens **não fechados** na conversa — precisam de decisão explícita:
 - Código novo: **SOLID + Clean Architecture** (§2.1), camadas domain / application / adapters.  
 - **Lab ≠ go-live:** Lab P0 visualiza o binário de produção; Production Gate (ToB DKG, TEE seal, mTLS, HW attestation) é obrigatório antes de cerimônia.  
 - Threat notes: nonce reuse, ToB 2024 DKG threshold inflation, audits ZF (NCC/Least Authority), disk AEAD ≪ TEE.
+
+### Production Gate — progresso (não é go-live)
+
+| Fatia | Status | Notas |
+| --- | --- | --- |
+| **Distributed DKG (in-process)** | **started** | `VAULT_DKG_MODE=distributed`: FROST `part1/2/3` multi-party sim (n=3,t=2), **sem** `generate_with_dealer`; ToB check `min_signers` == constituição; shares só via `ShareStorePort`; HTTP `/v1/dkg/round{1,2,3}` stubs (P1 over-wire) |
+| Over-wire DKG HTTP | pending P1 | Round-message stubs only |
+| TEE seal shares | refuse | `TeeSealShareStore` fail-closed |
+| mTLS auth | refuse stub | `MutualTlsAuthAdapter` |
+| HW attestation | staging stub / refuse | sim forbidden when hardened |

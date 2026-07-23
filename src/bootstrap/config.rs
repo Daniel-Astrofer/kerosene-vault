@@ -55,6 +55,32 @@ pub enum ShareStoreMode {
     TeeSeal,
 }
 
+/// DKG path selection. Dealer is lab-only (`dealer_lab` feature).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DkgMode {
+    /// Trusted-dealer single-process (lab visualize only).
+    DealerLab,
+    /// Multi-round FROST DKG without dealer (Production Gate path).
+    Distributed,
+}
+
+impl DkgMode {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "dealer" | "dealer_lab" => Some(Self::DealerLab),
+            "distributed" | "dkg_distributed" => Some(Self::Distributed),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DealerLab => "dealer_lab",
+            Self::Distributed => "distributed",
+        }
+    }
+}
+
 impl ShareStoreMode {
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
@@ -108,6 +134,8 @@ pub struct VaultConfig {
     pub data_dir: Option<String>,
     /// Request dealer DKG (only honored when `dealer_lab` feature is compiled).
     pub dealer_requested: bool,
+    /// Explicit DKG mode (`VAULT_DKG_MODE`).
+    pub dkg_mode: DkgMode,
 }
 
 impl VaultConfig {
@@ -209,14 +237,20 @@ impl VaultConfig {
             env_nonempty_first(&["VAULT_DATA_PASSPHRASE", "VAULT_SHARE_PASSPHRASE"]);
         let data_dir = env_nonempty_first(&["VAULT_DATA_DIR"]);
 
-        // Lab P0: VAULT_DKG_MODE (preferred); VAULT_DKG legacy alias.
-        let dkg_mode = std::env::var("VAULT_DKG_MODE")
+        // Lab P0 / Gate: VAULT_DKG_MODE (preferred); VAULT_DKG legacy alias.
+        // `distributed` wins over the lab dealer default. Dealer never default in hardened.
+        let dkg_raw = std::env::var("VAULT_DKG_MODE")
             .or_else(|_| std::env::var("VAULT_DKG"))
             .ok();
-        let dealer_requested = matches!(
-            dkg_mode.as_deref(),
-            Some("dealer" | "DEALER" | "dealer_lab")
-        ) || (!hardened && cfg!(feature = "dealer_lab"));
+        let dkg_mode = match dkg_raw.as_deref() {
+            Some(raw) => DkgMode::parse(raw).ok_or_else(|| {
+                DomainError::AttestationRejected(format!("unknown VAULT_DKG_MODE={raw}"))
+            })?,
+            None if hardened => DkgMode::Distributed,
+            None if cfg!(feature = "dealer_lab") => DkgMode::DealerLab,
+            None => DkgMode::Distributed,
+        };
+        let dealer_requested = matches!(dkg_mode, DkgMode::DealerLab);
 
         let cfg = Self {
             node_id,
@@ -242,6 +276,7 @@ impl VaultConfig {
             share_passphrase,
             data_dir,
             dealer_requested,
+            dkg_mode,
         };
         cfg.validate_hygiene()?;
         Ok(cfg)
@@ -383,6 +418,7 @@ mod tests {
             share_passphrase: Some("pass".into()),
             data_dir: None,
             dealer_requested: true,
+            dkg_mode: DkgMode::DealerLab,
         }
     }
 
@@ -410,6 +446,7 @@ mod tests {
         cfg.auth_mode = AuthMode::MutualTls;
         cfg.share_store_mode = ShareStoreMode::TeeSeal;
         cfg.dealer_requested = false;
+        cfg.dkg_mode = DkgMode::Distributed;
         assert_eq!(
             cfg.validate_hygiene(),
             Err(DomainError::LabFlagForbidden("LAB_TIMELOCK_SCALE".into()))
@@ -435,6 +472,7 @@ mod tests {
         cfg.auth_mode = AuthMode::MutualTls;
         cfg.share_store_mode = ShareStoreMode::TeeSeal;
         cfg.dealer_requested = false;
+        cfg.dkg_mode = DkgMode::Distributed;
         assert_eq!(
             cfg.validate_hygiene(),
             Err(DomainError::LabFlagForbidden(
@@ -454,6 +492,7 @@ mod tests {
         cfg.auth_mode = AuthMode::MutualTls;
         cfg.share_store_mode = ShareStoreMode::TeeSeal;
         cfg.dealer_requested = false;
+        cfg.dkg_mode = DkgMode::Distributed;
         assert!(cfg.validate_hygiene().is_ok());
     }
 
@@ -467,6 +506,7 @@ mod tests {
         cfg.auth_mode = AuthMode::StaticToken;
         cfg.share_store_mode = ShareStoreMode::TeeSeal;
         cfg.dealer_requested = false;
+        cfg.dkg_mode = DkgMode::Distributed;
         assert!(matches!(
             cfg.validate_hygiene(),
             Err(DomainError::AuthRejected(_))

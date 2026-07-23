@@ -28,7 +28,7 @@ pub use auth_static::StaticTokenAuthAdapter;
 pub use bucket_memory::InMemoryBucketLedger;
 pub use clock::SystemClock;
 pub use daily_rotation::LedgerDayEpochStub;
-pub use dkg_distributed::DistributedDkgAdapter;
+pub use dkg_distributed::{DistributedDkgAdapter, FrostDistributedBundle};
 pub use economy_memory::InMemoryEconomy;
 #[cfg(feature = "dealer_lab")]
 pub use frost_dealer::{dealer_fatal_banner, DealerLabAdapter, FrostDealerBundle};
