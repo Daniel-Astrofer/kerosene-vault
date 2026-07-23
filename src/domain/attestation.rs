@@ -64,6 +64,27 @@ pub struct AttestationQuote {
     pub quote_blob: Vec<u8>,
 }
 
+/// Bind a quote measurement to the constitution pin and optional release allowlist Hb set.
+///
+/// - Always requires `measurement == pin`.
+/// - When `allowlisted_hbs` is non-empty, `measurement` must also equal one of those Hb values
+///   (release allowlist predicate). Empty allowlist = genesis / pin-only.
+pub fn admits_attestation_measurement(
+    measurement: &Measurement,
+    pin: &Measurement,
+    allowlisted_hbs: &[super::release::ContentHash],
+) -> bool {
+    if measurement != pin {
+        return false;
+    }
+    if allowlisted_hbs.is_empty() {
+        return true;
+    }
+    allowlisted_hbs
+        .iter()
+        .any(|hb| hb.as_str() == measurement.as_hex())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -84,5 +105,30 @@ mod tests {
     #[test]
     fn from_hex_rejects_short() {
         assert!(Measurement::from_hex("abcd").is_err());
+    }
+
+    #[test]
+    fn admits_pin_only_when_allowlist_empty() {
+        let pin = Measurement::from_bytes(b"pin");
+        assert!(admits_attestation_measurement(&pin, &pin, &[]));
+        assert!(!admits_attestation_measurement(
+            &Measurement::from_bytes(b"other"),
+            &pin,
+            &[]
+        ));
+    }
+
+    #[test]
+    fn admits_requires_allowlist_hb_when_populated() {
+        use crate::domain::ContentHash;
+        let hb = ContentHash::from_bytes(b"bin-v1");
+        let pin = Measurement::from_hex(hb.as_str()).unwrap();
+        assert!(admits_attestation_measurement(&pin, &pin, &[hb.clone()]));
+        let wrong_pin = Measurement::from_bytes(b"not-allowlisted");
+        assert!(!admits_attestation_measurement(
+            &wrong_pin,
+            &wrong_pin,
+            &[hb]
+        ));
     }
 }

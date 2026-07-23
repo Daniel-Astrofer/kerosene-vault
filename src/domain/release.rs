@@ -233,6 +233,11 @@ pub struct AllowlistEntry {
 }
 
 impl AllowlistEntry {
+    /// Release allowlist predicate: quote measurement must equal this entry's Hb.
+    pub fn admits_measurement(&self, measurement: &Measurement) -> bool {
+        self.hb.as_str() == measurement.as_hex()
+    }
+
     pub fn to_json(&self) -> String {
         format!(
             r#"{{"release_id":"{}","hs":"{}","hb":"{}","activated_at_secs":{},"constitution_hash":"{}"}}"#,
