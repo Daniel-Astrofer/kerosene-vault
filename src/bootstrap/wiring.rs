@@ -5,18 +5,19 @@ use crate::adapters::{
     build_tpm_seal_port, resolve_aead_passphrase, AeadDiskShareStore, DistributedDkgAdapter,
     DistributedWireDkgPort, FrostShareSlot, FrostShareState, FrostSignOrchestrator,
     FrostTrBitcoinOrchestrator, FrostTrShareSlot, HttpAntiNonceTransport, HttpDayVoteTransport,
-    HttpIntentConsumeTransport, HttpTrCosignTransport, InMemoryEconomy, InMemoryLedger,
-    InMemoryPeerDirectory, InMemoryReleaseMesh, MutualTlsAuthAdapter, NoopDayVoteTransport,
-    NoopTrCosignTransport, PersistedBucketLedger, PolicyReshareHook, QuorumAntiNonce,
-    QuorumBucketLedger, QuorumDailyRotation, SharedAntiNonce, SimAttestationAdapter,
-    StaticTokenAuthAdapter, SystemClock, TeeAttestationAdapter, TeeSealAdapter,
-    ThresholdVaultState, TrCosignPeerState, TrCosignTransport, WireDkgHub, WireDkgPeerAuth,
+    HttpIntentConsumeTransport, HttpTrCosignTransport, InMemoryLedger, InMemoryPeerDirectory,
+    MutualTlsAuthAdapter, NoopDayVoteTransport, NoopTrCosignTransport, PersistedBucketLedger,
+    PersistedEconomy, PersistedReleaseMesh, PolicyReshareHook, QuorumAntiNonce, QuorumBucketLedger,
+    QuorumDailyRotation, SharedAntiNonce, SimAttestationAdapter, StaticTokenAuthAdapter,
+    SystemClock, TeeAttestationAdapter, TeeSealAdapter, ThresholdVaultState, TrCosignPeerState,
+    TrCosignTransport, WireDkgHub, WireDkgPeerAuth,
 };
 #[cfg(feature = "dealer_lab")]
 use crate::adapters::{
-    dealer_fatal_banner, generate_tr_dealer, persist_tr_shares, DealerLabAdapter,
+    dealer_fatal_banner, generate_tr_dealer, persist_tr_channels_shares, persist_tr_shares,
+    DealerLabAdapter,
 };
-use crate::adapters::load_tr_shares;
+use crate::adapters::{load_tr_channels_shares, load_tr_shares};
 use crate::application::{
     AccrueGovernanceWork, AccrueMinerRewards, AllocateProfit, AntiNoncePort, CosignRelease,
     DailyRotationPort, DkgPort, GateIntent, GetAllowlist, GetEconomyStatus, GetHealth,
@@ -55,9 +56,9 @@ pub struct VaultRuntime {
     pub ledger: Arc<InMemoryLedger>,
     pub threshold: Arc<ThresholdVaultState>,
     pub online: Arc<dyn OnlineStatusPort>,
-    pub release_mesh: Arc<InMemoryReleaseMesh>,
+    pub release_mesh: Arc<PersistedReleaseMesh>,
     pub buckets: Arc<QuorumBucketLedger>,
-    pub economy: Arc<InMemoryEconomy>,
+    pub economy: Arc<PersistedEconomy>,
     pub auth: Arc<dyn VaultAuthPort>,
     pub share_store: Arc<dyn ShareStorePort>,
     pub dkg: Arc<dyn DkgPort>,
@@ -67,9 +68,12 @@ pub struct VaultRuntime {
     pub anti_nonce: Arc<dyn AntiNoncePort>,
     /// Present after dealer_lab or distributed FROST DKG keygen.
     pub frost: Option<Arc<FrostSignOrchestrator>>,
-    /// Taproot BIP-340 FROST keyset for on-chain PSBT / sighash signing.
+    /// Taproot BIP-340 FROST keyset for on-chain PSBT / sighash signing (USERS omnibus).
     pub frost_tr: Option<Arc<FrostTrBitcoinOrchestrator>>,
     pub frost_tr_shares: Arc<FrostTrShareSlot>,
+    /// Dedicated CHANNELS Taproot keyset (≠ USERS omnibus).
+    pub frost_tr_channels: Option<Arc<FrostTrBitcoinOrchestrator>>,
+    pub frost_tr_channels_shares: Arc<FrostTrShareSlot>,
     /// Peer helper for over-wire TR FROST co-sign rounds.
     pub tr_cosign_peer: Arc<TrCosignPeerState>,
     /// Over-wire DKG hub (HTTP round exchange between peers).
@@ -199,11 +203,17 @@ impl VaultRuntime {
         release_policy.lab_timelock_scale = config.effective_lab_timelock_scale();
         release_policy.council_n = config.lab_council_n.max(2);
         release_policy.min_rebuilds = config.lab_min_rebuilds.max(1);
-        let release_mesh = Arc::new(InMemoryReleaseMesh::new(release_policy));
+        let data_root_early = config.effective_data_dir();
+        let release_mesh = Arc::new(PersistedReleaseMesh::open(
+            data_root_early.join("release"),
+            release_policy,
+        )?);
         let release_port: Arc<dyn crate::application::ReleaseStorePort> = release_mesh.clone();
         let blob_port: Arc<dyn crate::application::BlobStorePort> = release_mesh.clone();
 
-        let economy = Arc::new(InMemoryEconomy::new(EconomyState::new_open()));
+        let economy = Arc::new(PersistedEconomy::open(
+            data_root_early.join("economy.json"),
+        )?);
         let economy_port: Arc<dyn crate::application::EconomyPort> = economy.clone();
         let governance_reward = config.governance_reward_config();
         let accrue_governance = Arc::new(AccrueGovernanceWork::new(
@@ -480,6 +490,7 @@ impl VaultRuntime {
 
         let frost_shares = Arc::new(FrostShareSlot::new());
         let frost_tr_shares = Arc::new(FrostTrShareSlot::new());
+        let frost_tr_channels_shares = Arc::new(FrostTrShareSlot::new());
         // dealer_lab may in-process N-share reshare; distributed_wire fail-closed (Critical #6).
         let allow_in_process_reshare = matches!(config.dkg_mode, DkgMode::DealerLab)
             && matches!(config.ceremony_mode, CeremonyMode::Lab)
@@ -492,6 +503,7 @@ impl VaultRuntime {
                 frost_shares.clone(),
                 frost_tr_shares.clone(),
             )
+            .with_channels_tr_shares(frost_tr_channels_shares.clone())
             .with_allow_in_process_nshare_reshare(allow_in_process_reshare)
             .with_share_store(share_store.clone())
             .with_governance(accrue_governance.clone()),
@@ -589,9 +601,10 @@ impl VaultRuntime {
         ));
 
         #[cfg(feature = "dealer_lab")]
-        let (dkg, frost, frost_tr): (
+        let (dkg, frost, frost_tr, frost_tr_channels): (
             Arc<dyn DkgPort>,
             Option<Arc<FrostSignOrchestrator>>,
+            Option<Arc<FrostTrBitcoinOrchestrator>>,
             Option<Arc<FrostTrBitcoinOrchestrator>>,
         ) = {
             if config.dealer_requested
@@ -643,10 +656,33 @@ impl VaultRuntime {
                     true, // dealer_lab: in-process N-share OK
                     tr_cosign_transport.clone(),
                 );
+                // CHANNELS Taproot key ≠ USERS omnibus (separate dealer keygen / sealed shares).
+                let tr_ch_state = match load_tr_channels_shares(share_store.as_ref()) {
+                    Ok(existing) => existing,
+                    Err(_) => {
+                        let fresh = generate_tr_dealer(max, min)?;
+                        persist_tr_channels_shares(&fresh, share_store.as_ref())?;
+                        fresh
+                    }
+                };
+                frost_tr_channels_shares.install(tr_ch_state);
+                let tr_ch_orch = FrostTrBitcoinOrchestrator::new(
+                    frost_tr_channels_shares.clone(),
+                    Box::new(SharedAntiNonce(anti_nonce.clone())),
+                    daily_rotation.clone(),
+                    config.bitcoin_network,
+                )
+                .with_psbt_policy(config.psbt_policy)
+                .with_wire_cosign(
+                    config.node_id.as_str(),
+                    true,
+                    tr_cosign_transport.clone(),
+                );
                 (
                     Arc::new(adapter),
                     Some(Arc::new(orch)),
                     Some(Arc::new(tr_orch)),
+                    Some(Arc::new(tr_ch_orch)),
                 )
             } else if matches!(config.dkg_mode, DkgMode::DistributedWire) {
                 // Over-wire ceremony via /v1/dkg/round{1,2,3}; no in-process dealer/sim.
@@ -676,7 +712,32 @@ impl VaultRuntime {
                     }
                     Err(_) => None,
                 };
-                (Arc::new(DistributedWireDkgPort), None, frost_tr)
+                let frost_tr_channels = match load_tr_channels_shares(share_store.as_ref()) {
+                    Ok(existing) => {
+                        if existing.key_packages.len() > 1 {
+                            return Err(DomainError::ThresholdError(
+                                "distributed_wire refuses sealed multi-share CHANNELS TR material".into(),
+                            ));
+                        }
+                        frost_tr_channels_shares.install(existing);
+                        Some(Arc::new(
+                            FrostTrBitcoinOrchestrator::new(
+                                frost_tr_channels_shares.clone(),
+                                Box::new(SharedAntiNonce(anti_nonce.clone())),
+                                daily_rotation.clone(),
+                                config.bitcoin_network,
+                            )
+                            .with_psbt_policy(config.psbt_policy)
+                            .with_wire_cosign(
+                                config.node_id.as_str(),
+                                false,
+                                tr_cosign_transport.clone(),
+                            ),
+                        ))
+                    }
+                    Err(_) => None,
+                };
+                (Arc::new(DistributedWireDkgPort), None, frost_tr, frost_tr_channels)
             } else if matches!(config.dkg_mode, DkgMode::Distributed) {
                 let (dkg, frost) = wire_distributed_dkg(
                     n,
@@ -686,16 +747,17 @@ impl VaultRuntime {
                     frost_shares.clone(),
                     anti_nonce.clone(),
                 )?;
-                (dkg, frost, None)
+                (dkg, frost, None, None)
             } else {
-                (Arc::new(DistributedDkgAdapter::new()), None, None)
+                (Arc::new(DistributedDkgAdapter::new()), None, None, None)
             }
         };
 
         #[cfg(not(feature = "dealer_lab"))]
-        let (dkg, frost, frost_tr): (
+        let (dkg, frost, frost_tr, frost_tr_channels): (
             Arc<dyn DkgPort>,
             Option<Arc<FrostSignOrchestrator>>,
+            Option<Arc<FrostTrBitcoinOrchestrator>>,
             Option<Arc<FrostTrBitcoinOrchestrator>>,
         ) = {
             if config.dealer_requested || matches!(config.dkg_mode, DkgMode::DealerLab) {
@@ -729,7 +791,32 @@ impl VaultRuntime {
                     }
                     Err(_) => None,
                 };
-                (Arc::new(DistributedWireDkgPort), None, frost_tr)
+                let frost_tr_channels = match load_tr_channels_shares(share_store.as_ref()) {
+                    Ok(existing) => {
+                        if existing.key_packages.len() > 1 {
+                            return Err(DomainError::ThresholdError(
+                                "distributed_wire refuses sealed multi-share CHANNELS TR material".into(),
+                            ));
+                        }
+                        frost_tr_channels_shares.install(existing);
+                        Some(Arc::new(
+                            FrostTrBitcoinOrchestrator::new(
+                                frost_tr_channels_shares.clone(),
+                                Box::new(SharedAntiNonce(anti_nonce.clone())),
+                                daily_rotation.clone(),
+                                config.bitcoin_network,
+                            )
+                            .with_psbt_policy(config.psbt_policy)
+                            .with_wire_cosign(
+                                config.node_id.as_str(),
+                                false,
+                                tr_cosign_transport.clone(),
+                            ),
+                        ))
+                    }
+                    Err(_) => None,
+                };
+                (Arc::new(DistributedWireDkgPort), None, frost_tr, frost_tr_channels)
             } else {
                 let (dkg, frost) = wire_distributed_dkg(
                     n,
@@ -739,7 +826,7 @@ impl VaultRuntime {
                     frost_shares.clone(),
                     anti_nonce.clone(),
                 )?;
-                (dkg, frost, None)
+                (dkg, frost, None, None)
             }
         };
 
@@ -775,7 +862,7 @@ impl VaultRuntime {
         )
         .with_governance(accrue_governance.clone());
         let activate_release =
-            ActivateRelease::new(release_port.clone(), ledger_port.clone(), clock)
+            ActivateRelease::new(release_port.clone(), ledger_port.clone(), clock.clone())
                 .with_governance(accrue_governance.clone());
         let get_allowlist = GetAllowlist::new(release_port);
         let gate_intent = GateIntent::new(bucket_port, ledger_port.clone(), economy_port.clone());
@@ -784,13 +871,23 @@ impl VaultRuntime {
             economy_port.clone(),
             ledger_port.clone(),
             governance_reward,
+            config.miner_payout_cadence,
             config.node_tier,
             config.attestation_mode,
             config.tee_available,
         );
         let upsert_miner = UpsertMiner::new(economy_port.clone());
-        let accrue_rewards = AccrueMinerRewards::new(economy_port.clone(), ledger_port.clone());
-        let propose_miner_payouts = ProposeMinerPayouts::new(economy_port, ledger_port);
+        let accrue_rewards = AccrueMinerRewards::new(
+            economy_port.clone(),
+            ledger_port.clone(),
+            config.node_id.clone(),
+        );
+        let propose_miner_payouts = ProposeMinerPayouts::new(
+            economy_port,
+            ledger_port,
+            clock,
+            config.miner_payout_cadence,
+        );
 
         let mode = if config.hardened {
             "production-refuse"
@@ -845,6 +942,8 @@ impl VaultRuntime {
             frost,
             frost_tr,
             frost_tr_shares,
+            frost_tr_channels,
+            frost_tr_channels_shares,
             tr_cosign_peer,
             wire_dkg,
         })

@@ -74,9 +74,9 @@ TPM binds disk-at-rest to the machine; it does **not** isolate share RAM after u
 | Gap | Notes |
 | --- | --- |
 | **Full SNP VCEK verification** | HW path **fail-closed** without real `/dev/sev-guest` + VCEK chain; staging stub is lab-only (`ATTESTATION_STAGING_STUB`). Not production-complete. |
-| **CHANNELS → LND inject** | landed (atomicity harden): Decision-gate non-mutating; `openChannel` soft-reserves CHANNELS (`ln-channel-rebalance`), binds LND funding address, opens, commits; pending-channels refuse; durable Intent id + phase resume; commit-retry reconciler releases orphan reserves. Residual: **no on-chain CHANNELS→LND PSBT** (per-bucket Taproot key not shipped; shared key is USERS-only) — LND wallet still selects funding UTXOs |
+| **CHANNELS → LND inject** | landed (on-chain fund): Decision-gate non-mutating; soft-reserve CHANNELS → CHANNELS Taproot PSBT to LND funding address (key ≠ USERS omnibus) → `openChannel` → commit; pending-channels refuse; durable Intent id + phase resume; commit-retry reconciler. Fail-closed without mesh fund txid. |
 | **Deposit xpub vs `tb1p`** | Ceremony yields stable mesh `tb1p` deposit (`tr()`); user-visible xpub / HD from group VK is not implemented; product `bitcoin.platform.master-xpub` ≠ mesh deposit |
-| **Economy / release durability (#18)** | `InMemoryEconomy` / `InMemoryReleaseMesh` — restart loses state; not an authenticated mesh ledger |
+| **Economy / release durability (#18)** | `PersistedEconomy` / `PersistedReleaseMesh` under `VAULT_DATA_DIR` (process-local atomic snapshot) — **not** authenticated mesh BFT ledger; residual: quorum-replicated economy/release |
 | **Supply-chain audit (#38)** | `cargo audit` (cargo-audit `v0.22.2`, DB last-updated `2026-07-23T06:23:12+02:00`) found **0 HIGH/CRITICAL** advisories for `backend/kerosene-vault` (`vulnerabilities.found=false`). Advisory database contains **unmaintained** only (informational), no actionable HIGH/CRITICAL. |
 | **Side-channel analysis (#39)** | Improved FROST round nonce zeroization on error paths in `frost_sign.rs` and `frost_wire_cosign.rs`. Residual: this is not a proof of side-channel freedom. |
 | **mTLS pin / CRL (#36)** | Ceremony CA + short-lived rotation (`gen_ceremony_mtls_certs` / `rotate_ceremony_mtls_certs`); runtime pin/CRL not enforced |

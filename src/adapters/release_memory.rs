@@ -12,14 +12,14 @@ use crate::application::ports::{BlobStorePort, ReleaseStorePort};
 use crate::domain::{AllowlistEntry, ContentHash, DomainError, ReleaseCandidate, ReleasePolicy};
 
 pub struct InMemoryReleaseMesh {
-    inner: Mutex<ReleaseMeshState>,
+    pub(crate) inner: Mutex<ReleaseMeshState>,
 }
 
-struct ReleaseMeshState {
-    policy: ReleasePolicy,
-    blobs: HashMap<String, Vec<u8>>,
-    candidates: BTreeMap<String, ReleaseCandidate>,
-    allowlist: Vec<AllowlistEntry>,
+pub(crate) struct ReleaseMeshState {
+    pub(crate) policy: ReleasePolicy,
+    pub(crate) blobs: HashMap<String, Vec<u8>>,
+    pub(crate) candidates: BTreeMap<String, ReleaseCandidate>,
+    pub(crate) allowlist: Vec<AllowlistEntry>,
 }
 
 impl InMemoryReleaseMesh {

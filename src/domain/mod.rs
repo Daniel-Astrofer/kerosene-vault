@@ -27,8 +27,8 @@ pub use node_tier::{
 };
 pub use bitcoin_net::{destination_script_pubkey, validate_destination, BitcoinNetwork};
 pub use bucket::{
-    assert_shared_taproot_bucket, evaluate_intent, BucketKind, BucketPolicy, ProfitSplits,
-    SettlementIntent,
+    assert_channels_taproot_bucket, assert_shared_taproot_bucket, evaluate_intent, BucketKind,
+    BucketPolicy, ProfitSplits, SettlementIntent,
 };
 pub use constitution::{quorum_two_thirds, Constitution};
 pub use day_epoch::DayEpoch;
@@ -46,7 +46,8 @@ pub use release::{
 pub use reshare_policy::ResharePolicy;
 pub use reward::{
     assert_bank_issued_miner_payout, EconomyState, GovernanceAccrual, GovernanceJobKind,
-    GovernanceRewardConfig, MinerOperator, MinerPayoutShare, RewardPolicy,
+    GovernanceRewardConfig, MinerOperator, MinerPayoutCadence, MinerPayoutShare,
+    ProfitSplitAccrual, RewardPolicy,
 };
 pub use threshold::{
     derive_nonce, eval_poly, field_add, field_mul, interpolate_secret, lab_random_u64,

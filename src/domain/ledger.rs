@@ -53,6 +53,8 @@ pub enum LedgerEventKind {
     ReshareCompleted,
     /// Governance job bounty accrued to miner pool (bank Intent later).
     GovernanceRewardAccrued,
+    /// PROFIT allocated across MINERS / CHANNELS / INFRA credit pools.
+    ProfitAllocated,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -115,6 +117,7 @@ fn kind_str(k: &LedgerEventKind) -> &'static str {
         LedgerEventKind::DayAdvanced => "day_advanced",
         LedgerEventKind::ReshareCompleted => "reshare_completed",
         LedgerEventKind::GovernanceRewardAccrued => "governance_reward_accrued",
+        LedgerEventKind::ProfitAllocated => "profit_allocated",
     }
 }
 

@@ -26,6 +26,7 @@ mod ledger_memory;
 mod peer_memory;
 mod rate_limit;
 mod release_memory;
+mod release_persist;
 mod session_persist;
 mod share_aead;
 mod share_tee;
@@ -57,7 +58,7 @@ pub use dkg_wire::{
     session_transcript, DkgStartRequest, DistributedWireDkgPort, Round1WireMessage,
     Round2WireMessage, Round3WireRequest, WireDkgHub, WireDkgPeerAuth, WireDkgStatus,
 };
-pub use economy_memory::InMemoryEconomy;
+pub use economy_memory::{InMemoryEconomy, PersistedEconomy};
 #[cfg(feature = "dealer_lab")]
 pub use frost_dealer::{dealer_fatal_banner, DealerLabAdapter, FrostDealerBundle};
 pub use frost_reshare::{
@@ -65,8 +66,9 @@ pub use frost_reshare::{
 };
 pub use frost_sign::{FrostAggregateResult, FrostSignOrchestrator};
 pub use frost_tr_bitcoin::{
-    load_tr_shares, persist_tr_shares, refresh_tr_shares_in_process, FrostTrBitcoinOrchestrator,
-    FrostTrShareSlot, FrostTrShareState, SignedPsbtResult,
+    load_tr_channels_shares, load_tr_shares, persist_tr_channels_shares, persist_tr_shares,
+    refresh_tr_shares_in_process, FrostTrBitcoinOrchestrator, FrostTrShareSlot, FrostTrShareState,
+    SignedPsbtResult,
 };
 #[cfg(feature = "dealer_lab")]
 pub use frost_tr_bitcoin::generate_tr_dealer;
@@ -87,6 +89,7 @@ pub use ledger_memory::InMemoryLedger;
 pub use peer_memory::InMemoryPeerDirectory;
 pub use rate_limit::SlidingWindowLimiter;
 pub use release_memory::InMemoryReleaseMesh;
+pub use release_persist::PersistedReleaseMesh;
 pub use session_persist::{
     HttpAntiNonceTransport, MemoryAntiNonceTransport, PersistedAntiNonce, QuorumAntiNonce,
     SharedAntiNonce,

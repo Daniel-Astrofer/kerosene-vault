@@ -119,6 +119,7 @@ fn day_rotation_and_reshare_accrue_governance_rewards() {
         economy,
         ledger,
         gov_cfg(),
+        kerosene_vault::domain::MinerPayoutCadence::Manual,
         VaultNodeTier::Domestic,
         AttestationMode::Sim,
         false,

@@ -40,19 +40,34 @@ impl BucketKind {
         matches!(self, Self::Users)
     }
 
-    /// Shared Taproot FROST deposit key (single `tr()` until per-bucket keys exist)
-    /// may only be spent under USERS policy. Other buckets must not escape via the
-    /// same key with a looser allowlist/cap.
+    /// Shared Taproot FROST deposit key (USERS omnibus `tr()` / `tb1p`) may only be
+    /// spent under USERS policy. CHANNELS has its **own** Taproot keyset — never this one.
     pub fn may_use_shared_taproot_key(self) -> bool {
         matches!(self, Self::Users)
     }
+
+    /// Dedicated CHANNELS Taproot FROST key (≠ USERS omnibus).
+    pub fn may_use_channels_taproot_key(self) -> bool {
+        matches!(self, Self::Channels)
+    }
 }
 
-/// Refuse client-chosen bucket escape against the shared mesh Taproot key.
+/// Refuse client-chosen bucket escape against the shared mesh Taproot key (USERS-only).
 pub fn assert_shared_taproot_bucket(bucket: BucketKind) -> Result<(), DomainError> {
     if !bucket.may_use_shared_taproot_key() {
         return Err(DomainError::InvalidIntent(format!(
-            "bucket {} cannot spend shared Taproot key; only USERS until per-bucket keys exist",
+            "bucket {} cannot spend shared Taproot key; only USERS (CHANNELS uses its own key)",
+            bucket.as_str()
+        )));
+    }
+    Ok(())
+}
+
+/// CHANNELS Taproot spends must use the CHANNELS key — not USERS omnibus.
+pub fn assert_channels_taproot_bucket(bucket: BucketKind) -> Result<(), DomainError> {
+    if !bucket.may_use_channels_taproot_key() {
+        return Err(DomainError::InvalidIntent(format!(
+            "bucket {} cannot spend CHANNELS Taproot key",
             bucket.as_str()
         )));
     }
@@ -77,6 +92,17 @@ impl ProfitSplits {
         }
     }
 
+    /// Explicit splits (must sum to 10_000 bps).
+    pub fn explicit(miners_bps: u32, channels_bps: u32, infra_bps: u32) -> Result<Self, DomainError> {
+        let s = Self {
+            miners_bps,
+            channels_bps,
+            infra_bps,
+        };
+        s.validate()?;
+        Ok(s)
+    }
+
     /// Open economy: miners get `p_reward_bps` of PROFIT; remainder split channels/infra.
     pub fn open_with_reward(p_reward_bps: u32) -> Result<Self, DomainError> {
         if p_reward_bps > 10_000 {
@@ -87,13 +113,7 @@ impl ProfitSplits {
         let rest = 10_000 - p_reward_bps;
         let channels = rest / 2;
         let infra = rest - channels;
-        let s = Self {
-            miners_bps: p_reward_bps,
-            channels_bps: channels,
-            infra_bps: infra,
-        };
-        s.validate()?;
-        Ok(s)
+        Self::explicit(p_reward_bps, channels, infra)
     }
 
     pub fn validate(&self) -> Result<(), DomainError> {
@@ -157,6 +177,24 @@ impl BucketPolicy {
 
     pub fn allows_destination(&self, dest: &str) -> bool {
         self.destination_allowlist.contains(dest)
+    }
+
+    /// CHANNELS policy-exception: allowlisted opaque tags **or** any valid Bitcoin
+    /// address on `network` (LND funding inject). USERS stays strict allowlist-only.
+    pub fn allows_destination_for_network(
+        &self,
+        dest: &str,
+        network: crate::domain::BitcoinNetwork,
+    ) -> bool {
+        if self.allows_destination(dest) {
+            return true;
+        }
+        if self.kind != BucketKind::Channels {
+            return false;
+        }
+        crate::domain::validate_destination(network, dest).is_ok()
+            && dest.parse::<bitcoin::address::Address<bitcoin::address::NetworkUnchecked>>()
+                .is_ok()
     }
 
     /// Admit an explicit destination into this bucket's allowlist (config / Intent registry).
@@ -278,7 +316,20 @@ pub fn evaluate_intent(
             scope: "per_day".into(),
         });
     }
-    if !policy.allows_destination(&intent.destination) {
+    // CHANNELS policy-exception: opaque allowlist tags **or** parseable Bitcoin
+    // addresses (LND funding inject). Network HRP checked at HTTP edge via
+    // validate_destination. USERS/others stay strict allowlist-only.
+    let dest_ok = if policy.allows_destination(&intent.destination) {
+        true
+    } else if policy.kind == BucketKind::Channels {
+        intent
+            .destination
+            .parse::<bitcoin::address::Address<bitcoin::address::NetworkUnchecked>>()
+            .is_ok()
+    } else {
+        false
+    };
+    if !dest_ok {
         return Err(DomainError::DestinationNotAllowed(
             intent.destination.clone(),
         ));
@@ -315,11 +366,15 @@ mod tests {
     }
 
     #[test]
-    fn shared_taproot_key_users_only() {
+    fn shared_taproot_key_users_only_channels_has_own() {
         assert!(BucketKind::Users.may_use_shared_taproot_key());
         assert!(!BucketKind::Channels.may_use_shared_taproot_key());
+        assert!(BucketKind::Channels.may_use_channels_taproot_key());
+        assert!(!BucketKind::Users.may_use_channels_taproot_key());
         assert!(assert_shared_taproot_bucket(BucketKind::Users).is_ok());
         assert!(assert_shared_taproot_bucket(BucketKind::Channels).is_err());
+        assert!(assert_channels_taproot_bucket(BucketKind::Channels).is_ok());
+        assert!(assert_channels_taproot_bucket(BucketKind::Users).is_err());
     }
 
     #[test]
@@ -332,6 +387,11 @@ mod tests {
         assert!(policy.allows_destination("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"));
         let channels = BucketPolicy::lab_defaults(BucketKind::Channels, 100, 1_000);
         assert!(!channels.allows_destination("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"));
+        // CHANNELS policy-exception: valid network addresses allowed for LND inject.
+        assert!(channels.allows_destination_for_network(
+            "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",
+            crate::domain::BitcoinNetwork::Testnet3,
+        ));
     }
 
     #[test]

@@ -4,7 +4,38 @@
 
 use std::collections::BTreeMap;
 
-use crate::domain::{BucketKind, DomainError, NodeId, SettlementIntent};
+use crate::domain::{BucketKind, DomainError, NodeId, ProfitSplits, SettlementIntent};
+
+/// Miner payout cadence gate (`VAULT_MINER_PAYOUT_CADENCE`).
+/// Non-manual values only enforce spacing between proposes — **no auto scheduler**.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MinerPayoutCadence {
+    Manual,
+    Daily,
+    Weekly,
+    Epoch,
+}
+
+impl MinerPayoutCadence {
+    pub fn parse(raw: &str) -> Option<Self> {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "manual" => Some(Self::Manual),
+            "daily" => Some(Self::Daily),
+            "weekly" => Some(Self::Weekly),
+            "epoch" => Some(Self::Epoch),
+            _ => None,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Manual => "manual",
+            Self::Daily => "daily",
+            Self::Weekly => "weekly",
+            Self::Epoch => "epoch",
+        }
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RewardPolicy {
@@ -103,6 +134,8 @@ pub struct EconomyState {
     pub policy: RewardPolicy,
     pub operators: BTreeMap<String, MinerOperator>,
     pub miner_pool_sats: u64,
+    pub channels_pool_sats: u64,
+    pub infra_pool_sats: u64,
     pub accrued_profit_sats: u64,
     /// Governance job bounty still sitting in the miner pool (pending bank Intent).
     pub pending_governance_reward_sats: u64,
@@ -110,6 +143,8 @@ pub struct EconomyState {
     pub governance_credits: BTreeMap<String, u64>,
     /// Optional PQ suite alongside classical (dual-stack placeholder).
     pub crypto_suite_id_pq: String,
+    pub last_miner_payout_at_secs: Option<u64>,
+    pub last_miner_payout_epoch: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -122,16 +157,29 @@ pub struct GovernanceAccrual {
     pub eligible_credited: usize,
 }
 
+/// Result of allocating profit across MINERS / CHANNELS / INFRA pools.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProfitSplitAccrual {
+    pub profit_sats: u64,
+    pub miners_sats: u64,
+    pub channels_sats: u64,
+    pub infra_sats: u64,
+}
+
 impl EconomyState {
     pub fn new_open() -> Self {
         Self {
             policy: RewardPolicy::v1_open(),
             operators: BTreeMap::new(),
             miner_pool_sats: 0,
+            channels_pool_sats: 0,
+            infra_pool_sats: 0,
             accrued_profit_sats: 0,
             pending_governance_reward_sats: 0,
             governance_credits: BTreeMap::new(),
             crypto_suite_id_pq: "ml-dsa-65-placeholder".into(),
+            last_miner_payout_at_secs: None,
+            last_miner_payout_epoch: None,
         }
     }
 
@@ -156,12 +204,35 @@ impl EconomyState {
             .collect()
     }
 
-    /// Accrue `p_reward_bps` of profit into the MINERS pool. Waiting set does not dilute.
-    pub fn accrue_from_profit(&mut self, profit_sats: u64, p_reward_bps: u32) -> u64 {
-        let miners = profit_sats.saturating_mul(p_reward_bps as u64) / 10_000;
+    /// Accrue full profit splits into MINERS / CHANNELS / INFRA credit pools.
+    pub fn accrue_profit_splits(
+        &mut self,
+        profit_sats: u64,
+        splits: &ProfitSplits,
+    ) -> Result<ProfitSplitAccrual, DomainError> {
+        splits.validate()?;
+        let (miners, channels, infra) = splits.allocate(profit_sats);
         self.miner_pool_sats = self.miner_pool_sats.saturating_add(miners);
+        self.channels_pool_sats = self.channels_pool_sats.saturating_add(channels);
+        self.infra_pool_sats = self.infra_pool_sats.saturating_add(infra);
         self.accrued_profit_sats = self.accrued_profit_sats.saturating_add(profit_sats);
-        miners
+        Ok(ProfitSplitAccrual {
+            profit_sats,
+            miners_sats: miners,
+            channels_sats: channels,
+            infra_sats: infra,
+        })
+    }
+
+    /// Accrue `p_reward_bps` of profit into pools via [`ProfitSplits::open_with_reward`].
+    /// Waiting set does not dilute. Returns the MINERS leg only (legacy callers).
+    pub fn accrue_from_profit(&mut self, profit_sats: u64, p_reward_bps: u32) -> u64 {
+        let Ok(splits) = ProfitSplits::open_with_reward(p_reward_bps) else {
+            return 0;
+        };
+        self.accrue_profit_splits(profit_sats, &splits)
+            .map(|a| a.miners_sats)
+            .unwrap_or(0)
     }
 
     /// Accrue a governance job bounty for eligible operators who participated.
@@ -282,6 +353,60 @@ impl EconomyState {
         Ok(())
     }
 
+    /// Gate propose spacing. `current_epoch` is used only for [`MinerPayoutCadence::Epoch`].
+    pub fn assert_payout_cadence_ok(
+        &self,
+        cadence: MinerPayoutCadence,
+        now_secs: u64,
+        current_epoch: Option<u64>,
+    ) -> Result<(), DomainError> {
+        match cadence {
+            MinerPayoutCadence::Manual => Ok(()),
+            MinerPayoutCadence::Daily => {
+                if let Some(last) = self.last_miner_payout_at_secs {
+                    if now_secs.saturating_sub(last) < 86_400 {
+                        return Err(DomainError::RequestRejected(
+                            "miner payout cadence daily: wait 86400s since last payout".into(),
+                        ));
+                    }
+                }
+                Ok(())
+            }
+            MinerPayoutCadence::Weekly => {
+                if let Some(last) = self.last_miner_payout_at_secs {
+                    if now_secs.saturating_sub(last) < 7 * 86_400 {
+                        return Err(DomainError::RequestRejected(
+                            "miner payout cadence weekly: wait 604800s since last payout".into(),
+                        ));
+                    }
+                }
+                Ok(())
+            }
+            MinerPayoutCadence::Epoch => {
+                let Some(cur) = current_epoch else {
+                    return Err(DomainError::RequestRejected(
+                        "miner payout cadence epoch: current epoch required".into(),
+                    ));
+                };
+                if let Some(last) = self.last_miner_payout_epoch {
+                    if cur <= last {
+                        return Err(DomainError::RequestRejected(
+                            "miner payout cadence epoch: wait for next epoch".into(),
+                        ));
+                    }
+                }
+                Ok(())
+            }
+        }
+    }
+
+    pub fn record_miner_payout(&mut self, at_secs: u64, epoch: Option<u64>) {
+        self.last_miner_payout_at_secs = Some(at_secs);
+        if let Some(e) = epoch {
+            self.last_miner_payout_epoch = Some(e);
+        }
+    }
+
     /// Survivability note: losing one vault must not unlock USERS omnibus or full key.
     pub fn survivability_ok(&self, online_vaults: usize, signing_t: usize) -> bool {
         // Bank ledger survives independently; cofre only fails closed when online < t.
@@ -353,6 +478,30 @@ mod tests {
         let got = eco.accrue_from_profit(1_000_000, 100);
         assert_eq!(got, 10_000);
         assert_eq!(eco.miner_pool_sats, 10_000);
+        assert_eq!(eco.channels_pool_sats + eco.infra_pool_sats, 990_000);
+        assert_eq!(
+            eco.miner_pool_sats + eco.channels_pool_sats + eco.infra_pool_sats,
+            1_000_000
+        );
+    }
+
+    #[test]
+    fn weekly_cadence_blocks_until_week_elapsed() {
+        let mut eco = EconomyState::new_open();
+        eco.record_miner_payout(1_000_000, None);
+        assert!(eco
+            .assert_payout_cadence_ok(MinerPayoutCadence::Weekly, 1_000_000 + 100, None)
+            .is_err());
+        assert!(eco
+            .assert_payout_cadence_ok(
+                MinerPayoutCadence::Weekly,
+                1_000_000 + 7 * 86_400,
+                None
+            )
+            .is_ok());
+        assert!(eco
+            .assert_payout_cadence_ok(MinerPayoutCadence::Manual, 1_000_000 + 1, None)
+            .is_ok());
     }
 
     #[test]

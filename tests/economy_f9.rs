@@ -81,11 +81,21 @@ fn accrue_and_propose_payouts_equal_split() {
         })
         .unwrap();
 
-    let accrue = AccrueMinerRewards::new(economy.clone(), ledger.clone());
+    let accrue = AccrueMinerRewards::new(economy.clone(), ledger.clone(), ids[0].clone());
     let receipt = accrue.execute(1_000_000).unwrap();
     assert_eq!(receipt.accrued_to_pool_sats, 10_000);
+    assert_eq!(
+        receipt.channels_sats + receipt.infra_sats + receipt.accrued_to_pool_sats,
+        1_000_000
+    );
 
-    let propose = ProposeMinerPayouts::new(economy.clone(), ledger);
+    let clock = Arc::new(kerosene_vault::adapters::SystemClock);
+    let propose = ProposeMinerPayouts::new(
+        economy.clone(),
+        ledger,
+        clock,
+        kerosene_vault::domain::MinerPayoutCadence::Manual,
+    );
     let proposal = propose.execute(10_000, "pay").unwrap();
     assert_eq!(proposal.intents.len(), 2);
     assert_eq!(proposal.total_sats, 10_000);

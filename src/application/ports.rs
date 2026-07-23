@@ -2,8 +2,8 @@ use crate::domain::{
     AttestationMode, AttestationQuote, AllowlistEntry, BucketKind, BucketPolicy, Constitution,
     ContentHash, DayEpoch, DomainError, EconomyState, Epoch, EpochAdvanceProposal,
     GovernanceAccrual, GovernanceJobKind, GovernanceRewardConfig, LedgerEntry, Measurement,
-    MinerOperator, MinerPayoutShare, NodeId, PeerInfo, ReleaseCandidate, ReleasePolicy,
-    ResharePolicy,
+    MinerOperator, MinerPayoutShare, NodeId, PeerInfo, ProfitSplitAccrual, ProfitSplits,
+    ReleaseCandidate, ReleasePolicy, ResharePolicy,
 };
 
 pub trait PeerDirectoryPort: Send + Sync {
@@ -91,6 +91,11 @@ pub trait BucketLedgerPort: Send + Sync {
         let _ = (intent_id, kind, amount_sats);
         Ok(())
     }
+    /// Soft reservation present (not yet committed / released).
+    fn has_reservation(&self, intent_id: &str) -> Result<bool, DomainError> {
+        let _ = intent_id;
+        Ok(false)
+    }
     /// Validate + record spend + consume under one critical section (TOCTOU-safe).
     /// Prefer [`reserve_spend`] + [`commit_consume`] on sign paths (High #9).
     fn authorize_spend_and_consume(
@@ -117,6 +122,11 @@ pub trait EconomyPort: Send + Sync {
     fn snapshot(&self) -> Result<EconomyState, DomainError>;
     fn upsert_operator(&self, op: MinerOperator) -> Result<(), DomainError>;
     fn accrue_from_profit(&self, profit_sats: u64, p_reward_bps: u32) -> Result<u64, DomainError>;
+    fn accrue_profit_splits(
+        &self,
+        profit_sats: u64,
+        splits: &ProfitSplits,
+    ) -> Result<ProfitSplitAccrual, DomainError>;
     fn accrue_governance_job(
         &self,
         job: GovernanceJobKind,
@@ -125,6 +135,7 @@ pub trait EconomyPort: Send + Sync {
     ) -> Result<GovernanceAccrual, DomainError>;
     fn propose_equal_payouts(&self, amount: u64) -> Result<Vec<MinerPayoutShare>, DomainError>;
     fn debit_pool(&self, amount: u64) -> Result<(), DomainError>;
+    fn record_miner_payout(&self, at_secs: u64, epoch: Option<u64>) -> Result<(), DomainError>;
 }
 
 /// DKG / keygen port. Lab may use dealer behind `dealer_lab`; Gate uses

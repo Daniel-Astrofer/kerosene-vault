@@ -158,6 +158,8 @@ pub struct VaultConfig {
     pub ceremony_mode: CeremonyMode,
     /// `VAULT_ECONOMY=open` enables live p%=1% miner splits (F9); default lab dry-run.
     pub open_economy: bool,
+    /// `VAULT_MINER_PAYOUT_CADENCE=manual|daily|weekly|epoch` (gate only; no auto scheduler).
+    pub miner_payout_cadence: crate::domain::MinerPayoutCadence,
     pub bitcoin_network: BitcoinNetwork,
     pub auth_mode: AuthMode,
     pub vault_token: Option<String>,
@@ -367,6 +369,10 @@ impl VaultConfig {
             std::env::var("VAULT_ECONOMY").as_deref(),
             Ok("open" | "OPEN" | "v1_open")
         );
+        let miner_payout_cadence = std::env::var("VAULT_MINER_PAYOUT_CADENCE")
+            .ok()
+            .and_then(|s| crate::domain::MinerPayoutCadence::parse(&s))
+            .unwrap_or(crate::domain::MinerPayoutCadence::Manual);
 
         let btc_raw = std::env::var("BITCOIN_NETWORK").unwrap_or_else(|_| "testnet3".into());
         let bitcoin_network = BitcoinNetwork::parse(&btc_raw).ok_or_else(|| {
@@ -534,6 +540,7 @@ impl VaultConfig {
             attestation_staging_stub,
             ceremony_mode,
             open_economy,
+            miner_payout_cadence,
             bitcoin_network,
             auth_mode,
             vault_token,
@@ -1107,6 +1114,7 @@ mod tests {
             attestation_staging_stub: false,
             ceremony_mode: CeremonyMode::Lab,
             open_economy: false,
+            miner_payout_cadence: crate::domain::MinerPayoutCadence::Manual,
             bitcoin_network: BitcoinNetwork::Testnet3,
             auth_mode: AuthMode::StaticToken,
             vault_token: Some("t".into()),

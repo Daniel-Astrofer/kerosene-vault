@@ -2,17 +2,18 @@
 
 use std::sync::Arc;
 
-use crate::application::ports::{EconomyPort, LedgerPort};
+use crate::application::ports::{ClockPort, EconomyPort, LedgerPort};
 use crate::domain::{
     assert_bank_issued_miner_payout, AttestationMode, DomainError, EconomyState, GovernanceAccrual,
     GovernanceJobKind, GovernanceRewardConfig, LedgerEntry, LedgerEventKind, MinerOperator,
-    MinerPayoutShare, NodeId, SettlementIntent, VaultNodeTier,
+    MinerPayoutCadence, MinerPayoutShare, NodeId, SettlementIntent, VaultNodeTier,
 };
 
 pub struct GetEconomyStatus {
     economy: Arc<dyn EconomyPort>,
     ledger: Arc<dyn LedgerPort>,
     governance_reward: GovernanceRewardConfig,
+    payout_cadence: MinerPayoutCadence,
     node_tier: VaultNodeTier,
     attestation_mode: AttestationMode,
     tee_available: bool,
@@ -23,6 +24,7 @@ impl GetEconomyStatus {
         economy: Arc<dyn EconomyPort>,
         ledger: Arc<dyn LedgerPort>,
         governance_reward: GovernanceRewardConfig,
+        payout_cadence: MinerPayoutCadence,
         node_tier: VaultNodeTier,
         attestation_mode: AttestationMode,
         tee_available: bool,
@@ -31,6 +33,7 @@ impl GetEconomyStatus {
             economy,
             ledger,
             governance_reward,
+            payout_cadence,
             node_tier,
             attestation_mode,
             tee_available,
@@ -46,11 +49,17 @@ impl GetEconomyStatus {
         let survivability_ok = eco.survivability_ok(online, constitution.signing_t);
         Ok(EconomyStatusView {
             miner_pool_sats: eco.miner_pool_sats,
+            channels_pool_sats: eco.channels_pool_sats,
+            infra_pool_sats: eco.infra_pool_sats,
             accrued_profit_sats: eco.accrued_profit_sats,
             pending_governance_reward_sats: eco.pending_governance_reward_sats,
             governance_reward_sats: self.governance_reward.reward_sats,
             governance_reward_bps: self.governance_reward.reward_bps_of_pool,
             p_reward_bps: constitution.p_reward_bps,
+            channels_bps: constitution.profit_splits.channels_bps,
+            infra_bps: constitution.profit_splits.infra_bps,
+            miner_payout_cadence: self.payout_cadence.as_str().to_string(),
+            last_miner_payout_at_secs: eco.last_miner_payout_at_secs,
             eligible_miners: eligible,
             waiting_miners: waiting,
             crypto_suite_id: constitution.crypto_suite_id,
@@ -68,11 +77,17 @@ impl GetEconomyStatus {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct EconomyStatusView {
     pub miner_pool_sats: u64,
+    pub channels_pool_sats: u64,
+    pub infra_pool_sats: u64,
     pub accrued_profit_sats: u64,
     pub pending_governance_reward_sats: u64,
     pub governance_reward_sats: u64,
     pub governance_reward_bps: u32,
     pub p_reward_bps: u32,
+    pub channels_bps: u32,
+    pub infra_bps: u32,
+    pub miner_payout_cadence: String,
+    pub last_miner_payout_at_secs: Option<u64>,
     pub eligible_miners: usize,
     pub waiting_miners: usize,
     pub crypto_suite_id: String,
@@ -87,14 +102,24 @@ pub struct EconomyStatusView {
 
 impl EconomyStatusView {
     pub fn to_json(&self) -> String {
+        let last = self
+            .last_miner_payout_at_secs
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "null".into());
         format!(
-            r#"{{"miner_pool_sats":{},"accrued_profit_sats":{},"pending_governance_reward_sats":{},"governance_reward_sats":{},"governance_reward_bps":{},"p_reward_bps":{},"eligible_miners":{},"waiting_miners":{},"crypto_suite_id":"{}","crypto_suite_id_pq":"{}","survivability_ok":{},"open_economy":{},"node_tier":"{}","attestation_mode":"{}","tee_available":{},"tier_governance_weight_bps":{}}}"#,
+            r#"{{"miner_pool_sats":{},"channels_pool_sats":{},"infra_pool_sats":{},"accrued_profit_sats":{},"pending_governance_reward_sats":{},"governance_reward_sats":{},"governance_reward_bps":{},"p_reward_bps":{},"channels_bps":{},"infra_bps":{},"miner_payout_cadence":"{}","last_miner_payout_at_secs":{},"eligible_miners":{},"waiting_miners":{},"crypto_suite_id":"{}","crypto_suite_id_pq":"{}","survivability_ok":{},"open_economy":{},"node_tier":"{}","attestation_mode":"{}","tee_available":{},"tier_governance_weight_bps":{}}}"#,
             self.miner_pool_sats,
+            self.channels_pool_sats,
+            self.infra_pool_sats,
             self.accrued_profit_sats,
             self.pending_governance_reward_sats,
             self.governance_reward_sats,
             self.governance_reward_bps,
             self.p_reward_bps,
+            self.channels_bps,
+            self.infra_bps,
+            self.miner_payout_cadence,
+            last,
             self.eligible_miners,
             self.waiting_miners,
             self.crypto_suite_id,
@@ -126,23 +151,64 @@ impl UpsertMiner {
 pub struct AccrueMinerRewards {
     economy: Arc<dyn EconomyPort>,
     ledger: Arc<dyn LedgerPort>,
+    writer: NodeId,
 }
 
 impl AccrueMinerRewards {
-    pub fn new(economy: Arc<dyn EconomyPort>, ledger: Arc<dyn LedgerPort>) -> Self {
-        Self { economy, ledger }
+    pub fn new(
+        economy: Arc<dyn EconomyPort>,
+        ledger: Arc<dyn LedgerPort>,
+        writer: NodeId,
+    ) -> Self {
+        Self {
+            economy,
+            ledger,
+            writer,
+        }
     }
 
     pub fn execute(&self, profit_sats: u64) -> Result<AccrueReceipt, DomainError> {
         let constitution = self.ledger.constitution()?;
-        let accrued = self
+        let split = self
             .economy
-            .accrue_from_profit(profit_sats, constitution.p_reward_bps)?;
+            .accrue_profit_splits(profit_sats, &constitution.profit_splits)?;
         let eco = self.economy.snapshot()?;
+
+        let payload = format!(
+            r#"{{"profit_sats":{},"miners_sats":{},"channels_sats":{},"infra_sats":{},"miners_bps":{},"channels_bps":{},"infra_bps":{}}}"#,
+            split.profit_sats,
+            split.miners_sats,
+            split.channels_sats,
+            split.infra_sats,
+            constitution.profit_splits.miners_bps,
+            constitution.profit_splits.channels_bps,
+            constitution.profit_splits.infra_bps
+        );
+        let epoch = self.ledger.epoch()?.number;
+        let prev = self
+            .ledger
+            .head()?
+            .map(|e| e.entry_hash)
+            .unwrap_or_else(|| "genesis-prev".into());
+        let next_index = self.ledger.entries()?.len() as u64;
+        let entry = LedgerEntry::chain(
+            next_index,
+            epoch,
+            LedgerEventKind::ProfitAllocated,
+            &payload,
+            self.writer.clone(),
+            &prev,
+        );
+        self.ledger.append(entry)?;
+
         Ok(AccrueReceipt {
             profit_sats,
-            accrued_to_pool_sats: accrued,
+            accrued_to_pool_sats: split.miners_sats,
+            channels_sats: split.channels_sats,
+            infra_sats: split.infra_sats,
             miner_pool_sats: eco.miner_pool_sats,
+            channels_pool_sats: eco.channels_pool_sats,
+            infra_pool_sats: eco.infra_pool_sats,
             p_reward_bps: constitution.p_reward_bps,
         })
     }
@@ -152,17 +218,25 @@ impl AccrueMinerRewards {
 pub struct AccrueReceipt {
     pub profit_sats: u64,
     pub accrued_to_pool_sats: u64,
+    pub channels_sats: u64,
+    pub infra_sats: u64,
     pub miner_pool_sats: u64,
+    pub channels_pool_sats: u64,
+    pub infra_pool_sats: u64,
     pub p_reward_bps: u32,
 }
 
 impl AccrueReceipt {
     pub fn to_json(&self) -> String {
         format!(
-            r#"{{"profit_sats":{},"accrued_to_pool_sats":{},"miner_pool_sats":{},"p_reward_bps":{}}}"#,
+            r#"{{"profit_sats":{},"accrued_to_pool_sats":{},"channels_sats":{},"infra_sats":{},"miner_pool_sats":{},"channels_pool_sats":{},"infra_pool_sats":{},"p_reward_bps":{}}}"#,
             self.profit_sats,
             self.accrued_to_pool_sats,
+            self.channels_sats,
+            self.infra_sats,
             self.miner_pool_sats,
+            self.channels_pool_sats,
+            self.infra_pool_sats,
             self.p_reward_bps
         )
     }
@@ -268,15 +342,33 @@ fn escape_json(s: &str) -> String {
 pub struct ProposeMinerPayouts {
     economy: Arc<dyn EconomyPort>,
     ledger: Arc<dyn LedgerPort>,
+    clock: Arc<dyn ClockPort>,
+    payout_cadence: MinerPayoutCadence,
 }
 
 impl ProposeMinerPayouts {
-    pub fn new(economy: Arc<dyn EconomyPort>, ledger: Arc<dyn LedgerPort>) -> Self {
-        Self { economy, ledger }
+    pub fn new(
+        economy: Arc<dyn EconomyPort>,
+        ledger: Arc<dyn LedgerPort>,
+        clock: Arc<dyn ClockPort>,
+        payout_cadence: MinerPayoutCadence,
+    ) -> Self {
+        Self {
+            economy,
+            ledger,
+            clock,
+            payout_cadence,
+        }
     }
 
     pub fn execute(&self, amount: u64, intent_prefix: &str) -> Result<PayoutProposal, DomainError> {
         let constitution = self.ledger.constitution()?;
+        let now = self.clock.unix_now_secs();
+        self.economy.snapshot()?.assert_payout_cadence_ok(
+            self.payout_cadence,
+            now,
+            None,
+        )?;
         let shares = self.economy.propose_equal_payouts(amount)?;
         let mut intents = Vec::with_capacity(shares.len());
         for (i, share) in shares.iter().enumerate() {
@@ -286,6 +378,7 @@ impl ProposeMinerPayouts {
             intents.push(intent);
         }
         self.economy.debit_pool(amount)?;
+        self.economy.record_miner_payout(now, None)?;
         Ok(PayoutProposal {
             total_sats: amount,
             shares,
@@ -342,8 +435,10 @@ pub fn economy_snapshot_json(eco: &EconomyState) -> String {
         })
         .collect();
     format!(
-        r#"{{"miner_pool_sats":{},"pending_governance_reward_sats":{},"operators":[{}],"crypto_suite_id_pq":"{}"}}"#,
+        r#"{{"miner_pool_sats":{},"channels_pool_sats":{},"infra_pool_sats":{},"pending_governance_reward_sats":{},"operators":[{}],"crypto_suite_id_pq":"{}"}}"#,
         eco.miner_pool_sats,
+        eco.channels_pool_sats,
+        eco.infra_pool_sats,
         eco.pending_governance_reward_sats,
         ops.join(","),
         eco.crypto_suite_id_pq
