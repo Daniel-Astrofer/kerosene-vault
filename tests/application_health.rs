@@ -105,6 +105,7 @@ fn sim_forbidden_when_refuse_sim() {
         tls_client_cert_path: Some("/lab/certs/vault-client.crt".into()),
         tls_client_key_path: Some("/lab/certs/vault-client.key".into()),
         tls_verify_policy: kerosene_vault::adapters::TlsPeerVerifyPolicy::Hostname,
+        audit_key_allowlist: kerosene_vault::adapters::MeshAuditKeyAllowlist::empty(),
         share_store_mode: kerosene_vault::bootstrap::ShareStoreMode::TeeSeal,
         share_passphrase: None,
         share_tpm_seal: false,

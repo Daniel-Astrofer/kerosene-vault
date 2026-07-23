@@ -59,6 +59,40 @@ case "$MODE" in
     SPIFFE_ID="${VAULT_TLS_PEER_SPIFFE_ID:-${VAULT_MTLS_SPIFFE_VAULT:-}}"
     check "$([[ -n "${SPIFFE_ID}" && "${SPIFFE_ID}" == spiffe://* ]] && echo 1 || echo 0)" \
       "VAULT_TLS_PEER_SPIFFE_ID (or VAULT_MTLS_SPIFFE_VAULT) is spiffe://… (${SPIFFE_ID:-unset})"
+    # Unique SPIFFE (not only shared vault/server alias) — SPIRE-equivalent Gate.
+    if [[ -n "${SPIFFE_ID}" ]]; then
+      case "${SPIFFE_ID}" in
+        *,*)
+          check 1 "SPIFFE allowlist is multi-id (unique vault SVIDs)"
+          ;;
+        */vault/server)
+          check 0 "production requires unique SPIFFE per vault (not only shared …/vault/server); run gen_ceremony_mtls_certs.sh"
+          ;;
+        */vault/*)
+          check 1 "SPIFFE uses unique per-vault ID (SPIRE-like)"
+          ;;
+        *)
+          check 0 "VAULT_TLS_PEER_SPIFFE_ID must be spiffe://…/vault/{node_id} (or comma-separated allowlist)"
+          ;;
+      esac
+    fi
+    # F8: audit keys ≠ release ≠ settlement
+    AUDIT_OK=0
+    if [[ -n "${VAULT_AUDIT_PUBKEY_ALLOWLIST:-}" ]]; then
+      AUDIT_OK=1
+    elif [[ -n "${VAULT_AUDIT_PUBKEYS_PATH:-}" && -f "${VAULT_AUDIT_PUBKEYS_PATH}" ]]; then
+      AUDIT_OK=1
+    elif [[ -f "${VAULT_CEREMONY_MTLS_OUT:-}/audit/allowlist.txt" ]]; then
+      AUDIT_OK=1
+    elif [[ -f "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/ceremony-certs/audit/allowlist.txt" ]]; then
+      AUDIT_OK=1
+    elif [[ "${VAULT_SKIP_AUDIT_KEYS_CHECK:-0}" == "1" ]]; then
+      echo "[..] VAULT_SKIP_AUDIT_KEYS_CHECK=1 — audit keys skipped (not for go-live)"
+      AUDIT_OK=1
+    fi
+    check "$AUDIT_OK" \
+      "mesh audit pubkey allowlist present (F8: audit ≠ release ≠ settlement; docs/AUDIT_KEYS.md)"
+
     if [[ -n "${VAULT_SEED_PEERS:-}" ]]; then
       if echo "${VAULT_SEED_PEERS}" | grep -q '\.onion'; then
         check 1 "VAULT_SEED_PEERS contain .onion addresses"
@@ -105,7 +139,8 @@ case "$MODE" in
     echo "     - VAULT_TRANSPORT=tor VAULT_SOCKS_PROXY=socks5h://127.0.0.1:9050"
     echo "     - VAULT_SEED_PEERS=id=http://….onion:7701 (no clearnet publish; https under mTLS)"
     echo "     - VAULT_AUTH_MODE=mtls + VAULT_TLS_* + VAULT_TLS_VERIFY_MODE=onion_or_spiffe"
-    echo "     - VAULT_TLS_PEER_SPIFFE_ID=spiffe://…/vault/server (see docs/MTLS_SPIFFE_LAYOUT.md)"
+    echo "     - VAULT_TLS_PEER_SPIFFE_ID=spiffe://…/vault/vault-1,spiffe://…/vault/vault-2,… (unique; gen_ceremony_mtls_certs.sh)"
+    echo "     - Audit keys: ./scripts/gen_mesh_audit_keys.sh + source audit/env.hint (F8; ≠ release ≠ settlement)"
     echo "     - All domestic: VAULT_NODE_TIER=domestic ATTESTATION_MODE=software VAULT_SHARE_STORE=aead_disk"
     echo "     - Optional TPM: VAULT_SHARE_TPM_SEAL=1 (fail-closed without TPM; lab stub VAULT_SHARE_TPM_STUB=1; clear fallback lab-only)"
     echo "     - Mixed: set VAULT_PEER_TIERS=id=sev,... so seating prefers SEV > SGX > domestic"

@@ -25,7 +25,8 @@ without a quote, seating treats the peer as `domestic`.
    - `VAULT_SHARE_STORE=aead_disk`
    - Optional TPM seal (disk-at-rest; **not** SEV): `VAULT_SHARE_TPM_SEAL=1` + real TPM, or lab mock `VAULT_SHARE_TPM_STUB=1`. Fail-closed without TPM unless lab `VAULT_SHARE_TPM_CLEAR_FALLBACK=1`.
    - `VAULT_DKG_MODE=distributed_wire`
-   - `VAULT_AUTH_MODE=mtls` + TLS paths
+   - `VAULT_AUTH_MODE=mtls` + TLS paths (unique SPIFFE: `./scripts/gen_ceremony_mtls_certs.sh`)
+   - Mesh audit keys (F8): `./scripts/gen_mesh_audit_keys.sh` + `source ceremony-certs/audit/env.hint`
    - `VAULT_GENESIS_N=3` + reciprocal `VAULT_SEED_PEERS`
    - **Do not** set `ATTESTATION_STAGING_STUB` or `LAB_TIMELOCK_SCALE`
 2. Gate: `./scripts/genesis_ceremony_checklist.sh`
@@ -73,12 +74,13 @@ TPM binds disk-at-rest to the machine; it does **not** isolate share RAM after u
 | Gap | Notes |
 | --- | --- |
 | **Full SNP VCEK verification** | HW path **fail-closed** without real `/dev/sev-guest` + VCEK chain; staging stub is lab-only (`ATTESTATION_STAGING_STUB`). Not production-complete. |
-| **CHANNELS → LND inject** | landed (reserve→open→commit): Decision-gate non-mutating; `KfeChannelLifecycleService.openChannel` soft-reserves CHANNELS (`ln-channel-rebalance`) then LND open; release on open failure; go-live requires inject + disables auto-open; LND wallet ≠ mesh CHANNELS capital. Residual: no on-chain fund-from-mesh yet; pending-open race; commit-after-open crash window |
+| **CHANNELS → LND inject** | landed (atomicity harden): Decision-gate non-mutating; `openChannel` soft-reserves CHANNELS (`ln-channel-rebalance`), binds LND funding address, opens, commits; pending-channels refuse; durable Intent id + phase resume; commit-retry reconciler releases orphan reserves. Residual: **no on-chain CHANNELS→LND PSBT** (per-bucket Taproot key not shipped; shared key is USERS-only) — LND wallet still selects funding UTXOs |
 | **Deposit xpub vs `tb1p`** | Ceremony yields stable mesh `tb1p` deposit (`tr()`); user-visible xpub / HD from group VK is not implemented; product `bitcoin.platform.master-xpub` ≠ mesh deposit |
 | **Economy / release durability (#18)** | `InMemoryEconomy` / `InMemoryReleaseMesh` — restart loses state; not an authenticated mesh ledger |
 | **Supply-chain audit (#38)** | `cargo audit` (cargo-audit `v0.22.2`, DB last-updated `2026-07-23T06:23:12+02:00`) found **0 HIGH/CRITICAL** advisories for `backend/kerosene-vault` (`vulnerabilities.found=false`). Advisory database contains **unmaintained** only (informational), no actionable HIGH/CRITICAL. |
 | **Side-channel analysis (#39)** | Improved FROST round nonce zeroization on error paths in `frost_sign.rs` and `frost_wire_cosign.rs`. Residual: this is not a proof of side-channel freedom. |
-| **mTLS pin / CRL (#36)** | Short-lived rotation scripts exist; runtime pin/CRL not enforced |
+| **mTLS pin / CRL (#36)** | Ceremony CA + short-lived rotation (`gen_ceremony_mtls_certs` / `rotate_ceremony_mtls_certs`); runtime pin/CRL not enforced |
+| **Audit keys ≠ release (#F8)** | `docs/AUDIT_KEYS.md` + `gen_mesh_audit_keys.sh`; production hygiene requires allowlist; full audit ledger pipeline follow-up |
 | **Legacy HTTP surface (#37)** | Path traversal blocked; large legacy route surface remains behind auth |
 
 Go-live kfe: `kfe-service-vaultmesh-go-live.properties` sets `mesh-only` + `require-mtls` (refuses `api-token`). Vault hygiene refuses `static_token` / `ATTESTATION_MODE=sim` / clearnet under staging/production; production ceremony requires `VAULT_TRANSPORT=tor` + mTLS.

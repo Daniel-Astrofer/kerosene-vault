@@ -2,6 +2,7 @@
 
 mod attestation_sim;
 mod attestation_tee;
+mod audit_keys;
 mod auth_identity;
 mod auth_mtls;
 mod auth_static;
@@ -36,6 +37,7 @@ mod tls_peer_verify;
 
 pub use attestation_sim::SimAttestationAdapter;
 pub use attestation_tee::TeeAttestationAdapter;
+pub use audit_keys::MeshAuditKeyAllowlist;
 pub use auth_identity::{
     bind_dkg_sender_to_peer, mesh_allowed_node_ids, parse_spiffe_principal,
     principal_from_cert_sans, resolve_mesh_caller_identity,

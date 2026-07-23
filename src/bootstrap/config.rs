@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
 
-use crate::adapters::{peer_addr_is_onion, PeerHttpSettings, TlsPeerVerifyPolicy, VaultTransport};
+use crate::adapters::{
+    peer_addr_is_onion, MeshAuditKeyAllowlist, PeerHttpSettings, TlsPeerVerifyPolicy, VaultTransport,
+};
 use crate::domain::{
     resolve_node_tier, seat_genesis_by_tier, AttestationMode, BitcoinNetwork, DomainError,
     GovernanceRewardConfig, NodeId, ResharePolicy, SeatingCandidate, VaultNodeTier,
@@ -181,6 +183,8 @@ pub struct VaultConfig {
     pub tls_client_key_path: Option<String>,
     /// Outbound peer server-cert verify (`VAULT_TLS_VERIFY_MODE`): hostname | spiffe | onion_or_spiffe.
     pub tls_verify_policy: TlsPeerVerifyPolicy,
+    /// F8 mesh audit pubkey allowlist (≠ release ≠ settlement). See `docs/AUDIT_KEYS.md`.
+    pub audit_key_allowlist: MeshAuditKeyAllowlist,
     pub share_store_mode: ShareStoreMode,
     pub share_passphrase: Option<String>,
     /// Wrap AEAD passphrase with TPM seal (`VAULT_SHARE_TPM_SEAL=1`). Off by default.
@@ -502,7 +506,9 @@ impl VaultConfig {
             }
         }
         let clearnet_publish = env_flag("VAULT_CLEARNET_PUBLISH");
-        let tls_verify_policy = resolve_tls_verify_policy(transport, node_id.as_str())?;
+        let tls_verify_policy =
+            resolve_tls_verify_policy(transport, node_id.as_str(), &seed_peers)?;
+        let audit_key_allowlist = MeshAuditKeyAllowlist::from_env()?;
 
         let cfg = Self {
             node_id,
@@ -541,6 +547,7 @@ impl VaultConfig {
             tls_client_cert_path,
             tls_client_key_path,
             tls_verify_policy,
+            audit_key_allowlist,
             share_store_mode,
             share_passphrase,
             share_tpm_seal,
@@ -643,6 +650,17 @@ impl VaultConfig {
             if self.auth_mode == AuthMode::StaticToken {
                 return Err(DomainError::AuthRejected(
                     "static token refused in staging/production; use mTLS".into(),
+                ));
+            }
+            // F8: production ceremony requires mesh audit pubkey allowlist (≠ release ≠ settlement).
+            // Ops dry-run before keygen: VAULT_SKIP_AUDIT_KEYS_CHECK=1 (forbidden for go-live).
+            if self.ceremony_mode == CeremonyMode::Production
+                && self.audit_key_allowlist.is_empty()
+                && !env_flag("VAULT_SKIP_AUDIT_KEYS_CHECK")
+            {
+                return Err(DomainError::AuthRejected(
+                    "production ceremony requires mesh audit keys (VAULT_AUDIT_PUBKEY_ALLOWLIST or VAULT_AUDIT_PUBKEYS_PATH); audit ≠ release ≠ settlement — see docs/AUDIT_KEYS.md"
+                        .into(),
                 ));
             }
             if self.share_store_mode == ShareStoreMode::AeadDisk && self.node_tier.is_tee() {
@@ -1024,19 +1042,39 @@ fn env_nonempty_first(names: &[&str]) -> Option<String> {
 fn resolve_tls_verify_policy(
     transport: VaultTransport,
     node_id: &str,
+    seed_peers: &[(String, String)],
 ) -> Result<TlsPeerVerifyPolicy, DomainError> {
-    let trust = env_nonempty_first(&["VAULT_MTLS_TRUST_DOMAIN"]).unwrap_or_else(|| "kerosene.lab".into());
-    // Unique per-vault SPIFFE by default (#23); override with VAULT_TLS_PEER_SPIFFE_ID.
-    let expected = env_nonempty_first(&["VAULT_TLS_PEER_SPIFFE_ID", "VAULT_MTLS_SPIFFE_VAULT"])
-        .unwrap_or_else(|| format!("spiffe://{trust}/vault/{node_id}"));
+    let trust =
+        env_nonempty_first(&["VAULT_MTLS_TRUST_DOMAIN"]).unwrap_or_else(|| "kerosene.lab".into());
+    // Explicit override: comma-separated SPIFFE allowlist (unique per vault / SPIRE).
+    let allowed = if let Some(raw) =
+        env_nonempty_first(&["VAULT_TLS_PEER_SPIFFE_ID", "VAULT_MTLS_SPIFFE_VAULT"])
+    {
+        raw.split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+    } else {
+        // Unique per-vault SPIFFE by default (#23): local + seed peers + shared lab alias.
+        let mut ids = vec![format!("spiffe://{trust}/vault/{node_id}")];
+        for (peer_id, _) in seed_peers {
+            ids.push(format!("spiffe://{trust}/vault/{peer_id}"));
+        }
+        ids.push(format!("spiffe://{trust}/vault/server"));
+        ids.sort();
+        ids.dedup();
+        ids
+    };
     let default_mode = if transport.is_tor() {
         "onion_or_spiffe"
     } else {
         "hostname"
     };
     let raw = std::env::var("VAULT_TLS_VERIFY_MODE").unwrap_or_else(|_| default_mode.into());
-    TlsPeerVerifyPolicy::parse(&raw, &expected).ok_or_else(|| {
-        DomainError::AuthRejected(format!("unknown VAULT_TLS_VERIFY_MODE={raw}"))
+    TlsPeerVerifyPolicy::parse(&raw, &allowed).ok_or_else(|| {
+        DomainError::AuthRejected(format!(
+            "unknown VAULT_TLS_VERIFY_MODE={raw} (or empty SPIFFE allowlist)"
+        ))
     })
 }
 
@@ -1082,6 +1120,7 @@ mod tests {
             tls_client_cert_path: None,
             tls_client_key_path: None,
             tls_verify_policy: TlsPeerVerifyPolicy::Hostname,
+            audit_key_allowlist: MeshAuditKeyAllowlist::empty(),
             share_store_mode: ShareStoreMode::AeadDisk,
             share_passphrase: Some("pass".into()),
             share_tpm_seal: false,
@@ -1115,8 +1154,10 @@ mod tests {
         cfg.peer_http = PeerHttpSettings::tor_defaults();
         cfg.clearnet_publish = false;
         cfg.tls_verify_policy = TlsPeerVerifyPolicy::OnionOrSpiffe {
-            expected: "spiffe://kerosene.lab/vault/server".into(),
+            allowed: vec!["spiffe://kerosene.lab/vault/server".into()],
         };
+        cfg.audit_key_allowlist =
+            MeshAuditKeyAllowlist::from_hex_list(["aa".repeat(32)]);
         cfg.seed_peers = vec![
             (
                 "vault-2".into(),
@@ -1128,6 +1169,12 @@ mod tests {
             ),
         ];
         cfg.genesis_n = Some(3);
+        cfg
+    }
+
+    fn with_audit_keys(mut cfg: VaultConfig) -> VaultConfig {
+        cfg.audit_key_allowlist =
+            MeshAuditKeyAllowlist::from_hex_list(["bb".repeat(32)]);
         cfg
     }
 
@@ -1282,6 +1329,30 @@ mod tests {
     }
 
     #[test]
+    fn production_requires_mesh_audit_keys() {
+        let mut cfg = base();
+        cfg.node_tier = VaultNodeTier::Domestic;
+        cfg.attestation_mode = AttestationMode::Software;
+        cfg.ceremony_mode = CeremonyMode::Production;
+        cfg.refuse_sim = true;
+        cfg.hardened = true;
+        cfg.auth_mode = AuthMode::MutualTls;
+        cfg = with_mtls_paths(cfg);
+        cfg = with_tor_mesh(cfg);
+        cfg.audit_key_allowlist = MeshAuditKeyAllowlist::empty();
+        cfg.share_store_mode = ShareStoreMode::AeadDisk;
+        cfg.dealer_requested = false;
+        cfg.dkg_mode = DkgMode::DistributedWire;
+        cfg.measurement_pin_hex = Some("af".repeat(32));
+        assert!(matches!(
+            cfg.validate_hygiene(),
+            Err(DomainError::AuthRejected(msg)) if msg.contains("audit keys")
+        ));
+        cfg = with_audit_keys(cfg);
+        assert!(cfg.validate_hygiene().is_ok());
+    }
+
+    #[test]
     fn production_refuses_clearnet_transport() {
         let mut cfg = base();
         cfg.node_tier = VaultNodeTier::Domestic;
@@ -1291,6 +1362,7 @@ mod tests {
         cfg.hardened = true;
         cfg.auth_mode = AuthMode::MutualTls;
         cfg = with_mtls_paths(cfg);
+        cfg = with_audit_keys(cfg);
         cfg.share_store_mode = ShareStoreMode::AeadDisk;
         cfg.dealer_requested = false;
         cfg.dkg_mode = DkgMode::DistributedWire;

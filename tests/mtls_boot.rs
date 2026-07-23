@@ -62,6 +62,7 @@ fn lab_mtls_cfg(listen: &str, certs: &Path, data_dir: &Path) -> VaultConfig {
         tls_client_cert_path: Some(certs.join("vault-client.crt").display().to_string()),
         tls_client_key_path: Some(certs.join("vault-client.key").display().to_string()),
         tls_verify_policy: kerosene_vault::adapters::TlsPeerVerifyPolicy::Hostname,
+        audit_key_allowlist: kerosene_vault::adapters::MeshAuditKeyAllowlist::empty(),
         share_store_mode: ShareStoreMode::AeadDisk,
         share_passphrase: Some("kerosene-vault-lab-passphrase".into()),
         share_tpm_seal: false,

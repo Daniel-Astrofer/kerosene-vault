@@ -1,18 +1,25 @@
 # Vault mesh mTLS — SPIFFE-like layout (Gate)
 
-Lab ≠ go-live. Materials under `lab-certs/` are for **visualize / staging** only.
-A real SPIRE/SPIFFE agent is **not** required; paths and URI SANs mirror the SPIFFE SVID layout so production can drop in an agent later.
+Lab ≠ go-live. Materials under `lab-certs/` are for **visualize / staging**;
+`ceremony-certs/` is the **SPIRE-equivalent ceremony CA** profile (unique SPIFFE
+per vault + kfe, short-lived leaves). A real SPIRE agent is **not** required —
+paths and URI SANs mirror the SPIFFE SVID layout so production can drop in an
+agent later without changing trust-domain IDs.
 
 ## Trust domain & SPIFFE IDs
 
-| Identity | SPIFFE ID (lab default) | Role |
+| Identity | SPIFFE ID | Role |
 | --- | --- | --- |
-| Trust domain | `kerosene.lab` | Lab / staging visualize |
-| Vault server (per node) | `spiffe://kerosene.lab/vault/{VAULT_NODE_ID}` | rustls server cert (`serverAuth`); default outbound peer expect |
-| Shared lab alias (optional) | `spiffe://kerosene.lab/vault/server` | Compose/scripts when `VAULT_MTLS_SPIFFE_VAULT` / `VAULT_TLS_PEER_SPIFFE_ID` override |
-| kfe client | `spiffe://kerosene.lab/kfe` | Client cert to vault (`clientAuth`) |
+| Trust domain (lab) | `kerosene.lab` | Lab / staging visualize |
+| Trust domain (ceremony) | `kerosene.ceremony` (override `VAULT_MTLS_TRUST_DOMAIN`) | Ceremony Gate CA |
+| Vault server (**unique per node**) | `spiffe://{td}/vault/{VAULT_NODE_ID}` | rustls server + outbound peer client |
+| Shared lab alias (optional) | `spiffe://{td}/vault/server` | Legacy compose when `VAULT_MTLS_SHARED_SPIFFE=1` |
+| kfe client | `spiffe://{td}/kfe` | Client cert to vault (`clientAuth`) |
 
-Staging override: set `VAULT_MTLS_TRUST_DOMAIN=kerosene.staging` when generating. Each vault should use a **unique** SPIFFE ID (`VAULT_TLS_PEER_SPIFFE_ID=spiffe://…/vault/vault-1`, etc.).
+**Ceremony / Gate rule:** each vault and kfe must have a **unique** SPIFFE URI.
+Outbound peer verify accepts an **allowlist** of vault SPIFFE IDs (local + seed
+peers), via `VAULT_TLS_PEER_SPIFFE_ID` (comma-separated) or auto-derived from
+`VAULT_MTLS_TRUST_DOMAIN` + seed peers.
 
 ### App-layer principal (Critical #3)
 
@@ -26,47 +33,91 @@ A CA-valid leaf alone is not full power. DKG `sender_node_id` must equal the TLS
 
 ## On-disk layout
 
-After `./scripts/gen_lab_mtls_certs.sh` (or rotate):
+### Lab visualize (`gen_lab_mtls_certs.sh`)
+
+Default: unique SPIFFE per node under `lab-certs/nodes/{id}/` + flat aliases for
+compose. Legacy shared alias: `VAULT_MTLS_SHARED_SPIFFE=1`.
 
 ```text
 lab-certs/
-  ca.crt / ca.key                 # trust anchor (flat, compose mounts)
-  vault-server.crt / .key         # vault listen (VAULT_TLS_*)
-  vault-client.crt / .key         # PEM client (curl / ops)
-  vault-client.pkcs8.key          # PKCS#8 PEM for Java
-  kfe-client.p12                  # PKCS12 client keystore (kfe)
-  truststore.p12                  # PKCS12 truststore (CA only)
-  rotation.json                   # last leaf issue metadata (rotate)
-  spiffe/
-    trust-bundle.pem              # = ca.crt
-    vault/server/
-      svid.pem / key.pem          # SPIFFE-like SVID paths
-    kfe/
-      svid.pem / key.pem
+  ca.crt / ca.key
+  vault-server.crt / .key          # alias → nodes/vault-1/server.*
+  vault-client.crt / .key          # kfe
+  nodes/vault-1|2|3/server|client.*
+  spiffe/trust-bundle.pem
+  spiffe/vault/{node_id}/svid.pem
+  spiffe/kfe/svid.pem
+  rotation.json
 ```
 
-Compose / vault continue to use the **flat** `VAULT_TLS_*` paths. The `spiffe/` tree is the documented agent-compatible mirror.
+### Ceremony CA (`gen_ceremony_mtls_certs.sh`)
+
+SPIRE-equivalent Gate profile (short TTL, unique IDs, trust domain
+`kerosene.ceremony` by default):
+
+```bash
+./backend/kerosene-vault/scripts/gen_ceremony_mtls_certs.sh
+VAULT_CEREMONY_MTLS_TTL_HOURS=24 \
+  ./backend/kerosene-vault/scripts/rotate_ceremony_mtls_certs.sh
+```
+
+```text
+ceremony-certs/
+  ca.crt / ca.key
+  nodes/vault-1/server.crt|.key  client.crt|.key   # SPIFFE …/vault/vault-1
+  nodes/vault-2/…
+  nodes/vault-3/…
+  kfe/client.crt|.key                              # SPIFFE …/kfe
+  vault-client.pkcs8.key / kfe-client.p12 / truststore.p12
+  spiffe/…                                         # agent-compatible mirror
+  rotation.json
+  audit/                                           # F8 audit keys (separate)
+```
+
+Compose / vault continue to use **flat** `VAULT_TLS_*` paths when mounting a
+single node dir, e.g.:
+
+```bash
+VAULT_TLS_CERT_PATH=…/nodes/vault-2/server.crt
+VAULT_TLS_KEY_PATH=…/nodes/vault-2/server.key
+VAULT_TLS_CLIENT_CERT_PATH=…/nodes/vault-2/client.crt
+VAULT_TLS_CLIENT_KEY_PATH=…/nodes/vault-2/client.key
+VAULT_TLS_CLIENT_CA_PATH=…/ca.crt
+VAULT_TLS_PEER_SPIFFE_ID=spiffe://kerosene.ceremony/vault/vault-1,spiffe://kerosene.ceremony/vault/vault-2,spiffe://kerosene.ceremony/vault/vault-3
+```
+
+Infra wrapper: `infra/scripts/gen-ceremony-mtls.sh`.
 
 ## Short-lived rotation
 
 ```bash
-# First materialization (long-lived lab CA + leaves)
+# Lab first materialization
 ./backend/kerosene-vault/scripts/gen_lab_mtls_certs.sh
+VAULT_LAB_MTLS_TTL_HOURS=24 ./backend/kerosene-vault/scripts/rotate_lab_mtls_certs.sh
 
-# Rotate leaves only (default TTL 24h); reuses CA
-VAULT_LAB_MTLS_TTL_HOURS=24 \
-  ./backend/kerosene-vault/scripts/rotate_lab_mtls_certs.sh
+# Ceremony CA (preferred before genesis)
+./backend/kerosene-vault/scripts/gen_ceremony_mtls_certs.sh
+VAULT_CEREMONY_MTLS_TTL_HOURS=24 \
+  ./backend/kerosene-vault/scripts/rotate_ceremony_mtls_certs.sh
 
-# Optional post-rotate hook (reload vault / notify kfe)
+# Optional post-rotate hook
 VAULT_MTLS_ROTATE_HOOK=/path/to/hook.sh \
-  ./backend/kerosene-vault/scripts/rotate_lab_mtls_certs.sh
+  ./backend/kerosene-vault/scripts/rotate_ceremony_mtls_certs.sh
 ```
 
-Hook receives env: `VAULT_LAB_MTLS_OUT`, `VAULT_TLS_CERT_PATH`, `VAULT_TLS_KEY_PATH`,
-`VAULT_TLS_CLIENT_CA_PATH`, `KFE_CLIENT_P12`, `ROTATION_JSON`.
+Hook receives env: `VAULT_LAB_MTLS_OUT` / `VAULT_CEREMONY_MTLS_OUT`,
+`VAULT_TLS_*`, `KFE_CLIENT_P12`, `ROTATION_JSON`.
 
-Production Gate still requires operational cert rotation (SPIRE or equivalent) before ceremony —
-these scripts are the **Gate visualize** path, not the ceremony CA.
+Production Gate requires operational cert rotation (**SPIRE or equivalent** —
+this openssl ceremony CA counts as equivalent when identities are unique and
+TTL is short). Drop-in SPIRE: point workload SVID paths at `spiffe/` and keep
+the same URI SANs.
+
+## Audit keys ≠ mTLS (F8)
+
+mTLS SVIDs authenticate workloads. **Audit** signing keys are separate Ed25519
+material — see [`AUDIT_KEYS.md`](AUDIT_KEYS.md). Do not reuse ceremony CA leaves
+or FROST shares for audit signatures.
 
 ## Tor / onion peers
 
@@ -74,7 +125,7 @@ When `VAULT_TRANSPORT=tor`, outbound mTLS defaults to
 `VAULT_TLS_VERIFY_MODE=onion_or_spiffe` (**AND** semantics):
 
 1. Verify the leaf chains to `VAULT_TLS_CLIENT_CA_PATH`.
-2. Require URI SAN equals `VAULT_TLS_PEER_SPIFFE_ID` (default `spiffe://kerosene.lab/vault/{VAULT_NODE_ID}`).
+2. Require URI SAN ∈ allowlisted vault SPIFFE IDs (`VAULT_TLS_PEER_SPIFFE_ID` or auto).
 3. When the peer host is `.onion`, **also** require a DNS SAN equal to that onion.
 
 Hostname-only match without SPIFFE is refused. Env name stays `onion_or_spiffe` for compat.
@@ -83,9 +134,7 @@ Mint onion DNS SANs after HS discovery:
 
 ```bash
 VAULT_LAB_MTLS_ONION_SANS=a.onion,b.onion,c.onion \
-  ./backend/kerosene-vault/scripts/gen_lab_mtls_certs.sh
-# or rotate leaves:
-VAULT_LAB_MTLS_ONION_SANS=… ./backend/kerosene-vault/scripts/rotate_lab_mtls_certs.sh
+  ./backend/kerosene-vault/scripts/gen_ceremony_mtls_certs.sh
 ```
 
 `VAULT_AUTH_MODE=mtls ./backend/kerosene-vault/scripts/lab_dkg_wire_tor.sh` does this automatically.
@@ -100,15 +149,9 @@ send `X-Vault-Token` (vault refuses static tokens in mTLS mode).
 kfe.vaultmesh.base-url=https://127.0.0.1:7801
 kfe.vaultmesh.api-token=
 kfe.vaultmesh.tls.enabled=true
-# PEM (preferred with vault-client.pkcs8.key):
 kfe.vaultmesh.tls.cert-path=/certs/vault-client.crt
 kfe.vaultmesh.tls.key-path=/certs/vault-client.pkcs8.key
 kfe.vaultmesh.tls.ca-path=/certs/ca.crt
-# Or PKCS12:
-# kfe.vaultmesh.tls.keystore-path=/certs/kfe-client.p12
-# kfe.vaultmesh.tls.keystore-password=changeit
-# kfe.vaultmesh.tls.truststore-path=/certs/truststore.p12
-# kfe.vaultmesh.tls.truststore-password=changeit
 ```
 
 See `kfe-service-vaultmesh-go-live.properties` and staging compose comments.

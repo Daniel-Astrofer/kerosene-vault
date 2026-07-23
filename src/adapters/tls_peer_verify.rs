@@ -24,25 +24,38 @@ use crate::domain::DomainError;
 pub enum TlsPeerVerifyPolicy {
     /// webpki: DNS / IP must match the URL host (clearnet default).
     Hostname,
-    /// Chain to lab/ops CA + URI SAN must equal `expected` SPIFFE ID (ignore DNS).
-    Spiffe { expected: String },
+    /// Chain to lab/ops CA + URI SAN must be in `allowed` SPIFFE IDs (ignore DNS).
+    /// Unique per-vault SPIFFE: allowlist local + seed peers (ceremony CA / SPIRE).
+    Spiffe { allowed: Vec<String> },
     /// Chain + SPIFFE URI **and** (when host is `.onion`) matching onion DNS SAN.
     /// Env name remains `onion_or_spiffe` for compat; semantics are AND (#24).
-    OnionOrSpiffe { expected: String },
+    OnionOrSpiffe { allowed: Vec<String> },
 }
 
 impl TlsPeerVerifyPolicy {
-    pub fn parse(raw: &str, expected_spiffe: &str) -> Option<Self> {
+    pub fn parse(raw: &str, allowed_spiffe: &[String]) -> Option<Self> {
+        if matches!(
+            raw.trim().to_ascii_lowercase().as_str(),
+            "spiffe" | "onion_or_spiffe" | "onion+spiffe" | "tor"
+        ) && allowed_spiffe.is_empty()
+        {
+            return None;
+        }
         match raw.trim().to_ascii_lowercase().as_str() {
             "hostname" | "dns" | "webpki" => Some(Self::Hostname),
             "spiffe" => Some(Self::Spiffe {
-                expected: expected_spiffe.to_string(),
+                allowed: allowed_spiffe.to_vec(),
             }),
             "onion_or_spiffe" | "onion+spiffe" | "tor" => Some(Self::OnionOrSpiffe {
-                expected: expected_spiffe.to_string(),
+                allowed: allowed_spiffe.to_vec(),
             }),
             _ => None,
         }
+    }
+
+    /// Back-compat single-ID constructor (tests / lab shared alias).
+    pub fn parse_one(raw: &str, expected_spiffe: &str) -> Option<Self> {
+        Self::parse(raw, &[expected_spiffe.to_string()])
     }
 
     pub fn as_str(&self) -> &'static str {
@@ -53,11 +66,16 @@ impl TlsPeerVerifyPolicy {
         }
     }
 
-    pub fn expected_spiffe(&self) -> Option<&str> {
+    pub fn allowed_spiffe(&self) -> &[String] {
         match self {
-            Self::Hostname => None,
-            Self::Spiffe { expected } | Self::OnionOrSpiffe { expected } => Some(expected.as_str()),
+            Self::Hostname => &[],
+            Self::Spiffe { allowed } | Self::OnionOrSpiffe { allowed } => allowed.as_slice(),
         }
+    }
+
+    /// First allowlisted SPIFFE (legacy callers).
+    pub fn expected_spiffe(&self) -> Option<&str> {
+        self.allowed_spiffe().first().map(String::as_str)
     }
 }
 
@@ -80,12 +98,12 @@ pub fn build_mtls_rustls_client_config(
                 .map_err(|e| DomainError::AuthRejected(format!("peer TLS verifier: {e}")))?;
             ClientConfig::builder().with_webpki_verifier(verifier)
         }
-        TlsPeerVerifyPolicy::Spiffe { expected }
-        | TlsPeerVerifyPolicy::OnionOrSpiffe { expected } => {
+        TlsPeerVerifyPolicy::Spiffe { allowed }
+        | TlsPeerVerifyPolicy::OnionOrSpiffe { allowed } => {
             let require_onion_san = matches!(verify, TlsPeerVerifyPolicy::OnionOrSpiffe { .. });
             let verifier = Arc::new(OnionOrSpiffeVerifier::new(
                 roots,
-                expected.clone(),
+                allowed.clone(),
                 require_onion_san,
             )?);
             ClientConfig::builder()
@@ -192,7 +210,8 @@ fn name_error(err: &RustlsError) -> bool {
 /// Wraps webpki chain+name verify; requires SPIFFE URI, and onion DNS SAN for `.onion` hosts.
 struct OnionOrSpiffeVerifier {
     inner: Arc<WebPkiServerVerifier>,
-    expected_spiffe: String,
+    /// Unique per-vault SPIFFE allowlist (local + seed peers + optional shared alias).
+    allowed_spiffe: Vec<String>,
     /// When true (OnionOrSpiffe policy), `.onion` hosts must also present a matching DNS SAN.
     require_onion_san: bool,
 }
@@ -200,12 +219,17 @@ struct OnionOrSpiffeVerifier {
 impl OnionOrSpiffeVerifier {
     fn new(
         roots: RootCertStore,
-        expected_spiffe: String,
+        allowed_spiffe: Vec<String>,
         require_onion_san: bool,
     ) -> Result<Self, DomainError> {
-        if expected_spiffe.trim().is_empty() || !expected_spiffe.starts_with("spiffe://") {
+        if allowed_spiffe.is_empty()
+            || allowed_spiffe
+                .iter()
+                .any(|id| id.trim().is_empty() || !id.starts_with("spiffe://"))
+        {
             return Err(DomainError::AuthRejected(
-                "VAULT_TLS_PEER_SPIFFE_ID must be a spiffe:// URI for onion/SPIFFE verify".into(),
+                "VAULT_TLS_PEER_SPIFFE_ID must be one or more spiffe:// URIs for onion/SPIFFE verify"
+                    .into(),
             ));
         }
         let inner = WebPkiServerVerifier::builder(Arc::new(roots))
@@ -213,13 +237,14 @@ impl OnionOrSpiffeVerifier {
             .map_err(|e| DomainError::AuthRejected(format!("peer TLS verifier: {e}")))?;
         Ok(Self {
             inner,
-            expected_spiffe,
+            allowed_spiffe,
             require_onion_san,
         })
     }
 
     fn spiffe_ok(&self, uris: &[String]) -> bool {
-        uris.iter().any(|u| u == &self.expected_spiffe)
+        uris.iter()
+            .any(|u| self.allowed_spiffe.iter().any(|a| a == u))
     }
 
     fn onion_san_ok(host: &str, dns_sans: &[String]) -> bool {
@@ -254,7 +279,7 @@ impl OnionOrSpiffeVerifier {
 impl std::fmt::Debug for OnionOrSpiffeVerifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OnionOrSpiffeVerifier")
-            .field("expected_spiffe", &self.expected_spiffe)
+            .field("allowed_spiffe", &self.allowed_spiffe)
             .field("require_onion_san", &self.require_onion_san)
             .finish_non_exhaustive()
     }
@@ -327,22 +352,38 @@ mod tests {
     #[test]
     fn parse_verify_modes() {
         let id = "spiffe://kerosene.lab/vault/server";
+        let allowed = vec![id.to_string()];
         assert_eq!(
-            TlsPeerVerifyPolicy::parse("hostname", id),
+            TlsPeerVerifyPolicy::parse("hostname", &allowed),
             Some(TlsPeerVerifyPolicy::Hostname)
         );
         assert_eq!(
-            TlsPeerVerifyPolicy::parse("spiffe", id),
+            TlsPeerVerifyPolicy::parse("spiffe", &allowed),
             Some(TlsPeerVerifyPolicy::Spiffe {
-                expected: id.into()
+                allowed: allowed.clone()
             })
         );
         assert_eq!(
-            TlsPeerVerifyPolicy::parse("onion_or_spiffe", id),
-            Some(TlsPeerVerifyPolicy::OnionOrSpiffe {
-                expected: id.into()
-            })
+            TlsPeerVerifyPolicy::parse("onion_or_spiffe", &allowed),
+            Some(TlsPeerVerifyPolicy::OnionOrSpiffe { allowed })
         );
+        assert!(TlsPeerVerifyPolicy::parse("spiffe", &[]).is_none());
+    }
+
+    #[test]
+    fn allowlist_accepts_any_listed_spiffe() {
+        let allowed = [
+            "spiffe://kerosene.ceremony/vault/vault-1".to_string(),
+            "spiffe://kerosene.ceremony/vault/vault-2".to_string(),
+        ];
+        let uris_ok = ["spiffe://kerosene.ceremony/vault/vault-2".to_string()];
+        let uris_bad = ["spiffe://kerosene.ceremony/vault/vault-9".to_string()];
+        assert!(uris_ok
+            .iter()
+            .any(|u| allowed.iter().any(|a| a == u)));
+        assert!(!uris_bad
+            .iter()
+            .any(|u| allowed.iter().any(|a| a == u)));
     }
 
     #[test]
