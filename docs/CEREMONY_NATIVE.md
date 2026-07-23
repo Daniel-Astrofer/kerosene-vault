@@ -33,8 +33,11 @@ Only config / attestation / auth differ. Dealer and `ATTESTATION_MODE=sim` are r
 | --- | --- | --- |
 | Binary | same crate | `--features production` preferred |
 | DKG | `distributed_wire` (or dealer_lab visualize) | **only** `distributed_wire` |
+| Transport | clearnet lab **or** Tor lab (`vault-mesh-tor`) | **`VAULT_TRANSPORT=tor`** + onion peers + SOCKS (required) |
 | Attestation | `sim` OK | `software` / `sev` / `sgx` honest |
 | Auth | static token OK | mTLS |
 | Seating | same algorithm | same algorithm |
+
+**Tor runbook:** `docs/CEREMONY_TOR.md`. `deploy.sh` still starts clearnet `vault-mesh-lab` — not the Tor ceremony profile.
 
 See `VAULT_MESH_PLAN.md` §3.1.

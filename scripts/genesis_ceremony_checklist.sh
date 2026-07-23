@@ -42,6 +42,20 @@ case "$MODE" in
       "VAULT_DKG_MODE=distributed_wire (got ${DKG:-unset})"
     check "$([[ "${VAULT_AUTH_MODE:-}" == "mtls" || "${VAULT_AUTH_MODE:-}" == "mutual_tls" ]] && echo 1 || echo 0)" \
       "VAULT_AUTH_MODE=mtls (got ${VAULT_AUTH_MODE:-unset})"
+    TRANSPORT="${VAULT_TRANSPORT:-tor}"
+    check "$([[ "${TRANSPORT}" == "tor" || "${TRANSPORT}" == "onion" || "${TRANSPORT}" == "socks" ]] && echo 1 || echo 0)" \
+      "VAULT_TRANSPORT=tor (got ${TRANSPORT})"
+    check "$([[ -n "${VAULT_SOCKS_PROXY:-${VAULT_TOR_SOCKS:-}}" ]] && echo 1 || echo 0)" \
+      "VAULT_SOCKS_PROXY set (${VAULT_SOCKS_PROXY:-${VAULT_TOR_SOCKS:-unset}})"
+    check "$([[ "${VAULT_CLEARNET_PUBLISH:-0}" != "1" ]] && echo 1 || echo 0)" \
+      "VAULT_CLEARNET_PUBLISH not enabled (no clearnet public vault bind)"
+    if [[ -n "${VAULT_SEED_PEERS:-}" ]]; then
+      if echo "${VAULT_SEED_PEERS}" | grep -q '\.onion'; then
+        check 1 "VAULT_SEED_PEERS contain .onion addresses"
+      else
+        check 0 "VAULT_SEED_PEERS must be onion URLs under Tor (got clearnet/LAN)"
+      fi
+    fi
 
     case "${ATT}" in
       software|sev|sgx)
@@ -77,15 +91,19 @@ case "$MODE" in
 
     echo
     echo "Manual ceremony steps (same FROST wire path as lab; config only differs):"
-    echo "  1. Bring N vaults with identical constitution seed / peer set"
+    echo "  1. Bring N vaults with identical constitution seed / peer set on **private Tor mesh**"
+    echo "     - VAULT_TRANSPORT=tor VAULT_SOCKS_PROXY=socks5h://127.0.0.1:9050"
+    echo "     - VAULT_SEED_PEERS=id=http://….onion:7701 (no clearnet publish)"
     echo "     - All domestic: VAULT_NODE_TIER=domestic ATTESTATION_MODE=software VAULT_SHARE_STORE=aead_disk"
     echo "     - Mixed: set VAULT_PEER_TIERS=id=sev,... so seating prefers SEV > SGX > domestic"
+    echo "     - Lab Tor smoke: ./backend/kerosene-vault/scripts/lab_dkg_wire_tor.sh (see docs/CEREMONY_TOR.md)"
     echo "  2. Verify honest labels on GET /v1/health (node_tier, attestation_mode, tee_available, genesis_roster)"
-    echo "  3. Run ./backend/kerosene-vault/scripts/genesis_dkg_wire.sh (VAULT_DKG_MODE=distributed_wire)"
+    echo "  3. Run ./backend/kerosene-vault/scripts/genesis_dkg_wire.sh via SOCKS to onions (VAULT_DKG_MODE=distributed_wire)"
     echo "  4. Freeze mpc-sidecar / HashiCorp wallet-arming (kfe.mpc.signing-enabled=false)"
     echo "  5. Enable kfe.vaultmesh.enabled=true + mesh-only=true (no hard tee_hw require)"
     echo "  6. Smoke Intent → Receipt; confirm fail-stop runbook"
     echo "  7. Do NOT re-enable mpc as silent rollback"
+    echo "  Note: deploy.sh still starts vault-mesh-lab clearnet — not this Tor ceremony path."
     ;;
   staging)
     check "$([[ "${ATT}" == "sev" || "${ATT}" == "sgx" || "${ATT}" == "software" ]] && echo 1 || echo 0)" \
@@ -99,7 +117,8 @@ case "$MODE" in
     ;;
   *)
     echo "Lab mode: no production gates. Compose sets VAULT_NODE_TIER=domestic + ATTESTATION_MODE=sim."
-    echo "Exercise production path locally with VAULT_DKG_MODE=distributed_wire + lab_dkg_wire.sh / genesis_dkg_wire.sh."
+    echo "Clearnet visualize: VAULT_DKG_MODE=distributed_wire + lab_dkg_wire.sh"
+    echo "Tor variability: ./backend/kerosene-vault/scripts/lab_dkg_wire_tor.sh (docs/CEREMONY_TOR.md)."
     ;;
 esac
 
