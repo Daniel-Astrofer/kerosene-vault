@@ -126,11 +126,21 @@ pub struct VaultConfig {
     pub seed_peers: Vec<(String, String)>,
     /// Optional per-peer tier overlay (`VAULT_PEER_TIERS=id=sev,...`); default domestic.
     pub peer_tiers: BTreeMap<String, VaultNodeTier>,
+    /// Attestation quote blobs proving elevated `VAULT_PEER_TIERS` claims
+    /// (`VAULT_PEER_TIER_QUOTES=id=hex,...`). Required outside lab for sev/sgx seating.
+    pub peer_tier_quotes: BTreeMap<String, String>,
+    /// When true (default outside lab), TEE peer tiers without quotes are seated as domestic.
+    pub peer_tier_require_quote: bool,
     pub refuse_sim: bool,
     /// Explicit genesis n; defaults to len(local+seeds) when unset.
     pub genesis_n: Option<usize>,
-    /// Online vaults for fail-stop (lab). Defaults to genesis_n.
+    /// Online vaults for fail-stop (lab ceiling). Defaults to genesis_n.
+    /// When peers are configured, probed liveness is used unless `VAULT_ONLINE_STATIC=1`.
     pub online_count: Option<usize>,
+    /// Lab-only: skip peer health probe and use `online_count` / n as StaticOnlineCount.
+    pub online_static: bool,
+    /// PSBT fee / locktime / RBF policy (High #13).
+    pub psbt_policy: crate::domain::PsbtPolicy,
     /// Lab: scales NORMAL release timelock (`0` = immediate).
     pub lab_timelock_scale: u64,
     /// True when `LAB_TIMELOCK_SCALE` env was present (forbidden in hardened builds).
@@ -152,6 +162,13 @@ pub struct VaultConfig {
     /// Explicit USERS withdraw destinations (`VAULT_USERS_DESTINATION_ALLOWLIST`, comma-separated).
     /// Soft "any parseable address" is refused — destinations must be listed here and/or lab defaults.
     pub users_destination_allowlist: Vec<String>,
+    /// Explicit MINERS payout destinations (`VAULT_MINERS_DESTINATION_ALLOWLIST`).
+    /// Open-economy gate admits registered eligible operators + this list — never the Intent dest alone.
+    pub miners_destination_allowlist: Vec<String>,
+    /// Allow `POST /v1/reshare/trigger` outside lab (`VAULT_ALLOW_MANUAL_RESHARE=1`).
+    pub allow_manual_reshare: bool,
+    /// Lab-only: permit raw `/v1/bitcoin/sign-sighash` (`VAULT_LAB_ALLOW_RAW_SIGHASH=1`).
+    pub lab_allow_raw_sighash: bool,
     /// PEM server certificate (`VAULT_TLS_CERT_PATH`) — required when `auth_mode=mtls`.
     pub tls_cert_path: Option<String>,
     /// PEM server private key (`VAULT_TLS_KEY_PATH`) — required when `auth_mode=mtls`.
@@ -234,8 +251,18 @@ impl VaultConfig {
             DomainError::AttestationRejected(format!("unknown ATTESTATION_MODE={mode_raw}"))
         })?;
 
+        let listen_default = if matches!(
+            ceremony_mode,
+            CeremonyMode::Staging | CeremonyMode::Production
+        ) || hardened
+        {
+            "127.0.0.1:7701"
+        } else {
+            // Lab compose often publishes on all interfaces intentionally.
+            "0.0.0.0:7701"
+        };
         let listen_addr =
-            std::env::var("VAULT_LISTEN_ADDR").unwrap_or_else(|_| "0.0.0.0:7701".into());
+            std::env::var("VAULT_LISTEN_ADDR").unwrap_or_else(|_| listen_default.into());
         let lab_root =
             std::env::var("LAB_ATTESTATION_ROOT").unwrap_or_else(|_| "kerosene-lab-root".into());
 
@@ -271,6 +298,25 @@ impl VaultConfig {
                 peer_tiers.insert(id.trim().to_string(), tier);
             }
         }
+        let mut peer_tier_quotes = BTreeMap::new();
+        if let Ok(raw) = std::env::var("VAULT_PEER_TIER_QUOTES") {
+            for part in raw.split(',') {
+                let part = part.trim();
+                if part.is_empty() {
+                    continue;
+                }
+                let (id, quote) = part.split_once('=').ok_or_else(|| {
+                    DomainError::AttestationRejected(format!(
+                        "bad VAULT_PEER_TIER_QUOTES entry: {part}"
+                    ))
+                })?;
+                peer_tier_quotes.insert(id.trim().to_string(), quote.trim().to_string());
+            }
+        }
+        let peer_tier_require_quote = match std::env::var("VAULT_PEER_TIER_REQUIRE_QUOTE") {
+            Ok(v) => matches!(v.to_ascii_lowercase().as_str(), "1" | "true" | "yes"),
+            Err(_) => !matches!(ceremony_mode, CeremonyMode::Lab),
+        };
 
         let genesis_n = std::env::var("VAULT_GENESIS_N")
             .ok()
@@ -278,6 +324,28 @@ impl VaultConfig {
         let online_count = std::env::var("VAULT_ONLINE_COUNT")
             .ok()
             .and_then(|s| s.parse::<usize>().ok());
+        let online_static = env_flag("VAULT_ONLINE_STATIC");
+        let mut psbt_policy = crate::domain::PsbtPolicy::lab_defaults();
+        if let Ok(s) = std::env::var("VAULT_PSBT_MAX_FEE_SATS") {
+            if let Ok(n) = s.parse::<u64>() {
+                psbt_policy.max_fee_sats = n;
+            }
+        }
+        if let Ok(s) = std::env::var("VAULT_PSBT_MAX_FEE_RATE_SAT_VB") {
+            if let Ok(n) = s.parse::<u64>() {
+                psbt_policy.max_fee_rate_sat_vb = n;
+            }
+        }
+        if let Ok(s) = std::env::var("VAULT_PSBT_MAX_LOCKTIME") {
+            if let Ok(n) = s.parse::<u32>() {
+                psbt_policy.max_locktime = n;
+            }
+        }
+        if let Ok(s) = std::env::var("VAULT_PSBT_RBF_POLICY") {
+            if let Some(p) = crate::domain::RbfPolicy::parse(&s) {
+                psbt_policy.rbf = p;
+            }
+        }
         let lab_timelock_env_set = std::env::var_os("LAB_TIMELOCK_SCALE").is_some();
         let lab_timelock_scale = std::env::var("LAB_TIMELOCK_SCALE")
             .ok()
@@ -310,6 +378,17 @@ impl VaultConfig {
                     .collect::<Vec<_>>()
             })
             .unwrap_or_default();
+        let miners_destination_allowlist = std::env::var("VAULT_MINERS_DESTINATION_ALLOWLIST")
+            .ok()
+            .map(|raw| {
+                raw.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let allow_manual_reshare = env_flag("VAULT_ALLOW_MANUAL_RESHARE");
+        let lab_allow_raw_sighash = env_flag("VAULT_LAB_ALLOW_RAW_SIGHASH");
 
         let auth_raw = std::env::var("VAULT_AUTH_MODE").unwrap_or_else(|_| {
             if hardened {
@@ -423,7 +502,7 @@ impl VaultConfig {
             }
         }
         let clearnet_publish = env_flag("VAULT_CLEARNET_PUBLISH");
-        let tls_verify_policy = resolve_tls_verify_policy(transport)?;
+        let tls_verify_policy = resolve_tls_verify_policy(transport, node_id.as_str())?;
 
         let cfg = Self {
             node_id,
@@ -434,9 +513,13 @@ impl VaultConfig {
             lab_root,
             seed_peers,
             peer_tiers,
+            peer_tier_quotes,
+            peer_tier_require_quote,
             refuse_sim,
             genesis_n,
             online_count,
+            online_static,
+            psbt_policy,
             lab_timelock_scale,
             lab_timelock_env_set,
             lab_council_n,
@@ -449,6 +532,9 @@ impl VaultConfig {
             auth_mode,
             vault_token,
             users_destination_allowlist,
+            miners_destination_allowlist,
+            allow_manual_reshare,
+            lab_allow_raw_sighash,
             tls_cert_path,
             tls_key_path,
             tls_client_ca_path,
@@ -560,6 +646,67 @@ impl VaultConfig {
         }
         self.validate_tpm_seal_hygiene()?;
         self.validate_transport_hygiene()?;
+        self.validate_listen_bind()?;
+        self.validate_lab_passphrase_defaults()?;
+        self.validate_lab_root_honesty()?;
+        Ok(())
+    }
+
+    /// Staging/production must not default-bind all interfaces (#27).
+    pub fn validate_listen_bind(&self) -> Result<(), DomainError> {
+        let addr = self.listen_addr.trim();
+        let is_all = addr.starts_with("0.0.0.0") || addr.starts_with("[::]");
+        if is_all
+            && (self.hardened
+                || matches!(
+                    self.ceremony_mode,
+                    CeremonyMode::Staging | CeremonyMode::Production
+                ))
+        {
+            return Err(DomainError::LabFlagForbidden(
+                "VAULT_LISTEN_ADDR must not be 0.0.0.0/[::] outside lab (use loopback or onion-only)"
+                    .into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Default share passphrase only in lab ceremony (#22).
+    pub fn validate_lab_passphrase_defaults(&self) -> Result<(), DomainError> {
+        let using_default = self
+            .share_passphrase
+            .as_deref()
+            .map(|p| p == "kerosene-vault-lab-passphrase")
+            .unwrap_or(true);
+        if using_default
+            && self.share_store_mode == ShareStoreMode::AeadDisk
+            && !matches!(self.ceremony_mode, CeremonyMode::Lab)
+        {
+            return Err(DomainError::ShareStoreForbidden(
+                "VAULT_DATA_PASSPHRASE required outside lab (no default passphrase)".into(),
+            ));
+        }
+        if using_default
+            && self.share_store_mode == ShareStoreMode::AeadDisk
+            && (self.hardened || cfg!(feature = "production"))
+        {
+            return Err(DomainError::ShareStoreForbidden(
+                "default lab passphrase refused under hardened/production".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// Default `LAB_ATTESTATION_ROOT` is lab-only deterministic DKG entropy (#17).
+    pub fn validate_lab_root_honesty(&self) -> Result<(), DomainError> {
+        if self.lab_root == "kerosene-lab-root"
+            && !matches!(self.ceremony_mode, CeremonyMode::Lab)
+        {
+            return Err(DomainError::LabFlagForbidden(
+                "LAB_ATTESTATION_ROOT must be set explicitly outside lab (default is deterministic lab DKG entropy)"
+                    .into(),
+            ));
+        }
         Ok(())
     }
 
@@ -581,10 +728,13 @@ impl VaultConfig {
             }
         }
         if self.share_tpm_stub {
-            if matches!(self.ceremony_mode, CeremonyMode::Production) || cfg!(feature = "production")
+            if matches!(
+                self.ceremony_mode,
+                CeremonyMode::Staging | CeremonyMode::Production
+            ) || cfg!(feature = "production")
             {
                 return Err(DomainError::LabFlagForbidden(
-                    "VAULT_SHARE_TPM_STUB in production ceremony".into(),
+                    "VAULT_SHARE_TPM_STUB refused outside lab".into(),
                 ));
             }
             if self.hardened {
@@ -704,10 +854,26 @@ impl VaultConfig {
     }
 
     pub fn peer_tier(&self, peer_id: &str) -> VaultNodeTier {
-        self.peer_tiers
+        let claimed = self
+            .peer_tiers
             .get(peer_id)
             .copied()
-            .unwrap_or(VaultNodeTier::Domestic)
+            .unwrap_or(VaultNodeTier::Domestic);
+        if !claimed.is_tee() {
+            return claimed;
+        }
+        // High #15: refuse elevated seating without attestation quote proof.
+        if self.peer_tier_require_quote {
+            let has_quote = self
+                .peer_tier_quotes
+                .get(peer_id)
+                .map(|q| !q.trim().is_empty())
+                .unwrap_or(false);
+            if !has_quote {
+                return VaultNodeTier::Domestic;
+            }
+        }
+        claimed
     }
 
     /// Candidates for genesis seating: local + seed peers (pads added by caller if needed).
@@ -788,12 +954,27 @@ impl VaultConfig {
     }
 
     pub fn effective_vault_token(&self) -> Option<&str> {
-        self.vault_token.as_deref().or(if self.hardened {
-            None
-        } else {
+        self.vault_token.as_deref().or(if matches!(self.ceremony_mode, CeremonyMode::Lab)
+            && !self.hardened
+        {
             // Matches vault-mesh-lab.compose.yaml + kfe-service-vaultmesh-testnet3.properties.
+            // Lab-only (#33): shared static token is by design for visualize.
             Some("kerosene-vault-lab-only")
+        } else {
+            None
         })
+    }
+
+    /// Lab AEAD passphrase default — never outside lab ceremony (#22).
+    pub fn effective_share_passphrase(&self) -> Option<String> {
+        if let Some(p) = self.share_passphrase.clone() {
+            return Some(p);
+        }
+        if matches!(self.ceremony_mode, CeremonyMode::Lab) && !self.hardened {
+            Some("kerosene-vault-lab-passphrase".into())
+        } else {
+            None
+        }
     }
 
     pub fn effective_data_dir(&self) -> std::path::PathBuf {
@@ -829,9 +1010,14 @@ fn env_nonempty_first(names: &[&str]) -> Option<String> {
     None
 }
 
-fn resolve_tls_verify_policy(transport: VaultTransport) -> Result<TlsPeerVerifyPolicy, DomainError> {
+fn resolve_tls_verify_policy(
+    transport: VaultTransport,
+    node_id: &str,
+) -> Result<TlsPeerVerifyPolicy, DomainError> {
+    let trust = env_nonempty_first(&["VAULT_MTLS_TRUST_DOMAIN"]).unwrap_or_else(|| "kerosene.lab".into());
+    // Unique per-vault SPIFFE by default (#23); override with VAULT_TLS_PEER_SPIFFE_ID.
     let expected = env_nonempty_first(&["VAULT_TLS_PEER_SPIFFE_ID", "VAULT_MTLS_SPIFFE_VAULT"])
-        .unwrap_or_else(|| "spiffe://kerosene.lab/vault/server".into());
+        .unwrap_or_else(|| format!("spiffe://{trust}/vault/{node_id}"));
     let default_mode = if transport.is_tor() {
         "onion_or_spiffe"
     } else {
@@ -857,9 +1043,13 @@ mod tests {
             lab_root: "x".into(),
             seed_peers: vec![],
             peer_tiers: BTreeMap::new(),
+            peer_tier_quotes: BTreeMap::new(),
+            peer_tier_require_quote: false,
             refuse_sim: false,
             genesis_n: None,
             online_count: None,
+            online_static: false,
+            psbt_policy: crate::domain::PsbtPolicy::lab_defaults(),
             lab_timelock_scale: 0,
             lab_timelock_env_set: false,
             lab_council_n: 3,
@@ -872,6 +1062,9 @@ mod tests {
             auth_mode: AuthMode::StaticToken,
             vault_token: Some("t".into()),
             users_destination_allowlist: vec![],
+            miners_destination_allowlist: vec![],
+            allow_manual_reshare: false,
+            lab_allow_raw_sighash: false,
             tls_cert_path: None,
             tls_key_path: None,
             tls_client_ca_path: None,

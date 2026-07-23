@@ -25,7 +25,7 @@ use rand::rngs::OsRng;
 use zeroize::Zeroize;
 
 use crate::application::{AntiNoncePort, DailyRotationPort, ShareStorePort};
-use crate::domain::{BitcoinNetwork, DomainError};
+use crate::domain::{BitcoinNetwork, DomainError, PsbtPolicy};
 
 const TR_PUBKEY_SHARE_ID: &str = "frost-tr-dkg-pubkey";
 const TR_ROSTER_SHARE_ID: &str = "frost-tr-roster";
@@ -283,6 +283,12 @@ pub struct FrostTrBitcoinOrchestrator {
     anti_nonce: Box<dyn AntiNoncePort>,
     rotation: Arc<dyn DailyRotationPort>,
     network: BitcoinNetwork,
+    /// Lab `dealer_lab` may sign with N local shares in-process. Staging/prod /
+    /// `distributed_wire` must use single local share + peer co-sign (Critical #1/#2).
+    allow_local_multisign: bool,
+    local_node_id: String,
+    cosign: Option<Arc<dyn crate::adapters::TrCosignTransport>>,
+    psbt_policy: PsbtPolicy,
 }
 
 impl FrostTrBitcoinOrchestrator {
@@ -297,7 +303,28 @@ impl FrostTrBitcoinOrchestrator {
             anti_nonce,
             rotation,
             network,
+            allow_local_multisign: cfg!(feature = "dealer_lab"),
+            local_node_id: "local".into(),
+            cosign: None,
+            psbt_policy: PsbtPolicy::lab_defaults(),
         }
+    }
+
+    pub fn with_psbt_policy(mut self, policy: PsbtPolicy) -> Self {
+        self.psbt_policy = policy;
+        self
+    }
+
+    pub fn with_wire_cosign(
+        mut self,
+        local_node_id: impl Into<String>,
+        allow_local_multisign: bool,
+        cosign: Arc<dyn crate::adapters::TrCosignTransport>,
+    ) -> Self {
+        self.local_node_id = local_node_id.into();
+        self.allow_local_multisign = allow_local_multisign;
+        self.cosign = Some(cosign);
+        self
     }
 
     pub fn deposit_info(&self) -> Result<DepositInfo, DomainError> {
@@ -364,6 +391,9 @@ impl FrostTrBitcoinOrchestrator {
         if psbt.inputs.is_empty() {
             return Err(DomainError::ThresholdError("psbt has no inputs".into()));
         }
+
+        // High #13: fee / locktime / RBF policy before Intent bind / sign.
+        self.psbt_policy.validate(&psbt)?;
 
         let snap = self.shares.snapshot()?;
         let internal = xonly_from_verifying_key(snap.pubkey_package.verifying_key())?;
@@ -453,6 +483,28 @@ impl FrostTrBitcoinOrchestrator {
 
     fn sign_raw_quorum(&self, message: &[u8]) -> Result<Signature, DomainError> {
         let snap = self.shares.snapshot()?;
+        // Critical #1/#2: staging/prod / distributed_wire never sign with N local shares.
+        if !self.allow_local_multisign {
+            if snap.key_packages.len() > 1 {
+                return Err(DomainError::ThresholdError(
+                    "multi-share local FROST sign refused outside dealer_lab; use wire co-sign (single local share)".into(),
+                ));
+            }
+            let transport = self.cosign.as_ref().ok_or_else(|| {
+                DomainError::ThresholdError(
+                    "TR wire co-sign transport not configured (distributed_wire requires peer co-sign)".into(),
+                )
+            })?;
+            let session_id = format!("tr-wire-{}", hex::encode(sha2_first_16(message)));
+            return crate::adapters::sign_raw_wire(
+                &self.shares,
+                transport.as_ref(),
+                &self.local_node_id,
+                &session_id,
+                message,
+            );
+        }
+
         let min_signers = snap.min_signers;
         let key_packages = &snap.key_packages;
         let pubkey_package = &snap.pubkey_package;
@@ -470,6 +522,7 @@ impl FrostTrBitcoinOrchestrator {
         }
 
         // BIP-341 key-path (no script tree): sign with merkle_root = None tweak.
+        // dealer_lab only: N local shares in-process.
         for id in identifiers.iter().take(min_signers) {
             let kp = key_packages
                 .get(id)
@@ -513,6 +566,14 @@ impl FrostTrBitcoinOrchestrator {
         message.zeroize();
         Ok(signature)
     }
+}
+
+fn sha2_first_16(msg: &[u8]) -> [u8; 16] {
+    use sha2::{Digest, Sha256};
+    let dig = Sha256::digest(msg);
+    let mut out = [0u8; 16];
+    out.copy_from_slice(&dig[..16]);
+    out
 }
 
 /// Lab dealer keygen for Taproot FROST (even-Y internal key; tweak applied at sign/deposit).

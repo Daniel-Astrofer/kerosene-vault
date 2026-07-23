@@ -1,6 +1,13 @@
 //! In-memory miner economy state (F9).
+//!
+//! # Persistence honesty (#18)
+//! State is **process-local**. Restart loses pool / operators / accruals.
+//! Not an authenticated append-only mesh ledger — do not claim durability.
+//! Residual until a durable economy store lands.
 
 use std::sync::Mutex;
+
+use super::sync_util::lock_mutex;
 
 use crate::application::ports::EconomyPort;
 use crate::domain::{
@@ -26,22 +33,15 @@ impl InMemoryEconomy {
 
 impl EconomyPort for InMemoryEconomy {
     fn snapshot(&self) -> Result<EconomyState, DomainError> {
-        Ok(self.inner.lock().expect("economy lock").clone())
+        Ok(lock_mutex(&self.inner, "economy")?.clone())
     }
 
     fn upsert_operator(&self, op: MinerOperator) -> Result<(), DomainError> {
-        self.inner
-            .lock()
-            .expect("economy lock")
-            .upsert_operator(op)
+        lock_mutex(&self.inner, "economy")?.upsert_operator(op)
     }
 
     fn accrue_from_profit(&self, profit_sats: u64, p_reward_bps: u32) -> Result<u64, DomainError> {
-        Ok(self
-            .inner
-            .lock()
-            .expect("economy lock")
-            .accrue_from_profit(profit_sats, p_reward_bps))
+        Ok(lock_mutex(&self.inner, "economy")?.accrue_from_profit(profit_sats, p_reward_bps))
     }
 
     fn accrue_governance_job(
@@ -50,10 +50,7 @@ impl EconomyPort for InMemoryEconomy {
         participants: &[crate::domain::NodeId],
         config: &GovernanceRewardConfig,
     ) -> Result<GovernanceAccrual, DomainError> {
-        Ok(self
-            .inner
-            .lock()
-            .expect("economy lock")
+        Ok(lock_mutex(&self.inner, "economy")?
             .accrue_governance_job(job, participants, config))
     }
 
@@ -61,13 +58,10 @@ impl EconomyPort for InMemoryEconomy {
         &self,
         amount: u64,
     ) -> Result<Vec<crate::domain::MinerPayoutShare>, DomainError> {
-        self.inner
-            .lock()
-            .expect("economy lock")
-            .propose_equal_payouts(amount)
+        lock_mutex(&self.inner, "economy")?.propose_equal_payouts(amount)
     }
 
     fn debit_pool(&self, amount: u64) -> Result<(), DomainError> {
-        self.inner.lock().expect("economy lock").debit_pool(amount)
+        lock_mutex(&self.inner, "economy")?.debit_pool(amount)
     }
 }

@@ -24,43 +24,93 @@ impl GateIntent {
         }
     }
 
-    /// Evaluate + consume intent id (atomic + durable when backed by persisted ledger).
-    /// Does not sign.
+    /// Soft-reserve Intent (two-phase High #9): evaluate + hold caps; do **not**
+    /// durable-burn. Call [`commit`] after successful sign, or [`release`] on failure.
+    pub fn reserve(&self, intent: SettlementIntent) -> Result<GateReceipt, DomainError> {
+        self.run(&intent, Phase::Reserve)
+    }
+
+    /// Promote reservation → durable mesh consume after successful sign.
+    pub fn commit(&self, intent_id: &str) -> Result<(), DomainError> {
+        self.buckets.commit_consume(intent_id)
+    }
+
+    /// Roll back soft reservation when sign fails.
+    pub fn release(
+        &self,
+        intent_id: &str,
+        bucket: BucketKind,
+        amount_sats: u64,
+    ) -> Result<(), DomainError> {
+        self.buckets
+            .release_reservation(intent_id, bucket, amount_sats)
+    }
+
+    /// Evaluate + consume intent id (atomic + durable). Prefer [`reserve`]/ [`commit`]
+    /// on bitcoin sign paths so a failed sign does not burn the Intent.
     pub fn execute(&self, intent: SettlementIntent) -> Result<GateReceipt, DomainError> {
+        self.run(&intent, Phase::Consume)
+    }
+
+    fn run(&self, intent: &SettlementIntent, phase: Phase) -> Result<GateReceipt, DomainError> {
         let constitution = self.ledger.constitution()?;
         let miners_open =
             constitution.profit_splits.miners_bps > 0 && intent.bucket == BucketKind::Miners;
-        if miners_open {
-            assert_bank_issued_miner_payout(&self.economy.snapshot()?, &intent)?;
-        }
+        let economy = if miners_open {
+            let snap = self.economy.snapshot()?;
+            assert_bank_issued_miner_payout(&snap, intent)?;
+            Some(snap)
+        } else {
+            None
+        };
         let policy_hash = constitution.hash.clone();
         let intent_id = intent.intent_id.clone();
         let bucket = intent.bucket;
         let amount_sats = intent.amount_sats;
 
-        self.buckets.authorize_spend_and_consume(
-            &intent_id,
-            bucket,
-            amount_sats,
-            &|policy, spent| {
-                let mut policy = policy.clone();
-                // F9: open MINERS — destination must be an eligible registered operator
-                // (bank Intent; vaults never invent self-pay). Admit registered dest for check.
-                if miners_open {
-                    policy
-                        .destination_allowlist
-                        .insert(intent.destination.clone());
+        let validate = |policy: &crate::domain::BucketPolicy, spent: u64| {
+            let mut policy = policy.clone();
+            // Admit only registered eligible operator destinations (#29) — never Intent dest alone.
+            if let Some(eco) = economy.as_ref() {
+                for op in eco.operators.values() {
+                    if op.is_eligible(&eco.policy) {
+                        policy
+                            .destination_allowlist
+                            .insert(op.payout_destination.clone());
+                    }
                 }
-                evaluate_intent(&intent, &policy, spent, &policy_hash)
-            },
-        )?;
-        Ok(GateReceipt {
-            intent_id,
-            bucket,
-            amount_sats,
-            status: "ACCEPTED",
-        })
+            }
+            evaluate_intent(intent, &policy, spent, &policy_hash)
+        };
+
+        match phase {
+            Phase::Reserve => {
+                self.buckets
+                    .reserve_spend(&intent_id, bucket, amount_sats, &validate)?;
+                Ok(GateReceipt {
+                    intent_id,
+                    bucket,
+                    amount_sats,
+                    status: "RESERVED",
+                })
+            }
+            Phase::Consume => {
+                self.buckets
+                    .authorize_spend_and_consume(&intent_id, bucket, amount_sats, &validate)?;
+                Ok(GateReceipt {
+                    intent_id,
+                    bucket,
+                    amount_sats,
+                    status: "ACCEPTED",
+                })
+            }
+        }
     }
+}
+
+enum Phase {
+    Reserve,
+    Consume,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

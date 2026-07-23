@@ -3,9 +3,13 @@ use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use crate::application::ports::BucketLedgerPort;
 use crate::domain::{BucketKind, BucketPolicy, DomainError};
+
+/// Soft Intent reservation TTL (High #9) — released automatically if never committed.
+const DEFAULT_RESERVE_TTL: Duration = Duration::from_secs(300);
 
 /// In-memory per-bucket spend + policies (lab). Consumed intent ids are tracked
 /// under a single mutex; prefer [`PersistedBucketLedger`] for durable replay safety.
@@ -17,6 +21,8 @@ pub(crate) struct BucketState {
     pub(crate) policies: HashMap<BucketKind, BucketPolicy>,
     pub(crate) spent_today: HashMap<BucketKind, u64>,
     pub(crate) consumed: HashSet<String>,
+    /// Soft-reserved intents (not yet durable-burned): id → (kind, amount, expires).
+    pub(crate) reserved: HashMap<String, (BucketKind, u64, Instant)>,
 }
 
 impl InMemoryBucketLedger {
@@ -43,7 +49,25 @@ impl InMemoryBucketLedger {
                 policies,
                 spent_today: HashMap::new(),
                 consumed: HashSet::new(),
+                reserved: HashMap::new(),
             }),
+        }
+    }
+
+    pub(crate) fn sweep_expired(g: &mut BucketState) {
+        let now = Instant::now();
+        let expired: Vec<String> = g
+            .reserved
+            .iter()
+            .filter(|(_, (_, _, exp))| *exp <= now)
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in expired {
+            if let Some((kind, amount, _)) = g.reserved.remove(&id) {
+                if let Some(spent) = g.spent_today.get_mut(&kind) {
+                    *spent = spent.saturating_sub(amount);
+                }
+            }
         }
     }
 
@@ -97,10 +121,74 @@ impl BucketLedgerPort for InMemoryBucketLedger {
 
     fn try_consume(&self, intent_id: &str) -> Result<(), DomainError> {
         let mut g = self.inner.lock().expect("bucket lock");
+        Self::sweep_expired(&mut g);
         if g.consumed.contains(intent_id) {
             return Err(DomainError::IntentReplay(intent_id.to_string()));
         }
+        g.reserved.remove(intent_id);
         g.consumed.insert(intent_id.to_string());
+        Ok(())
+    }
+
+    fn reserve_spend(
+        &self,
+        intent_id: &str,
+        kind: BucketKind,
+        amount_sats: u64,
+        validate: &dyn Fn(&BucketPolicy, u64) -> Result<(), DomainError>,
+    ) -> Result<(), DomainError> {
+        let mut g = self.inner.lock().expect("bucket lock");
+        Self::sweep_expired(&mut g);
+        if g.consumed.contains(intent_id) || g.reserved.contains_key(intent_id) {
+            return Err(DomainError::IntentReplay(intent_id.to_string()));
+        }
+        let policy = g
+            .policies
+            .get(&kind)
+            .cloned()
+            .ok_or_else(|| DomainError::InvalidBucket(kind.as_str().into()))?;
+        let spent = *g.spent_today.get(&kind).unwrap_or(&0);
+        validate(&policy, spent)?;
+        let e = g.spent_today.entry(kind).or_insert(0);
+        *e = e.saturating_add(amount_sats);
+        g.reserved.insert(
+            intent_id.to_string(),
+            (kind, amount_sats, Instant::now() + DEFAULT_RESERVE_TTL),
+        );
+        Ok(())
+    }
+
+    fn commit_consume(&self, intent_id: &str) -> Result<(), DomainError> {
+        let mut g = self.inner.lock().expect("bucket lock");
+        Self::sweep_expired(&mut g);
+        if g.consumed.contains(intent_id) {
+            return Err(DomainError::IntentReplay(intent_id.to_string()));
+        }
+        if !g.reserved.contains_key(intent_id) {
+            return Err(DomainError::ReservationMissing(intent_id.to_string()));
+        }
+        g.reserved.remove(intent_id);
+        g.consumed.insert(intent_id.to_string());
+        Ok(())
+    }
+
+    fn release_reservation(
+        &self,
+        intent_id: &str,
+        kind: BucketKind,
+        amount_sats: u64,
+    ) -> Result<(), DomainError> {
+        let mut g = self.inner.lock().expect("bucket lock");
+        if let Some((k, amt, _)) = g.reserved.remove(intent_id) {
+            let roll_kind = k;
+            let roll_amt = amt;
+            if let Some(spent) = g.spent_today.get_mut(&roll_kind) {
+                *spent = spent.saturating_sub(roll_amt);
+            }
+        } else if let Some(spent) = g.spent_today.get_mut(&kind) {
+            // Best-effort: caller-supplied rollback if reservation already swept.
+            *spent = spent.saturating_sub(amount_sats);
+        }
         Ok(())
     }
 
@@ -112,7 +200,8 @@ impl BucketLedgerPort for InMemoryBucketLedger {
         validate: &dyn Fn(&BucketPolicy, u64) -> Result<(), DomainError>,
     ) -> Result<(), DomainError> {
         let mut g = self.inner.lock().expect("bucket lock");
-        if g.consumed.contains(intent_id) {
+        Self::sweep_expired(&mut g);
+        if g.consumed.contains(intent_id) || g.reserved.contains_key(intent_id) {
             return Err(DomainError::IntentReplay(intent_id.to_string()));
         }
         let policy = g
@@ -190,8 +279,33 @@ impl PersistedBucketLedger {
         if g.consumed.contains(intent_id) {
             return Ok(true);
         }
+        g.reserved.remove(intent_id);
         g.consumed.insert(intent_id.to_string());
         Ok(false)
+    }
+
+    /// Soft peer prepare (TTL reservation, not durable burn). High #8/#9.
+    pub fn prepare_soft(&self, intent_id: &str) -> Result<bool, DomainError> {
+        let mut g = self.inner.inner.lock().expect("bucket lock");
+        InMemoryBucketLedger::sweep_expired(&mut g);
+        if g.consumed.contains(intent_id) || g.reserved.contains_key(intent_id) {
+            return Ok(true);
+        }
+        g.reserved.insert(
+            intent_id.to_string(),
+            (
+                BucketKind::Users,
+                0,
+                Instant::now() + DEFAULT_RESERVE_TTL,
+            ),
+        );
+        Ok(false)
+    }
+
+    pub fn has_reservation(&self, intent_id: &str) -> bool {
+        let mut g = self.inner.inner.lock().expect("bucket lock");
+        InMemoryBucketLedger::sweep_expired(&mut g);
+        g.reserved.contains_key(intent_id)
     }
 }
 
@@ -249,8 +363,44 @@ impl BucketLedgerPort for PersistedBucketLedger {
             // Lost the race after persist — still replay-safe.
             return Err(DomainError::IntentReplay(intent_id.to_string()));
         }
+        g.reserved.remove(intent_id);
         g.consumed.insert(intent_id.to_string());
         Ok(())
+    }
+
+    fn reserve_spend(
+        &self,
+        intent_id: &str,
+        kind: BucketKind,
+        amount_sats: u64,
+        validate: &dyn Fn(&BucketPolicy, u64) -> Result<(), DomainError>,
+    ) -> Result<(), DomainError> {
+        self.inner
+            .reserve_spend(intent_id, kind, amount_sats, validate)
+    }
+
+    fn commit_consume(&self, intent_id: &str) -> Result<(), DomainError> {
+        {
+            let mut g = self.inner.inner.lock().expect("bucket lock");
+            InMemoryBucketLedger::sweep_expired(&mut g);
+            if g.consumed.contains(intent_id) {
+                return Err(DomainError::IntentReplay(intent_id.to_string()));
+            }
+            if !g.reserved.contains_key(intent_id) {
+                return Err(DomainError::ReservationMissing(intent_id.to_string()));
+            }
+        }
+        self.try_consume(intent_id)
+    }
+
+    fn release_reservation(
+        &self,
+        intent_id: &str,
+        kind: BucketKind,
+        amount_sats: u64,
+    ) -> Result<(), DomainError> {
+        self.inner
+            .release_reservation(intent_id, kind, amount_sats)
     }
 
     fn authorize_spend_and_consume(

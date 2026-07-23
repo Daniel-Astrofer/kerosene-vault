@@ -1,32 +1,65 @@
 //! Axum HTTP surface: `/v1/health` public; protected routes require auth —
 //! `X-Vault-Token` when `VAULT_AUTH_MODE=static_token`, or verified client cert
 //! when `VAULT_AUTH_MODE=mtls` (static token header refused).
+//!
+//! App-layer principal (Critical #3): mTLS SPIFFE/SAN → role (`kfe` vs `vault`);
+//! routes are authorized by role (not “any CA leaf = full power”).
 
 use std::sync::Arc;
 
 use axum::body::Bytes;
-use axum::extract::{Request, State};
+use axum::extract::{DefaultBodyLimit, Extension, Request, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::middleware::{from_fn_with_state, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::Router;
 
-use crate::application::{BlobStorePort, LedgerPort, ReleaseStorePort};
-use crate::bootstrap::{CeremonyMode, VaultRuntime};
+use crate::adapters::SlidingWindowLimiter;
+use crate::application::{
+    bind_session_to_intent, BlobStorePort, LedgerPort, OnlineStatusPort, ReleaseStorePort,
+};
+use crate::bootstrap::{AuthMode, CeremonyMode, VaultRuntime};
 use crate::domain::{
     assert_shared_taproot_bucket, validate_destination, BucketKind, ContentHash, NodeId,
     SettlementIntent,
 };
 
+
+fn json_err(e: impl std::fmt::Display) -> String {
+    serde_json::json!({ "error": e.to_string() }).to_string()
+}
+
+async fn security_headers_mw(request: Request, next: Next) -> Response {
+    let mut resp = next.run(request).await;
+    let headers = resp.headers_mut();
+    headers.insert(
+        axum::http::header::HeaderName::from_static("x-content-type-options"),
+        axum::http::HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(
+        axum::http::header::HeaderName::from_static("cache-control"),
+        axum::http::HeaderValue::from_static("no-store"),
+    );
+    headers.insert(
+        axum::http::header::HeaderName::from_static("x-frame-options"),
+        axum::http::HeaderValue::from_static("DENY"),
+    );
+    resp
+}
+
 #[derive(Clone)]
 pub struct AppState {
     pub runtime: Arc<VaultRuntime>,
+    pub auth_limiter: Arc<SlidingWindowLimiter>,
+    pub prepare_limiter: Arc<SlidingWindowLimiter>,
 }
 
 pub fn build_router(runtime: Arc<VaultRuntime>) -> Router {
     let state = AppState {
         runtime: runtime.clone(),
+        auth_limiter: Arc::new(SlidingWindowLimiter::auth_defaults()),
+        prepare_limiter: Arc::new(SlidingWindowLimiter::prepare_defaults()),
     };
     let protected = Router::new()
         .route("/v1/sign", post(v1_sign))
@@ -47,6 +80,8 @@ pub fn build_router(runtime: Arc<VaultRuntime>) -> Router {
         .route("/v1/day/vote", post(v1_day_vote))
         .route("/v1/day/current", get(v1_day_current))
         .route("/v1/reshare/trigger", post(v1_reshare_trigger))
+        .route("/v1/frost/tr/commit", post(v1_frost_tr_commit))
+        .route("/v1/frost/tr/sign-share", post(v1_frost_tr_sign_share))
         .route("/health", get(legacy_dispatch))
         .route("/ledger", get(legacy_dispatch))
         .route("/threshold", get(legacy_dispatch))
@@ -64,13 +99,16 @@ pub fn build_router(runtime: Arc<VaultRuntime>) -> Router {
         .route("/v1/health", get(v1_health))
         .route("/", get(v1_health))
         .merge(protected)
+        .layer(DefaultBodyLimit::max(256 * 1024))
+        .layer(axum::middleware::from_fn(security_headers_mw))
         .with_state(state)
 }
 
 async fn require_token_mw(
     State(state): State<AppState>,
     headers: HeaderMap,
-    request: Request,
+    peer_cert: Option<Extension<Option<crate::adapters::PeerClientCert>>>,
+    mut request: Request,
     next: Next,
 ) -> Result<Response, (StatusCode, String)> {
     let token = headers.get("X-Vault-Token").and_then(|v| v.to_str().ok());
@@ -78,17 +116,65 @@ async fn require_token_mw(
         .runtime
         .auth
         .authorize(token)
-        .map_err(|e| (StatusCode::UNAUTHORIZED, format!(r#"{{"error":"{e}"}}"#)))?;
+        .map_err(|e| (StatusCode::UNAUTHORIZED, json_err(e)))?;
+
+    let rate_key = headers
+        .get("X-Vault-Node-Id")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or(state.runtime.config.node_id.as_str());
+    state
+        .auth_limiter
+        .check(rate_key)
+        .map_err(|e| (StatusCode::TOO_MANY_REQUESTS, json_err(e)))?;
+
+    let allowed = crate::adapters::mesh_allowed_node_ids(
+        state.runtime.config.node_id.as_str(),
+        state
+            .runtime
+            .config
+            .seed_peers
+            .iter()
+            .map(|(id, _)| id.as_str()),
+    );
+    let peer_cert = peer_cert.and_then(|Extension(c)| c);
+    let principal = if matches!(state.runtime.config.auth_mode, AuthMode::StaticToken) {
+        crate::adapters::MeshPrincipal::lab_omnipotent(state.runtime.config.node_id.as_str())
+    } else if let Some(cert) = peer_cert.as_ref() {
+        cert.to_principal(state.runtime.config.node_id.as_str(), &allowed)
+            .map_err(|e| (StatusCode::UNAUTHORIZED, json_err(e)))?
+    } else {
+        return Err((
+            StatusCode::UNAUTHORIZED,
+            json_err("auth rejected: mTLS client certificate required for mesh principal"),
+        ));
+    };
+
+    if let Some(class) = crate::adapters::route_class_for_path(request.uri().path()) {
+        if !principal.allows_route(class) {
+            return Err((
+                StatusCode::FORBIDDEN,
+                json_err(format!(
+                    "auth rejected: role {} cannot call {} ({})",
+                    principal.role.as_str(),
+                    request.uri().path(),
+                    match class {
+                        crate::adapters::RouteClass::KfeSettlement => "kfe settlement only",
+                        crate::adapters::RouteClass::VaultPeer => "vault peer only",
+                        crate::adapters::RouteClass::SharedOps => "shared ops",
+                    }
+                )),
+            ));
+        }
+    }
+
+    request.extensions_mut().insert(principal);
     Ok(next.run(request).await)
 }
 
 async fn v1_health(State(state): State<AppState>) -> impl IntoResponse {
     match state.runtime.get_health.execute() {
-        Ok(h) => (StatusCode::OK, h.to_json()),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!(r#"{{"error":"{e}"}}"#),
-        ),
+        Ok(h) => (StatusCode::OK, h.to_public_json()),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, json_err(e)),
     }
 }
 
@@ -100,14 +186,14 @@ struct SignBody {
 
 async fn v1_sign(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
     if let Err(e) = state.runtime.auth.authorize_treasury_sign() {
-        return (StatusCode::UNAUTHORIZED, format!(r#"{{"error":"{e}"}}"#));
+        return (StatusCode::UNAUTHORIZED, json_err(e));
     }
     let req: SignBody = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
-                format!(r#"{{"error":"invalid json: {e}"}}"#),
+                json_err(format!("invalid json: {e}")),
             )
         }
     };
@@ -117,7 +203,7 @@ async fn v1_sign(State(state): State<AppState>, body: Bytes) -> impl IntoRespons
         .run_lab_quorum_sign(&req.session_id, &req.message_hash)
     {
         Ok(sig) => (StatusCode::OK, sig.to_json()),
-        Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+        Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }
 
@@ -130,7 +216,7 @@ async fn v1_bitcoin_deposit(State(state): State<AppState>) -> impl IntoResponse 
     };
     match tr.deposit_info() {
         Ok(info) => (StatusCode::OK, info.to_json()),
-        Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+        Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }
 
@@ -148,14 +234,19 @@ struct BitcoinSighashBody {
 
 async fn v1_bitcoin_sign_sighash(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
     if let Err(e) = state.runtime.auth.authorize_treasury_sign() {
-        return (StatusCode::UNAUTHORIZED, format!(r#"{{"error":"{e}"}}"#));
+        return (StatusCode::UNAUTHORIZED, json_err(e));
     }
-    // Raw sighash cannot bind PSBT outputs — lab visualize only, and still
-    // requires Intent gate (caps / replay / allowlist) before signing.
+    // Raw sighash cannot bind PSBT outputs — opt-in lab only (#28).
     if !matches!(state.runtime.config.ceremony_mode, CeremonyMode::Lab) {
         return (
             StatusCode::FORBIDDEN,
             r#"{"error":"raw sighash signing refused outside lab; use Intent-bound /v1/bitcoin/sign-psbt"}"#.into(),
+        );
+    }
+    if !state.runtime.config.lab_allow_raw_sighash {
+        return (
+            StatusCode::FORBIDDEN,
+            r#"{"error":"raw sighash signing requires VAULT_LAB_ALLOW_RAW_SIGHASH=1; prefer Intent-bound /v1/bitcoin/sign-psbt"}"#.into(),
         );
     }
     let req: BitcoinSighashBody = match serde_json::from_slice(&body) {
@@ -163,10 +254,23 @@ async fn v1_bitcoin_sign_sighash(State(state): State<AppState>, body: Bytes) -> 
         Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
-                format!(r#"{{"error":"invalid json: {e}"}}"#),
+                json_err(format!("invalid json: {e}")),
             )
         }
     };
+    // Full Intent fields required even in lab (still cannot bind outputs to sighash).
+    if req.intent_id.as_deref().unwrap_or("").is_empty()
+        || req.bucket.as_deref().unwrap_or("").is_empty()
+        || req.destination.as_deref().unwrap_or("").is_empty()
+        || req.amount_sats.unwrap_or(0) == 0
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            json_err(
+                "raw sighash requires intent_id, bucket, destination, and amount_sats (outputs still unbound — prefer sign-psbt)",
+            ),
+        );
+    }
     if let Err(e) = maybe_gate_intent(
         &state,
         req.intent_id.as_deref(),
@@ -175,7 +279,7 @@ async fn v1_bitcoin_sign_sighash(State(state): State<AppState>, body: Bytes) -> 
         req.amount_sats,
         true,
     ) {
-        return (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#));
+        return (StatusCode::BAD_REQUEST, json_err(e));
     }
     let Some(tr) = state.runtime.frost_tr.as_ref() else {
         return (
@@ -188,13 +292,13 @@ async fn v1_bitcoin_sign_sighash(State(state): State<AppState>, body: Bytes) -> 
         Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
-                format!(r#"{{"error":"sighash_hex: {e}"}}"#),
+                json_err(format!("sighash_hex: {e}")),
             )
         }
     };
     match tr.sign_sighash(&req.session_id, &sighash) {
         Ok(sig) => (StatusCode::OK, sig.to_json()),
-        Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+        Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }
 
@@ -211,14 +315,14 @@ struct BitcoinPsbtBody {
 
 async fn v1_bitcoin_sign_psbt(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
     if let Err(e) = state.runtime.auth.authorize_treasury_sign() {
-        return (StatusCode::UNAUTHORIZED, format!(r#"{{"error":"{e}"}}"#));
+        return (StatusCode::UNAUTHORIZED, json_err(e));
     }
     let req: BitcoinPsbtBody = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
-                format!(r#"{{"error":"invalid json: {e}"}}"#),
+                json_err(format!("invalid json: {e}")),
             )
         }
     };
@@ -237,7 +341,7 @@ async fn v1_bitcoin_sign_psbt(State(state): State<AppState>, body: Bytes) -> imp
         req.amount_sats,
         true,
     ) {
-        return (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#));
+        return (StatusCode::BAD_REQUEST, json_err(e));
     }
     let Some(tr) = state.runtime.frost_tr.as_ref() else {
         return (
@@ -251,12 +355,12 @@ async fn v1_bitcoin_sign_psbt(State(state): State<AppState>, body: Bytes) -> imp
     if online < need {
         return (
             StatusCode::BAD_REQUEST,
-            format!(r#"{{"error":"fail-stop: online {online} < t {need}"}}"#),
+            json_err(format!("fail-stop: online {online} < t {need}")),
         );
     }
     match tr.sign_psbt(&req.session_id, &req.psbt, destination, amount) {
         Ok(signed) => (StatusCode::OK, signed.to_json()),
-        Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+        Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }
 
@@ -302,7 +406,7 @@ async fn v1_anti_nonce_prepare(State(state): State<AppState>, body: Bytes) -> im
         Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
-                format!(r#"{{"error":"invalid json: {e}"}}"#),
+                json_err(format!("invalid json: {e}")),
             )
         }
     };
@@ -311,7 +415,7 @@ async fn v1_anti_nonce_prepare(State(state): State<AppState>, body: Bytes) -> im
             StatusCode::OK,
             format!(r#"{{"ok":true,"already_seen":{already_seen}}}"#),
         ),
-        Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+        Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }
 
@@ -325,7 +429,7 @@ async fn v1_intent_consume_prepare(State(state): State<AppState>, body: Bytes) -
         Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
-                format!(r#"{{"error":"invalid json: {e}"}}"#),
+                json_err(format!("invalid json: {e}")),
             )
         }
     };
@@ -334,7 +438,7 @@ async fn v1_intent_consume_prepare(State(state): State<AppState>, body: Bytes) -
             StatusCode::OK,
             format!(r#"{{"ok":true,"already_seen":{already_seen}}}"#),
         ),
-        Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+        Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }
 
@@ -344,13 +448,14 @@ async fn v1_day_current(State(state): State<AppState>) -> impl IntoResponse {
             StatusCode::OK,
             format!(r#"{{"day_epoch":"{}"}}"#, d.as_str()),
         ),
-        Err(e) => (StatusCode::CONFLICT, format!(r#"{{"error":"{e}"}}"#)),
+        Err(e) => (StatusCode::CONFLICT, json_err(e)),
     }
 }
 
 async fn v1_day_vote(
     State(state): State<AppState>,
     headers: HeaderMap,
+    Extension(principal): Extension<crate::adapters::MeshPrincipal>,
     body: Bytes,
 ) -> impl IntoResponse {
     #[derive(serde::Deserialize)]
@@ -365,20 +470,19 @@ async fn v1_day_vote(
         Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
-                format!(r#"{{"error":"invalid json: {e}"}}"#),
+                json_err(format!("invalid json: {e}")),
             )
         }
     };
     let target = match crate::domain::DayEpoch::parse(req.day_epoch) {
         Ok(d) => d,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#))
+            return (StatusCode::BAD_REQUEST, json_err(e))
         }
     };
     let header_node = headers
         .get("X-Vault-Node-Id")
         .and_then(|v| v.to_str().ok());
-    // Optional hook: when a future mTLS layer maps client cert → node id, plumb it here.
     let mtls_peer_hook = headers
         .get("X-Vault-Mtls-Peer-Node")
         .and_then(|v| v.to_str().ok());
@@ -391,16 +495,17 @@ async fn v1_day_vote(
             .iter()
             .map(|(id, _)| id.as_str()),
     );
-    let voter = match crate::adapters::resolve_mesh_caller_identity(
+    let voter = match crate::adapters::resolve_mesh_caller_identity_with_principal(
         state.runtime.config.node_id.as_str(),
         &allowed,
         header_node,
         req.voter.as_deref(),
         mtls_peer_hook,
+        Some(&principal),
     ) {
         Ok(v) => v,
         Err(e) => {
-            return (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#))
+            return (StatusCode::BAD_REQUEST, json_err(e))
         }
     };
     match state.runtime.daily_rotation.record_vote(&voter, &target) {
@@ -413,7 +518,7 @@ async fn v1_day_vote(
                 target.as_str()
             ),
         ),
-        Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+        Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }
 
@@ -423,11 +528,14 @@ async fn v1_day_advance(State(state): State<AppState>) -> impl IntoResponse {
             StatusCode::OK,
             format!(r#"{{"day_epoch":"{}","advanced":true}}"#, d.as_str()),
         ),
-        Err(e) => (StatusCode::CONFLICT, format!(r#"{{"error":"{e}"}}"#)),
+        Err(e) => (StatusCode::CONFLICT, json_err(e)),
     }
 }
 
 async fn v1_reshare_trigger(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    if let Err(e) = state.runtime.auth.authorize_reshare_trigger() {
+        return (StatusCode::FORBIDDEN, json_err(e));
+    }
     #[derive(serde::Deserialize)]
     struct TriggerBody {
         #[serde(default)]
@@ -440,20 +548,63 @@ async fn v1_reshare_trigger(State(state): State<AppState>, body: Bytes) -> impl 
     match state.runtime.reshare_hook.trigger_manual(&reason) {
         Ok(()) => (
             StatusCode::OK,
-            format!(
-                r#"{{"reshared":true,"policy":"{}","reason":"{}"}}"#,
-                state.runtime.reshare_hook.policy().as_str(),
-                reason
-            ),
+            serde_json::json!({
+                "reshared": true,
+                "policy": state.runtime.reshare_hook.policy().as_str(),
+                "reason": reason,
+            })
+            .to_string(),
         ),
-        Err(e) => (StatusCode::CONFLICT, format!(r#"{{"error":"{e}"}}"#)),
+        Err(e) => (StatusCode::CONFLICT, json_err(e)),
+    }
+}
+
+async fn v1_frost_tr_commit(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    let req: crate::adapters::TrCommitRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                json_err(format!("invalid json: {e}")),
+            )
+        }
+    };
+    match state.runtime.tr_cosign_peer.handle_commit(&req) {
+        Ok(resp) => (
+            StatusCode::OK,
+            serde_json::to_string(&resp).unwrap_or_else(|e| json_err(e)),
+        ),
+        Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
+    }
+}
+
+async fn v1_frost_tr_sign_share(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    let req: crate::adapters::TrSignShareRequest = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                json_err(format!("invalid json: {e}")),
+            )
+        }
+    };
+    match state.runtime.tr_cosign_peer.handle_sign_share(&req) {
+        Ok(resp) => (
+            StatusCode::OK,
+            serde_json::to_string(&resp).unwrap_or_else(|e| json_err(e)),
+        ),
+        Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }
 
 /// Round1: start local part1 (`roster` / seated genesis) or ingest a peer package (`package_hex`).
 /// Optional `fanout: true` on start POSTs the local package to seated `VAULT_SEED_PEERS`.
 /// Omitting `roster` uses SEV-priority `genesis_roster` from boot seating (production-native path).
-async fn v1_dkg_round1(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+async fn v1_dkg_round1(
+    State(state): State<AppState>,
+    Extension(principal): Extension<crate::adapters::MeshPrincipal>,
+    body: Bytes,
+) -> impl IntoResponse {
     #[derive(serde::Deserialize)]
     struct Round1Body {
         session_id: String,
@@ -479,7 +630,7 @@ async fn v1_dkg_round1(State(state): State<AppState>, body: Bytes) -> impl IntoR
         Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
-                format!(r#"{{"error":"invalid json: {e}"}}"#),
+                json_err(format!("invalid json: {e}")),
             )
         }
     };
@@ -544,10 +695,11 @@ async fn v1_dkg_round1(State(state): State<AppState>, body: Bytes) -> impl IntoR
                     if let Err(e) = state.runtime.wire_dkg.fanout_round1(&wire).await {
                         return (
                             StatusCode::BAD_GATEWAY,
-                            format!(
-                                r#"{{"error":"{e}","status":{}}}"#,
-                                serde_json::to_string(&status).unwrap_or_default()
-                            ),
+                            serde_json::json!({
+                                "error": e.to_string(),
+                                "status": status,
+                            })
+                            .to_string(),
                         );
                     }
                 }
@@ -560,7 +712,7 @@ async fn v1_dkg_round1(State(state): State<AppState>, body: Bytes) -> impl IntoR
                     .to_string(),
                 )
             }
-            Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+            Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
         };
     }
 
@@ -570,9 +722,18 @@ async fn v1_dkg_round1(State(state): State<AppState>, body: Bytes) -> impl IntoR
             r#"{"error":"round1 requires roster (start) or package_hex (ingest)"}"#.into(),
         );
     };
+    let sender_node_id = req.sender_node_id.unwrap_or_default();
+    let lab_token = matches!(state.runtime.config.auth_mode, AuthMode::StaticToken);
+    if let Err(e) = crate::adapters::bind_dkg_sender_to_peer(
+        &sender_node_id,
+        Some(&principal),
+        lab_token,
+    ) {
+        return (StatusCode::UNAUTHORIZED, json_err(e));
+    }
     let msg = crate::adapters::Round1WireMessage {
         session_id: req.session_id,
-        sender_node_id: req.sender_node_id.unwrap_or_default(),
+        sender_node_id,
         sender_identifier: req.sender_identifier.unwrap_or(0),
         max_signers: req.max_signers.unwrap_or(0),
         min_signers: req.min_signers.unwrap_or(0),
@@ -582,14 +743,18 @@ async fn v1_dkg_round1(State(state): State<AppState>, body: Bytes) -> impl IntoR
     match state.runtime.wire_dkg.ingest_round1(msg) {
         Ok(status) => (
             StatusCode::OK,
-            serde_json::to_string(&status).unwrap_or_else(|e| format!(r#"{{"error":"{e}"}}"#)),
+            serde_json::to_string(&status).unwrap_or_else(|e| json_err(e)),
         ),
-        Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+        Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }
 
 /// Round2: ingest peer package, or `deliver: true` to fan-out local outbound packages.
-async fn v1_dkg_round2(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+async fn v1_dkg_round2(
+    State(state): State<AppState>,
+    Extension(principal): Extension<crate::adapters::MeshPrincipal>,
+    body: Bytes,
+) -> impl IntoResponse {
     #[derive(serde::Deserialize)]
     struct Round2Body {
         session_id: String,
@@ -615,7 +780,7 @@ async fn v1_dkg_round2(State(state): State<AppState>, body: Bytes) -> impl IntoR
         Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
-                format!(r#"{{"error":"invalid json: {e}"}}"#),
+                json_err(format!("invalid json: {e}")),
             )
         }
     };
@@ -625,7 +790,7 @@ async fn v1_dkg_round2(State(state): State<AppState>, body: Bytes) -> impl IntoR
             Ok(msgs) => {
                 if req.fanout {
                     if let Err(e) = state.runtime.wire_dkg.fanout_round2(&msgs).await {
-                        return (StatusCode::BAD_GATEWAY, format!(r#"{{"error":"{e}"}}"#));
+                        return (StatusCode::BAD_GATEWAY, json_err(e));
                     }
                 }
                 (
@@ -633,7 +798,7 @@ async fn v1_dkg_round2(State(state): State<AppState>, body: Bytes) -> impl IntoR
                     serde_json::json!({ "outbound": msgs }).to_string(),
                 )
             }
-            Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+            Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
         }
     } else {
         let Some(package_hex) = req.package_hex else {
@@ -642,9 +807,18 @@ async fn v1_dkg_round2(State(state): State<AppState>, body: Bytes) -> impl IntoR
                 r#"{"error":"round2 requires package_hex (ingest) or deliver=true"}"#.into(),
             );
         };
+        let sender_node_id = req.sender_node_id.unwrap_or_default();
+        let lab_token = matches!(state.runtime.config.auth_mode, AuthMode::StaticToken);
+        if let Err(e) = crate::adapters::bind_dkg_sender_to_peer(
+            &sender_node_id,
+            Some(&principal),
+            lab_token,
+        ) {
+            return (StatusCode::UNAUTHORIZED, json_err(e));
+        }
         let msg = crate::adapters::Round2WireMessage {
             session_id: req.session_id,
-            sender_node_id: req.sender_node_id.unwrap_or_default(),
+            sender_node_id,
             sender_identifier: req.sender_identifier.unwrap_or(0),
             recipient_node_id: req.recipient_node_id.unwrap_or_default(),
             recipient_identifier: req.recipient_identifier.unwrap_or(0),
@@ -654,9 +828,9 @@ async fn v1_dkg_round2(State(state): State<AppState>, body: Bytes) -> impl IntoR
         match state.runtime.wire_dkg.ingest_round2(msg) {
             Ok(status) => (
                 StatusCode::OK,
-                serde_json::to_string(&status).unwrap_or_else(|e| format!(r#"{{"error":"{e}"}}"#)),
+                serde_json::to_string(&status).unwrap_or_else(|e| json_err(e)),
             ),
-            Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+            Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
         }
     }
 }
@@ -668,7 +842,7 @@ async fn v1_dkg_round3(State(state): State<AppState>, body: Bytes) -> impl IntoR
         Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
-                format!(r#"{{"error":"invalid json: {e}"}}"#),
+                json_err(format!("invalid json: {e}")),
             )
         }
     };
@@ -676,9 +850,9 @@ async fn v1_dkg_round3(State(state): State<AppState>, body: Bytes) -> impl IntoR
         return match state.runtime.wire_dkg.status(&req.session_id) {
             Ok(status) => (
                 StatusCode::OK,
-                serde_json::to_string(&status).unwrap_or_else(|e| format!(r#"{{"error":"{e}"}}"#)),
+                serde_json::to_string(&status).unwrap_or_else(|e| json_err(e)),
             ),
-            Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+            Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
         };
     }
     match state
@@ -688,9 +862,9 @@ async fn v1_dkg_round3(State(state): State<AppState>, body: Bytes) -> impl IntoR
     {
         Ok(status) => (
             StatusCode::OK,
-            serde_json::to_string(&status).unwrap_or_else(|e| format!(r#"{{"error":"{e}"}}"#)),
+            serde_json::to_string(&status).unwrap_or_else(|e| json_err(e)),
         ),
-        Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+        Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }
 
@@ -707,9 +881,9 @@ async fn v1_dkg_status(
     match state.runtime.wire_dkg.status(session_id) {
         Ok(status) => (
             StatusCode::OK,
-            serde_json::to_string(&status).unwrap_or_else(|e| format!(r#"{{"error":"{e}"}}"#)),
+            serde_json::to_string(&status).unwrap_or_else(|e| json_err(e)),
         ),
-        Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+        Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }
 
@@ -727,23 +901,23 @@ async fn v1_intent(State(state): State<AppState>, body: Bytes) -> impl IntoRespo
         Err(e) => {
             return (
                 StatusCode::BAD_REQUEST,
-                format!(r#"{{"error":"invalid json: {e}"}}"#),
+                json_err(format!("invalid json: {e}")),
             )
         }
     };
     if let Err(e) = validate_destination(state.runtime.config.bitcoin_network, &req.destination) {
-        return (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#));
+        return (StatusCode::BAD_REQUEST, json_err(e));
     }
     let bucket = match BucketKind::parse(&req.bucket) {
         Ok(b) => b,
-        Err(e) => return (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+        Err(e) => return (StatusCode::BAD_REQUEST, json_err(e)),
     };
     let policy_hash = match state.runtime.ledger.constitution() {
         Ok(c) => c.hash,
         Err(e) => {
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                format!(r#"{{"error":"{e}"}}"#),
+                json_err(e),
             )
         }
     };
@@ -755,11 +929,11 @@ async fn v1_intent(State(state): State<AppState>, body: Bytes) -> impl IntoRespo
         policy_hash,
     ) {
         Ok(i) => i,
-        Err(e) => return (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+        Err(e) => return (StatusCode::BAD_REQUEST, json_err(e)),
     };
     match state.runtime.gate_intent.execute(intent) {
         Ok(r) => (StatusCode::OK, r.to_json()),
-        Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+        Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }
 
@@ -800,12 +974,12 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
         ("GET", "/") | ("GET", "/health") | ("GET", "/v1/health") => {
             match runtime.get_health.execute() {
                 Ok(h) => ("200 OK", h.to_json()),
-                Err(e) => ("500 Internal Server Error", format!(r#"{{"error":"{e}"}}"#)),
+                Err(e) => ("500 Internal Server Error", json_err(e)),
             }
         }
         ("GET", "/ledger") => match runtime.get_ledger.execute() {
             Ok(s) => ("200 OK", s.to_json()),
-            Err(e) => ("500 Internal Server Error", format!(r#"{{"error":"{e}"}}"#)),
+            Err(e) => ("500 Internal Server Error", json_err(e)),
         },
         ("GET", "/threshold") => {
             let g = runtime.threshold.group();
@@ -826,37 +1000,37 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
                     .join(",");
                 ("200 OK", format!("[{body}]"))
             }
-            Err(e) => ("500 Internal Server Error", format!(r#"{{"error":"{e}"}}"#)),
+            Err(e) => ("500 Internal Server Error", json_err(e)),
         },
         ("GET", path) if path.starts_with("/release/check-hb/") => {
             let hb_raw = path.trim_start_matches("/release/check-hb/");
             match ContentHash::parse(hb_raw) {
                 Ok(hb) => match runtime.get_allowlist.require_hb(&hb) {
                     Ok(()) => ("200 OK", r#"{"allowlisted":true}"#.into()),
-                    Err(e) => ("403 Forbidden", format!(r#"{{"error":"{e}"}}"#)),
+                    Err(e) => ("403 Forbidden", json_err(e)),
                 },
-                Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+                Err(e) => ("400 Bad Request", json_err(e)),
             }
         }
         ("GET", path) if path.starts_with("/release/") => {
             let id = path.trim_start_matches("/release/");
             match runtime.release_mesh.get_candidate(id) {
                 Ok(c) => ("200 OK", c.to_json()),
-                Err(e) => ("404 Not Found", format!(r#"{{"error":"{e}"}}"#)),
+                Err(e) => ("404 Not Found", json_err(e)),
             }
         }
         ("POST", path) if path.starts_with("/epoch/propose/") => {
             let id = path.trim_start_matches("/epoch/propose/");
             match runtime.propose_epoch.execute(id) {
                 Ok(p) => ("200 OK", p.to_json()),
-                Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+                Err(e) => ("400 Bad Request", json_err(e)),
             }
         }
         ("POST", path) if path.starts_with("/epoch/vote/") => {
             let id = path.trim_start_matches("/epoch/vote/");
             match runtime.vote_epoch.execute(id) {
                 Ok(p) => ("200 OK", p.to_json()),
-                Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+                Err(e) => ("400 Bad Request", json_err(e)),
             }
         }
         ("POST", path) if path.starts_with("/sign/") => {
@@ -875,7 +1049,7 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
                     .run_lab_quorum_sign(session_id, message_hash)
                 {
                     Ok(sig) => ("200 OK", sig.to_json()),
-                    Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+                    Err(e) => ("400 Bad Request", json_err(e)),
                 }
             }
         }
@@ -917,10 +1091,10 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
                                 .execute_with_hashes(id, hs, hb, council)
                             {
                                 Ok(c) => ("200 OK", c.to_json()),
-                                Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+                                Err(e) => ("400 Bad Request", json_err(e)),
                             }
                         }
-                        Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+                        Err(e) => ("400 Bad Request", json_err(e)),
                     }
                 }
             }
@@ -947,7 +1121,7 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
                     .execute(id, source_label.as_bytes(), council)
                 {
                     Ok(c) => ("200 OK", c.to_json()),
-                    Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+                    Err(e) => ("400 Bad Request", json_err(e)),
                 }
             }
         }
@@ -959,23 +1133,23 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
             match NodeId::new(vault_id) {
                 Ok(vault) => match runtime.rebuild_release.execute(id, &vault) {
                     Ok(c) => ("200 OK", c.to_json()),
-                    Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+                    Err(e) => ("400 Bad Request", json_err(e)),
                 },
-                Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+                Err(e) => ("400 Bad Request", json_err(e)),
             }
         }
         ("POST", path) if path.starts_with("/release/cosign/") => {
             let id = path.trim_start_matches("/release/cosign/");
             match runtime.cosign_release.execute(id) {
                 Ok(c) => ("200 OK", c.to_json()),
-                Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+                Err(e) => ("400 Bad Request", json_err(e)),
             }
         }
         ("POST", path) if path.starts_with("/release/activate/") => {
             let id = path.trim_start_matches("/release/activate/");
             match runtime.activate_release.execute(id) {
                 Ok(e) => ("200 OK", e.to_json()),
-                Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+                Err(e) => ("400 Bad Request", json_err(e)),
             }
         }
         ("POST", path) if path.starts_with("/intent/gate/") => {
@@ -996,7 +1170,7 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
                 )
             } else if let Err(e) = validate_destination(runtime.config.bitcoin_network, destination)
             {
-                ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#))
+                ("400 Bad Request", json_err(e))
             } else {
                 match BucketKind::parse(bucket_raw) {
                     Ok(bucket) => match amount_raw.parse::<u64>() {
@@ -1012,14 +1186,14 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
                                     Ok(intent) => match runtime.gate_intent.execute(intent) {
                                         Ok(r) => ("200 OK", r.to_json()),
                                         Err(e) => {
-                                            ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#))
+                                            ("400 Bad Request", json_err(e))
                                         }
                                     },
-                                    Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+                                    Err(e) => ("400 Bad Request", json_err(e)),
                                 }
                             }
                             Err(e) => {
-                                ("500 Internal Server Error", format!(r#"{{"error":"{e}"}}"#))
+                                ("500 Internal Server Error", json_err(e))
                             }
                         },
                         Err(_) => (
@@ -1027,7 +1201,7 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
                             r#"{"error":"amount must be u64 sats"}"#.into(),
                         ),
                     },
-                    Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+                    Err(e) => ("400 Bad Request", json_err(e)),
                 }
             }
         }
@@ -1036,7 +1210,7 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
             match amount_raw.parse::<u64>() {
                 Ok(amount) => match runtime.allocate_profit.execute(amount) {
                     Ok(a) => ("200 OK", a.to_json()),
-                    Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+                    Err(e) => ("400 Bad Request", json_err(e)),
                 },
                 Err(_) => (
                     "400 Bad Request",
@@ -1046,14 +1220,14 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
         }
         ("GET", "/economy/status") => match runtime.get_economy.execute() {
             Ok(v) => ("200 OK", v.to_json()),
-            Err(e) => ("500 Internal Server Error", format!(r#"{{"error":"{e}"}}"#)),
+            Err(e) => ("500 Internal Server Error", json_err(e)),
         },
         ("POST", path) if path.starts_with("/economy/accrue/") => {
             let amount_raw = path.trim_start_matches("/economy/accrue/");
             match amount_raw.parse::<u64>() {
                 Ok(amount) => match runtime.accrue_rewards.execute(amount) {
                     Ok(a) => ("200 OK", a.to_json()),
-                    Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+                    Err(e) => ("400 Bad Request", json_err(e)),
                 },
                 Err(_) => (
                     "400 Bad Request",
@@ -1092,10 +1266,10 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
                         };
                         match runtime.upsert_miner.execute(op) {
                             Ok(()) => ("200 OK", r#"{"status":"upserted"}"#.into()),
-                            Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+                            Err(e) => ("400 Bad Request", json_err(e)),
                         }
                     }
-                    Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+                    Err(e) => ("400 Bad Request", json_err(e)),
                 }
             }
         }
@@ -1107,7 +1281,7 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
             match amount_raw.parse::<u64>() {
                 Ok(amount) => match runtime.propose_miner_payouts.execute(amount, prefix) {
                     Ok(p) => ("200 OK", p.to_json()),
-                    Err(e) => ("400 Bad Request", format!(r#"{{"error":"{e}"}}"#)),
+                    Err(e) => ("400 Bad Request", json_err(e)),
                 },
                 Err(_) => (
                     "400 Bad Request",

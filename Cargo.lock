@@ -1716,6 +1716,7 @@ dependencies = [
  "chacha20poly1305",
  "frost-secp256k1",
  "frost-secp256k1-tr",
+ "futures-util",
  "hex",
  "rand 0.8.7",
  "reqwest 0.12.28",
@@ -1726,7 +1727,9 @@ dependencies = [
  "serde_json",
  "sev-snp-utilities",
  "sha2",
+ "subtle",
  "tokio",
+ "tokio-rustls",
  "tower",
  "tower-http",
  "x509-parser",
@@ -2433,6 +2436,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c54fcab019b409d04215d3a17cb438fd7fbf192ee61461f20f4fe18704bc138"
 dependencies = [
  "aws-lc-rs",
+ "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
@@ -3053,6 +3057,7 @@ dependencies = [
  "futures-util",
  "http 1.4.2",
  "http-body 1.1.0",
+ "http-body-util",
  "pin-project-lite",
  "tower",
  "tower-layer",

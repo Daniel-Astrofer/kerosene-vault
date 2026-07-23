@@ -34,9 +34,13 @@ fn lab_mtls_cfg(listen: &str, certs: &Path, data_dir: &Path) -> VaultConfig {
         lab_root: "kerosene-lab-mtls".into(),
         seed_peers: vec![],
         peer_tiers: std::collections::BTreeMap::new(),
+        peer_tier_quotes: std::collections::BTreeMap::new(),
+        peer_tier_require_quote: false,
         refuse_sim: false,
         genesis_n: Some(2),
         online_count: Some(2),
+        online_static: false,
+        psbt_policy: kerosene_vault::domain::PsbtPolicy::lab_defaults(),
         lab_timelock_scale: 0,
         lab_timelock_env_set: false,
         lab_council_n: 3,
@@ -49,6 +53,9 @@ fn lab_mtls_cfg(listen: &str, certs: &Path, data_dir: &Path) -> VaultConfig {
         auth_mode: AuthMode::MutualTls,
         vault_token: None,
         users_destination_allowlist: vec![],
+        miners_destination_allowlist: vec![],
+        allow_manual_reshare: false,
+        lab_allow_raw_sighash: false,
         tls_cert_path: Some(certs.join("vault-server.crt").display().to_string()),
         tls_key_path: Some(certs.join("vault-server.key").display().to_string()),
         tls_client_ca_path: Some(certs.join("ca.crt").display().to_string()),
@@ -123,14 +130,18 @@ async fn mtls_axum_health_requires_client_cert() {
     let (cert, key, ca) = runtime.config.require_mtls_paths().unwrap();
     let server_config =
         build_mtls_server_config(Path::new(cert), Path::new(key), Path::new(ca)).unwrap();
-    let rustls_config = axum_server::tls_rustls::RustlsConfig::from_config(server_config);
+            let rustls_config = axum_server::tls_rustls::RustlsConfig::from_config(server_config);
+            let acceptor = kerosene_vault::adapters::PeerCertAcceptor::new(
+                axum_server::tls_rustls::RustlsAcceptor::new(rustls_config),
+            );
 
-    let serve = tokio::spawn(async move {
-        axum_server::bind_rustls(addr, rustls_config)
-            .serve(app.into_make_service())
-            .await
-            .expect("serve");
-    });
+            let serve = tokio::spawn(async move {
+                axum_server::bind(addr)
+                    .acceptor(acceptor)
+                    .serve(app.into_make_service())
+                    .await
+                    .expect("serve");
+            });
 
     // Wait briefly for bind.
     tokio::time::sleep(Duration::from_millis(150)).await;

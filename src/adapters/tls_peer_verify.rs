@@ -26,7 +26,8 @@ pub enum TlsPeerVerifyPolicy {
     Hostname,
     /// Chain to lab/ops CA + URI SAN must equal `expected` SPIFFE ID (ignore DNS).
     Spiffe { expected: String },
-    /// Chain + (hostname match **or** SPIFFE URI). Default for Tor mTLS / onion peers.
+    /// Chain + SPIFFE URI **and** (when host is `.onion`) matching onion DNS SAN.
+    /// Env name remains `onion_or_spiffe` for compat; semantics are AND (#24).
     OnionOrSpiffe { expected: String },
 }
 
@@ -81,11 +82,11 @@ pub fn build_mtls_rustls_client_config(
         }
         TlsPeerVerifyPolicy::Spiffe { expected }
         | TlsPeerVerifyPolicy::OnionOrSpiffe { expected } => {
-            let require_spiffe = matches!(verify, TlsPeerVerifyPolicy::Spiffe { .. });
+            let require_onion_san = matches!(verify, TlsPeerVerifyPolicy::OnionOrSpiffe { .. });
             let verifier = Arc::new(OnionOrSpiffeVerifier::new(
                 roots,
                 expected.clone(),
-                require_spiffe,
+                require_onion_san,
             )?);
             ClientConfig::builder()
                 .dangerous()
@@ -188,19 +189,19 @@ fn name_error(err: &RustlsError) -> bool {
     )
 }
 
-/// Wraps webpki chain+name verify; on name mismatch accepts SPIFFE URI and/or `.onion` DNS SAN.
+/// Wraps webpki chain+name verify; requires SPIFFE URI, and onion DNS SAN for `.onion` hosts.
 struct OnionOrSpiffeVerifier {
     inner: Arc<WebPkiServerVerifier>,
     expected_spiffe: String,
-    /// When true, hostname match alone is insufficient — SPIFFE URI must be present.
-    require_spiffe: bool,
+    /// When true (OnionOrSpiffe policy), `.onion` hosts must also present a matching DNS SAN.
+    require_onion_san: bool,
 }
 
 impl OnionOrSpiffeVerifier {
     fn new(
         roots: RootCertStore,
         expected_spiffe: String,
-        require_spiffe: bool,
+        require_onion_san: bool,
     ) -> Result<Self, DomainError> {
         if expected_spiffe.trim().is_empty() || !expected_spiffe.starts_with("spiffe://") {
             return Err(DomainError::AuthRejected(
@@ -213,7 +214,7 @@ impl OnionOrSpiffeVerifier {
         Ok(Self {
             inner,
             expected_spiffe,
-            require_spiffe,
+            require_onion_san,
         })
     }
 
@@ -228,7 +229,8 @@ impl OnionOrSpiffeVerifier {
                 .any(|d| d.eq_ignore_ascii_case(host))
     }
 
-    fn fallback_identity_ok(
+    /// AND semantics: SPIFFE always required; onion host additionally needs matching DNS SAN.
+    fn identity_ok(
         &self,
         end_entity: &CertificateDer<'_>,
         server_name: &ServerName<'_>,
@@ -238,16 +240,14 @@ impl OnionOrSpiffeVerifier {
                 std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()),
             ))))
         })?;
-        if self.spiffe_ok(&uris) {
-            return Ok(true);
+        if !self.spiffe_ok(&uris) {
+            return Ok(false);
         }
-        if !self.require_spiffe {
-            let host = server_name_host(server_name);
-            if Self::onion_san_ok(&host, &dns) {
-                return Ok(true);
-            }
+        let host = server_name_host(server_name);
+        if self.require_onion_san && host.ends_with(".onion") {
+            return Ok(Self::onion_san_ok(&host, &dns));
         }
-        Ok(false)
+        Ok(true)
     }
 }
 
@@ -255,7 +255,7 @@ impl std::fmt::Debug for OnionOrSpiffeVerifier {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("OnionOrSpiffeVerifier")
             .field("expected_spiffe", &self.expected_spiffe)
-            .field("require_spiffe", &self.require_spiffe)
+            .field("require_onion_san", &self.require_onion_san)
             .finish_non_exhaustive()
     }
 }
@@ -277,21 +277,17 @@ impl ServerCertVerifier for OnionOrSpiffeVerifier {
             now,
         ) {
             Ok(v) => {
-                if self.require_spiffe {
-                    if self.fallback_identity_ok(end_entity, server_name)? {
-                        Ok(v)
-                    } else {
-                        Err(RustlsError::InvalidCertificate(
-                            CertificateError::NotValidForName,
-                        ))
-                    }
-                } else {
+                if self.identity_ok(end_entity, server_name)? {
                     Ok(v)
+                } else {
+                    Err(RustlsError::InvalidCertificate(
+                        CertificateError::NotValidForName,
+                    ))
                 }
             }
             Err(err) if name_error(&err) => {
-                // Chain already validated by inner; name missed — allow SPIFFE / onion SAN.
-                if self.fallback_identity_ok(end_entity, server_name)? {
+                // Chain already validated by inner; name missed — require SPIFFE (+ onion SAN).
+                if self.identity_ok(end_entity, server_name)? {
                     Ok(ServerCertVerified::assertion())
                 } else {
                     Err(err)

@@ -193,6 +193,8 @@ pub struct PolicyReshareHook {
     tr_shares: Arc<FrostTrShareSlot>,
     share_store: Option<Arc<dyn ShareStorePort>>,
     governance: Option<Arc<AccrueGovernanceWork>>,
+    /// When false (distributed_wire / staging/prod), refuse in-process N-share reshare.
+    allow_in_process_nshare_reshare: bool,
 }
 
 impl PolicyReshareHook {
@@ -211,7 +213,14 @@ impl PolicyReshareHook {
             tr_shares,
             share_store: None,
             governance: None,
+            // Default: dealer_lab feature may in-process; callers override for wire.
+            allow_in_process_nshare_reshare: cfg!(feature = "dealer_lab"),
         }
+    }
+
+    pub fn with_allow_in_process_nshare_reshare(mut self, allow: bool) -> Self {
+        self.allow_in_process_nshare_reshare = allow;
+        self
     }
 
     pub fn with_share_store(mut self, store: Arc<dyn ShareStorePort>) -> Self {
@@ -386,6 +395,24 @@ impl PolicyReshareHook {
         to_day: Option<&DayEpoch>,
         participants: &[NodeId],
     ) -> Result<(), DomainError> {
+        // Critical #6: in-process N-share reshare is dealer_lab only. distributed_wire
+        // nodes hold a single local share — refuse rather than assemble N shares.
+        if !self.allow_in_process_nshare_reshare {
+            return Err(DomainError::ThresholdError(
+                "in-process N-share FROST reshare refused outside dealer_lab; use multi-party wire reshare (or VAULT_DKG_MODE=dealer_lab in lab only)".into(),
+            ));
+        }
+        let intent_count = self.shares.snapshot().map(|s| s.key_packages.len()).unwrap_or(0);
+        let tr_count = self
+            .tr_shares
+            .snapshot()
+            .map(|s| s.key_packages.len())
+            .unwrap_or(0);
+        if intent_count <= 1 && tr_count <= 1 {
+            return Err(DomainError::ThresholdError(
+                "in-process reshare requires N local shares (dealer_lab); single-share mesh must reshare over wire".into(),
+            ));
+        }
         self.refresh_intent(reason, from_day, to_day)?;
         self.refresh_taproot(reason, from_day, to_day)?;
         let rewarded = self.reward_participants(participants)?;

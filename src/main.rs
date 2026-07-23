@@ -2,7 +2,8 @@ use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
-use kerosene_vault::adapters::{build_mtls_server_config, build_router};
+use axum_server::tls_rustls::RustlsAcceptor;
+use kerosene_vault::adapters::{build_mtls_server_config, build_router, PeerCertAcceptor};
 use kerosene_vault::bootstrap::{AuthMode, VaultConfig, VaultRuntime};
 
 #[tokio::main]
@@ -65,6 +66,8 @@ async fn main() {
                 }
             };
             let rustls_config = axum_server::tls_rustls::RustlsConfig::from_config(server_config);
+            // Inject verified client leaf into request extensions for SPIFFE→role binding.
+            let acceptor = PeerCertAcceptor::new(RustlsAcceptor::new(rustls_config));
             let addr: SocketAddr = match listen_addr.parse() {
                 Ok(a) => a,
                 Err(e) => {
@@ -72,8 +75,9 @@ async fn main() {
                     std::process::exit(1);
                 }
             };
-            eprintln!("tls=mtls (client cert required)");
-            if let Err(e) = axum_server::bind_rustls(addr, rustls_config)
+            eprintln!("tls=mtls (client cert required; SPIFFE principal binding on)");
+            if let Err(e) = axum_server::bind(addr)
+                .acceptor(acceptor)
                 .serve(app.into_make_service())
                 .await
             {

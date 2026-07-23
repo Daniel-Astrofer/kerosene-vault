@@ -409,10 +409,7 @@ impl ShareStorePort for TeeSealAdapter {
 }
 
 fn atomic_write(path: &Path, data: &[u8]) -> Result<(), DomainError> {
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, data).map_err(|e| DomainError::ShareStoreForbidden(format!("write: {e}")))?;
-    fs::rename(&tmp, path).map_err(|e| DomainError::ShareStoreForbidden(format!("rename: {e}")))?;
-    Ok(())
+    super::durable_fs::atomic_write_fsync(path, data)
 }
 
 #[cfg(feature = "tee_hw")]

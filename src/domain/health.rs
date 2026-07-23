@@ -56,11 +56,22 @@ pub struct NodeHealth {
 }
 
 impl NodeHealth {
+    /// Public unauthenticated probe — status only (no node_id / roster / tier).
+    pub fn to_public_json(&self) -> String {
+        format!(
+            r#"{{"status":"{}","peer_count":{},"peer_reachability":"{}"}}"#,
+            self.status.as_str(),
+            self.peer_count,
+            self.peer_reachability.as_str()
+        )
+    }
+
+    /// Authenticated detail (ops / ceremony checklist) — includes roster and tier.
     pub fn to_json(&self) -> String {
         let roster = self
             .genesis_roster
             .iter()
-            .map(|id| format!(r#""{id}""#))
+            .map(|id| serde_json::to_string(id).unwrap_or_else(|_| "\"\"".into()))
             .collect::<Vec<_>>()
             .join(",");
         let reachable = match self.peers_reachable {
@@ -68,11 +79,11 @@ impl NodeHealth {
             None => "null".into(),
         };
         format!(
-            r#"{{"node_id":"{}","status":"{}","node_tier":"{}","attestation_mode":"{}","tee_available":{},"peer_count":{},"genesis_roster":[{}],"peer_reachability":"{}","peers_reachable":{}}}"#,
-            self.node_id,
+            r#"{{"node_id":{},"status":"{}","node_tier":{},"attestation_mode":{},"tee_available":{},"peer_count":{},"genesis_roster":[{}],"peer_reachability":"{}","peers_reachable":{}}}"#,
+            serde_json::to_string(self.node_id.as_str()).unwrap_or_else(|_| "\"\"".into()),
             self.status.as_str(),
-            self.node_tier,
-            self.attestation_mode,
+            serde_json::to_string(&self.node_tier).unwrap_or_else(|_| "\"\"".into()),
+            serde_json::to_string(&self.attestation_mode).unwrap_or_else(|_| "\"\"".into()),
             self.tee_available,
             self.peer_count,
             roster,

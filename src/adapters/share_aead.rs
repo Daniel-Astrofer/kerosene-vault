@@ -9,18 +9,23 @@
 //! envelope (see [`super::share_tpm`]) **before** constructing this store.
 //! TPM ≠ SEV: disk-at-rest only; clear fallback is lab-only (`VAULT_SHARE_TPM_CLEAR_FALLBACK=1`).
 //! See `VAULT_MESH_PLAN.md` §3.1.
+//!
+//! # AAD (#20)
+//! Ciphertext is bound to `share_id` via AEAD additional authenticated data so a
+//! filesystem blob cannot be swapped onto another share path and still decrypt.
 
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use argon2::{Algorithm, Argon2, Params, Version};
-use chacha20poly1305::aead::{Aead, KeyInit};
+use chacha20poly1305::aead::{Aead, KeyInit, Payload};
 use chacha20poly1305::{ChaCha20Poly1305, Nonce};
 use rand::RngCore;
 use secrecy::{ExposeSecret, SecretString};
 use sha2::{Digest, Sha256};
 use zeroize::Zeroize;
 
+use super::durable_fs::atomic_write_fsync;
 use crate::application::ShareStorePort;
 use crate::domain::DomainError;
 
@@ -52,6 +57,13 @@ impl AeadDiskShareStore {
         self.root.join(format!("share-{id_hash}.bin"))
     }
 
+    fn aad(share_id: &str) -> Vec<u8> {
+        let mut out = Vec::with_capacity(32 + share_id.len());
+        out.extend_from_slice(b"kerosene-vault-share-aead-v1|");
+        out.extend_from_slice(share_id.as_bytes());
+        out
+    }
+
     fn derive_key(&self, salt: &[u8; 16]) -> Result<[u8; 32], DomainError> {
         let params = Params::new(19_456, 2, 1, Some(32)).map_err(|e| {
             DomainError::ShareStoreForbidden(format!("argon2 params: {e}"))
@@ -67,7 +79,11 @@ impl AeadDiskShareStore {
 
 impl ShareStorePort for AeadDiskShareStore {
     fn store_kind(&self) -> &'static str {
-        if self.tpm_sealed_passphrase { "aead_disk_tpm" } else { "aead_disk" }
+        if self.tpm_sealed_passphrase {
+            "aead_disk_tpm"
+        } else {
+            "aead_disk"
+        }
     }
 
     fn put_share(&self, share_id: &str, plaintext: &[u8]) -> Result<(), DomainError> {
@@ -83,14 +99,21 @@ impl ShareStorePort for AeadDiskShareStore {
         let mut nonce_bytes = [0u8; 12];
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
+        let aad = Self::aad(share_id);
         let ciphertext = cipher
-            .encrypt(nonce, plaintext)
+            .encrypt(
+                nonce,
+                Payload {
+                    msg: plaintext,
+                    aad: &aad,
+                },
+            )
             .map_err(|_| DomainError::ShareStoreForbidden("encrypt failed".into()))?;
         let mut out = Vec::with_capacity(16 + 12 + ciphertext.len());
         out.extend_from_slice(&salt);
         out.extend_from_slice(&nonce_bytes);
         out.extend_from_slice(&ciphertext);
-        atomic_write(&self.path_for(share_id), &out)
+        atomic_write_fsync(&self.path_for(share_id), &out)
     }
 
     fn get_share(&self, share_id: &str) -> Result<Vec<u8>, DomainError> {
@@ -109,15 +132,52 @@ impl ShareStorePort for AeadDiskShareStore {
             .map_err(|e| DomainError::ShareStoreForbidden(format!("cipher: {e}")))?;
         key.zeroize();
         let nonce = Nonce::from_slice(nonce_bytes);
+        let aad = Self::aad(share_id);
         cipher
-            .decrypt(nonce, ciphertext)
+            .decrypt(
+                nonce,
+                Payload {
+                    msg: ciphertext,
+                    aad: &aad,
+                },
+            )
             .map_err(|_| DomainError::ShareStoreForbidden("decrypt failed".into()))
     }
 }
 
-fn atomic_write(path: &Path, data: &[u8]) -> Result<(), DomainError> {
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, data).map_err(|e| DomainError::ShareStoreForbidden(format!("write: {e}")))?;
-    fs::rename(&tmp, path).map_err(|e| DomainError::ShareStoreForbidden(format!("rename: {e}")))?;
-    Ok(())
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    struct TempProbe(PathBuf);
+    impl TempProbe {
+        fn new(name: &str) -> Self {
+            let p = std::env::temp_dir().join(format!(
+                "kv-aead-{name}-{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&p);
+            fs::create_dir_all(&p).unwrap();
+            Self(p)
+        }
+    }
+    impl Drop for TempProbe {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn aad_rejects_share_id_swap() {
+        let dir = TempProbe::new("aad");
+        let store = AeadDiskShareStore::new(&dir.0, "test-pass");
+        store.put_share("share-a", b"secret-a").unwrap();
+        let blob = fs::read(store.path_for("share-a")).unwrap();
+        // Copy ciphertext onto share-b's path — decrypt must fail (AAD bind).
+        let path_b = store.path_for("share-b");
+        fs::write(&path_b, &blob).unwrap();
+        assert!(store.get_share("share-b").is_err());
+        assert_eq!(store.get_share("share-a").unwrap(), b"secret-a");
+    }
 }

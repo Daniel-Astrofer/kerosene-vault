@@ -3,17 +3,20 @@
 //! Lab may still bind signing to the active day. Calendar ahead of the ledger day
 //! without a quorum `advance` → stale rejection (no silent auto-roll).
 //!
-//! `day_epoch` is persisted under `VAULT_DATA_DIR` so restarts resume the same
-//! ledger day. Cross-node votes: authenticated outbound fan-out over the peer
-//! channel (mTLS / token) collects peer self-votes keyed by seed peer id until
-//! signing threshold; inbound `/v1/day/vote` binds voter via auth identity hooks.
+//! `day_epoch` **and** the vote map are persisted under `VAULT_DATA_DIR` so restarts
+//! resume the same ledger day and in-flight votes. Cross-node votes: authenticated
+//! outbound fan-out over the peer channel (mTLS / token) collects peer self-votes
+//! keyed by seed peer id until signing threshold; inbound `/v1/day/vote` binds
+//! voter via auth identity hooks.
 
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
+use super::durable_fs::atomic_write_fsync;
 use super::http_peer::PeerHttpSettings;
+use super::sync_util::lock_mutex;
 use super::tls_peer_verify::{build_mtls_rustls_client_config, TlsPeerVerifyPolicy};
 use crate::application::{ClockPort, DailyRotationPort, ReshareHookPort};
 use crate::domain::{DayEpoch, DomainError};
@@ -60,7 +63,7 @@ impl ReshareHookPort for RecordingReshareHook {
     ) -> Result<(), DomainError> {
         self.advances
             .lock()
-            .expect("reshare log")
+            .map_err(|_| DomainError::ThresholdError("mutex poisoned: reshare log".into()))?
             .push((from.as_str().to_string(), to.as_str().to_string()));
         Ok(())
     }
@@ -320,10 +323,14 @@ impl QuorumDailyRotation {
             Some(path) => load_day_epoch(path).unwrap_or(from_clock),
             None => from_clock,
         };
+        let votes = match persist_path.as_ref() {
+            Some(path) => load_day_votes(&votes_path(path)).unwrap_or_default(),
+            None => HashMap::new(),
+        };
         Self {
             clock,
             current: Mutex::new(current),
-            votes: Mutex::new(HashMap::new()),
+            votes: Mutex::new(votes),
             quorum_t: quorum_t.max(1),
             local_voter: local_voter.into(),
             reshare,
@@ -342,16 +349,31 @@ impl QuorumDailyRotation {
 
     /// Current in-memory vote map snapshot (tests / observability).
     pub fn vote_count_for(&self, target: &DayEpoch) -> usize {
-        let votes = self.votes.lock().expect("day votes");
-        votes.values().filter(|e| *e == target).count()
+        lock_mutex(&self.votes, "day votes")
+            .map(|votes| votes.values().filter(|e| *e == target).count())
+            .unwrap_or(0)
     }
 
     fn write_persist(&self, epoch: &DayEpoch) -> Result<(), DomainError> {
         let Some(path) = self.persist_path.as_ref() else {
             return Ok(());
         };
-        persist_day_epoch(path, epoch)
+        persist_day_epoch(path, epoch)?;
+        let votes = lock_mutex(&self.votes, "day votes")?;
+        persist_day_votes(&votes_path(path), &votes)
     }
+
+    fn persist_votes_only(&self) -> Result<(), DomainError> {
+        let Some(path) = self.persist_path.as_ref() else {
+            return Ok(());
+        };
+        let votes = lock_mutex(&self.votes, "day votes")?;
+        persist_day_votes(&votes_path(path), &votes)
+    }
+}
+
+fn votes_path(epoch_path: &Path) -> PathBuf {
+    epoch_path.with_extension("votes.json")
 }
 
 fn load_day_epoch(path: &Path) -> Option<DayEpoch> {
@@ -360,25 +382,40 @@ fn load_day_epoch(path: &Path) -> Option<DayEpoch> {
 }
 
 fn persist_day_epoch(path: &Path, epoch: &DayEpoch) -> Result<(), DomainError> {
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| {
-            DomainError::ThresholdError(format!("day_epoch mkdir: {e}"))
-        })?;
+    atomic_write_fsync(path, format!("{}\n", epoch.as_str()).as_bytes()).map_err(|e| {
+        DomainError::ThresholdError(format!("day_epoch persist: {e}"))
+    })
+}
+
+fn load_day_votes(path: &Path) -> Option<HashMap<String, DayEpoch>> {
+    let raw = fs::read_to_string(path).ok()?;
+    let map: HashMap<String, String> = serde_json::from_str(&raw).ok()?;
+    let mut out = HashMap::new();
+    for (voter, epoch) in map {
+        let Ok(e) = DayEpoch::parse(epoch) else {
+            continue;
+        };
+        out.insert(voter, e);
     }
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, format!("{}\n", epoch.as_str())).map_err(|e| {
-        DomainError::ThresholdError(format!("day_epoch write: {e}"))
+    Some(out)
+}
+
+fn persist_day_votes(path: &Path, votes: &HashMap<String, DayEpoch>) -> Result<(), DomainError> {
+    let serial: HashMap<&str, &str> = votes
+        .iter()
+        .map(|(k, v)| (k.as_str(), v.as_str()))
+        .collect();
+    let body = serde_json::to_vec(&serial).map_err(|e| {
+        DomainError::ThresholdError(format!("day votes serialize: {e}"))
     })?;
-    fs::rename(&tmp, path).map_err(|e| {
-        DomainError::ThresholdError(format!("day_epoch rename: {e}"))
-    })?;
-    Ok(())
+    atomic_write_fsync(path, &body)
+        .map_err(|e| DomainError::ThresholdError(format!("day votes persist: {e}")))
 }
 
 impl DailyRotationPort for QuorumDailyRotation {
     fn current_day_epoch(&self) -> Result<DayEpoch, DomainError> {
         let live = DayEpoch::from_unix_secs(self.clock.unix_now_secs());
-        let g = self.current.lock().expect("day_epoch");
+        let g = lock_mutex(&self.current, "day_epoch")?;
         if live > *g {
             return Err(DomainError::DayEpochStale {
                 have: g.as_str().to_string(),
@@ -389,8 +426,11 @@ impl DailyRotationPort for QuorumDailyRotation {
     }
 
     fn record_vote(&self, voter: &str, target: &DayEpoch) -> Result<(), DomainError> {
-        let mut votes = self.votes.lock().expect("day votes");
-        votes.insert(voter.to_string(), target.clone());
+        {
+            let mut votes = lock_mutex(&self.votes, "day votes")?;
+            votes.insert(voter.to_string(), target.clone());
+        }
+        self.persist_votes_only()?;
         Ok(())
     }
 
@@ -407,7 +447,7 @@ impl DailyRotationPort for QuorumDailyRotation {
         }
 
         let have = {
-            let votes = self.votes.lock().expect("day votes");
+            let votes = lock_mutex(&self.votes, "day votes")?;
             votes.values().filter(|e| *e == &live).count()
         };
         if have < self.quorum_t {
@@ -417,7 +457,7 @@ impl DailyRotationPort for QuorumDailyRotation {
             });
         }
 
-        let mut g = self.current.lock().expect("day_epoch");
+        let mut g = lock_mutex(&self.current, "day_epoch")?;
         let from = g.clone();
         if live == from {
             // Idempotent: still ensure disk matches (boot without file).
@@ -435,7 +475,7 @@ impl DailyRotationPort for QuorumDailyRotation {
         drop(g);
         self.write_persist(&live)?;
         let participants: Vec<crate::domain::NodeId> = {
-            let votes = self.votes.lock().expect("day votes");
+            let votes = lock_mutex(&self.votes, "day votes")?;
             votes
                 .iter()
                 .filter(|(_, e)| *e == &live)
@@ -449,7 +489,7 @@ impl DailyRotationPort for QuorumDailyRotation {
 
     fn require_epoch(&self, bound: &DayEpoch) -> Result<(), DomainError> {
         let cur = {
-            let g = self.current.lock().expect("day_epoch");
+            let g = lock_mutex(&self.current, "day_epoch")?;
             g.clone()
         };
         if bound != &cur {
@@ -638,6 +678,32 @@ mod tests {
             path,
         );
         assert_eq!(rot2.current_day_epoch().unwrap().as_str(), "2024-01-02");
+    }
+
+    #[test]
+    fn day_votes_persist_across_restart() {
+        let tmp = TempProbe::new("votes");
+        let path = tmp.0.join("day_epoch");
+        let clock = Arc::new(FakeClock(AtomicU64::new(1_704_067_200 + 86_400)));
+        let target = DayEpoch::from_unix_secs(1_704_067_200 + 86_400);
+        let rot = QuorumDailyRotation::with_persist(
+            clock.clone(),
+            2,
+            "v1",
+            Arc::new(RecordingReshareHook::new()),
+            path.clone(),
+        );
+        rot.record_vote("v2", &target).unwrap();
+        assert_eq!(rot.vote_count_for(&target), 1);
+
+        let rot2 = QuorumDailyRotation::with_persist(
+            clock,
+            2,
+            "v1",
+            Arc::new(RecordingReshareHook::new()),
+            path,
+        );
+        assert_eq!(rot2.vote_count_for(&target), 1);
     }
 
     #[test]

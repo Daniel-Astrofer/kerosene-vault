@@ -12,6 +12,7 @@ mod intent_bind;
 mod ledger;
 mod node_tier;
 mod peer;
+mod psbt_policy;
 mod release;
 mod reshare_policy;
 mod reward;
@@ -36,6 +37,7 @@ pub use error::DomainError;
 pub use health::{HealthStatus, NodeHealth, PeerReachability};
 pub use intent_bind::assert_outputs_match_intent;
 pub use ledger::{Epoch, EpochAdvanceProposal, LedgerEntry, LedgerEventKind};
+pub use psbt_policy::{PsbtPolicy, RbfPolicy};
 pub use peer::{NodeId, PeerEndpoint, PeerInfo};
 pub use release::{
     lab_rebuild_binary_hash, AllowlistEntry, ContentHash, ReleaseCandidate, ReleasePhase,

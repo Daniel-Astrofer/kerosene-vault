@@ -37,6 +37,8 @@ pub enum DomainError {
     },
     DestinationNotAllowed(String),
     IntentReplay(String),
+    /// Soft Intent / anti-nonce reservation expired or missing before commit.
+    ReservationMissing(String),
     UsersOmnibusProtected,
     LabFlagForbidden(String),
     RequestRejected(String),
@@ -104,6 +106,7 @@ impl fmt::Display for DomainError {
             }
             Self::DestinationNotAllowed(d) => write!(f, "destination not allowed: {d}"),
             Self::IntentReplay(id) => write!(f, "intent replay: {id}"),
+            Self::ReservationMissing(id) => write!(f, "reservation missing or expired: {id}"),
             Self::UsersOmnibusProtected => {
                 write!(f, "USERS omnibus protected: operational bucket cannot debit USERS")
             }

@@ -9,21 +9,25 @@
 //! - Peer prepare uses HTTP + `X-Vault-Token` (lab) or no token header when mTLS
 //!   auth is active (identity is the transport).
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::http_peer::PeerHttpSettings;
 use super::tls_peer_verify::{build_mtls_rustls_client_config, TlsPeerVerifyPolicy};
 use crate::application::AntiNoncePort;
 use crate::domain::{quorum_two_thirds, DomainError};
 
+/// Soft HTTP prepare TTL (High #8) — expires unless promoted by claim_session.
+const PREPARE_TTL: Duration = Duration::from_secs(120);
+
 pub struct PersistedAntiNonce {
     path: PathBuf,
     inner: Mutex<HashSet<String>>,
+    soft: Mutex<HashMap<String, Instant>>,
 }
 
 impl PersistedAntiNonce {
@@ -41,6 +45,7 @@ impl PersistedAntiNonce {
         Ok(Self {
             path,
             inner: Mutex::new(set),
+            soft: Mutex::new(HashMap::new()),
         })
     }
 
@@ -57,6 +62,11 @@ impl PersistedAntiNonce {
         Ok(())
     }
 
+    fn sweep_soft(soft: &mut HashMap<String, Instant>) {
+        let now = Instant::now();
+        soft.retain(|_, exp| *exp > now);
+    }
+
     /// Durable check-and-insert. Returns `true` if `session_id` was already present.
     pub fn prepare(&self, session_id: &str) -> Result<bool, DomainError> {
         let mut g = self.inner.lock().expect("anti-nonce");
@@ -65,6 +75,24 @@ impl PersistedAntiNonce {
         }
         self.append_id(session_id)?;
         g.insert(session_id.to_string());
+        let mut soft = self.soft.lock().expect("anti-nonce soft");
+        soft.remove(session_id);
+        Ok(false)
+    }
+
+    /// Soft TTL reservation for HTTP prepare (anti-DoS). Returns `true` if blocked.
+    pub fn prepare_soft(&self, session_id: &str) -> Result<bool, DomainError> {
+        let g = self.inner.lock().expect("anti-nonce");
+        if g.contains(session_id) {
+            return Ok(true);
+        }
+        drop(g);
+        let mut soft = self.soft.lock().expect("anti-nonce soft");
+        Self::sweep_soft(&mut soft);
+        if soft.contains_key(session_id) {
+            return Ok(true);
+        }
+        soft.insert(session_id.to_string(), Instant::now() + PREPARE_TTL);
         Ok(false)
     }
 }
@@ -81,11 +109,17 @@ impl AntiNoncePort for PersistedAntiNonce {
 
     fn is_consumed(&self, session_id: &str) -> Result<bool, DomainError> {
         let g = self.inner.lock().expect("anti-nonce");
-        Ok(g.contains(session_id))
+        if g.contains(session_id) {
+            return Ok(true);
+        }
+        drop(g);
+        let mut soft = self.soft.lock().expect("anti-nonce soft");
+        Self::sweep_soft(&mut soft);
+        Ok(soft.contains_key(session_id))
     }
 
     fn prepare_remote(&self, session_id: &str) -> Result<bool, DomainError> {
-        self.prepare(session_id)
+        self.prepare_soft(session_id)
     }
 }
 
@@ -175,7 +209,7 @@ impl AntiNonceQuorumTransport for HttpAntiNonceTransport {
             return Ok(out);
         }
         let client = self.build_blocking_client()?;
-        let body = serde_json::json!({ "session_id": session_id }).to_string();
+        let body = serde_json::json!({ "session_id": session_id, "durable": true }).to_string();
         for url in &self.peer_prepare_urls {
             let attempts = self.peer_http.max_retries.max(1);
             let mut ack = None;
@@ -191,7 +225,7 @@ impl AntiNonceQuorumTransport for HttpAntiNonceTransport {
                     Ok(resp) if resp.status().is_success() => {
                         let text = resp.text().unwrap_or_default();
                         ack = Some(PrepareAck {
-                            already_seen: parse_already_seen(&text),
+                            already_seen: parse_already_seen(&text)?,
                         });
                         break;
                     }
@@ -219,15 +253,18 @@ impl AntiNonceQuorumTransport for HttpAntiNonceTransport {
     }
 }
 
-fn parse_already_seen(body: &str) -> bool {
+fn parse_already_seen(body: &str) -> Result<bool, DomainError> {
     #[derive(serde::Deserialize)]
     struct PrepResp {
-        #[serde(default)]
         already_seen: bool,
     }
     serde_json::from_str::<PrepResp>(body)
         .map(|r| r.already_seen)
-        .unwrap_or(false)
+        .map_err(|_| {
+            DomainError::ThresholdError(
+                "anti-nonce peer response missing already_seen (fail-closed)".into(),
+            )
+        })
 }
 
 /// In-memory multi-node transport for tests / simulation.

@@ -66,7 +66,33 @@ pub trait BucketLedgerPort: Send + Sync {
         }
         self.mark_consumed(intent_id)
     }
+    /// Soft-reserve Intent (two-phase): validate + hold caps without durable burn.
+    /// Default: same as authorize_spend_and_consume (lab in-memory).
+    fn reserve_spend(
+        &self,
+        intent_id: &str,
+        kind: BucketKind,
+        amount_sats: u64,
+        validate: &dyn Fn(&BucketPolicy, u64) -> Result<(), DomainError>,
+    ) -> Result<(), DomainError> {
+        self.authorize_spend_and_consume(intent_id, kind, amount_sats, validate)
+    }
+    /// Promote soft reservation → durable consume (mesh quorum when available).
+    fn commit_consume(&self, intent_id: &str) -> Result<(), DomainError> {
+        self.try_consume(intent_id)
+    }
+    /// Release soft reservation and roll back tentative spend (sign failure path).
+    fn release_reservation(
+        &self,
+        intent_id: &str,
+        kind: BucketKind,
+        amount_sats: u64,
+    ) -> Result<(), DomainError> {
+        let _ = (intent_id, kind, amount_sats);
+        Ok(())
+    }
     /// Validate + record spend + consume under one critical section (TOCTOU-safe).
+    /// Prefer [`reserve_spend`] + [`commit_consume`] on sign paths (High #9).
     fn authorize_spend_and_consume(
         &self,
         intent_id: &str,
@@ -125,6 +151,10 @@ pub trait VaultAuthPort: Send + Sync {
     fn authorize_treasury_sign(&self) -> Result<(), DomainError> {
         Ok(())
     }
+    /// Manual reshare trigger (`POST /v1/reshare/trigger`) — lab or explicit allow (#30).
+    fn authorize_reshare_trigger(&self) -> Result<(), DomainError> {
+        Ok(())
+    }
 }
 
 /// Anti-nonce session ledger: one signing_session_id → at most one nonce package, survives restart.
@@ -132,12 +162,38 @@ pub trait AntiNoncePort: Send + Sync {
     /// Claim for signing: durable local burn + quorum peer prepare (fail-closed).
     fn claim_session(&self, session_id: &str) -> Result<(), DomainError>;
     fn is_consumed(&self, session_id: &str) -> Result<bool, DomainError>;
-    /// Peer prepare: durable check-and-insert. Returns `true` if already present.
+    /// Peer / HTTP prepare: soft TTL reservation (High #8). Returns `true` if already present.
     fn prepare_remote(&self, session_id: &str) -> Result<bool, DomainError>;
+    /// Soft prepare bound to an Intent id (session must equal intent or `intent:…`).
+    fn prepare_remote_bound(
+        &self,
+        session_id: &str,
+        intent_id: &str,
+    ) -> Result<bool, DomainError> {
+        bind_session_to_intent(session_id, intent_id)?;
+        self.prepare_remote(session_id)
+    }
     /// Legacy alias: durable observe without distinguishing already_seen.
     fn observe_remote(&self, session_id: &str) -> Result<(), DomainError> {
         self.prepare_remote(session_id).map(|_| ())
     }
+}
+
+/// Session id must equal intent_id or start with `intent_id:`.
+pub fn bind_session_to_intent(session_id: &str, intent_id: &str) -> Result<(), DomainError> {
+    let intent_id = intent_id.trim();
+    let session_id = session_id.trim();
+    if intent_id.is_empty() || session_id.is_empty() {
+        return Err(DomainError::NonceReuse(
+            "session_id and intent_id required for anti-nonce prepare".into(),
+        ));
+    }
+    if session_id == intent_id || session_id.starts_with(&format!("{intent_id}:")) {
+        return Ok(());
+    }
+    Err(DomainError::NonceReuse(format!(
+        "session_id {session_id} not bound to intent {intent_id}"
+    )))
 }
 
 /// Hook invoked after a quorum day_epoch advance (reshare policy).

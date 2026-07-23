@@ -8,10 +8,11 @@ A real SPIRE/SPIFFE agent is **not** required; paths and URI SANs mirror the SPI
 | Identity | SPIFFE ID (lab default) | Role |
 | --- | --- | --- |
 | Trust domain | `kerosene.lab` | Lab / staging visualize |
-| Vault server | `spiffe://kerosene.lab/vault/server` | rustls server cert (`serverAuth`) |
+| Vault server (per node) | `spiffe://kerosene.lab/vault/{VAULT_NODE_ID}` | rustls server cert (`serverAuth`); default outbound peer expect |
+| Shared lab alias (optional) | `spiffe://kerosene.lab/vault/server` | Compose/scripts when `VAULT_MTLS_SPIFFE_VAULT` / `VAULT_TLS_PEER_SPIFFE_ID` override |
 | kfe client | `spiffe://kerosene.lab/kfe` | Client cert to vault (`clientAuth`) |
 
-Staging override: set `VAULT_MTLS_TRUST_DOMAIN=kerosene.staging` when generating.
+Staging override: set `VAULT_MTLS_TRUST_DOMAIN=kerosene.staging` when generating. Each vault should use a **unique** SPIFFE ID (`VAULT_TLS_PEER_SPIFFE_ID=spiffe://…/vault/vault-1`, etc.).
 
 ## On-disk layout
 
@@ -60,12 +61,13 @@ these scripts are the **Gate visualize** path, not the ceremony CA.
 ## Tor / onion peers
 
 When `VAULT_TRANSPORT=tor`, outbound mTLS defaults to
-`VAULT_TLS_VERIFY_MODE=onion_or_spiffe`:
+`VAULT_TLS_VERIFY_MODE=onion_or_spiffe` (**AND** semantics):
 
 1. Verify the leaf chains to `VAULT_TLS_CLIENT_CA_PATH`.
-2. Accept if **either**:
-   - webpki hostname matches (including a DNS SAN equal to the peer `.onion`), **or**
-   - a URI SAN equals `VAULT_TLS_PEER_SPIFFE_ID` (default `spiffe://kerosene.lab/vault/server`).
+2. Require URI SAN equals `VAULT_TLS_PEER_SPIFFE_ID` (default `spiffe://kerosene.lab/vault/{VAULT_NODE_ID}`).
+3. When the peer host is `.onion`, **also** require a DNS SAN equal to that onion.
+
+Hostname-only match without SPIFFE is refused. Env name stays `onion_or_spiffe` for compat.
 
 Mint onion DNS SANs after HS discovery:
 

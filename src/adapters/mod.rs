@@ -10,28 +10,38 @@ mod clock;
 mod daily_rotation;
 mod dkg_distributed;
 mod dkg_wire;
+mod durable_fs;
 mod economy_memory;
 #[cfg(feature = "dealer_lab")]
 mod frost_dealer;
 mod frost_reshare;
 mod frost_sign;
 mod frost_tr_bitcoin;
+mod frost_wire_cosign;
 mod http;
 mod http_peer;
 mod intent_consume;
 mod ledger_memory;
 mod peer_memory;
+mod rate_limit;
 mod release_memory;
 mod session_persist;
 mod share_aead;
 mod share_tee;
 mod share_tpm;
+mod sync_util;
 mod threshold_state;
+mod tls_mtls_acceptor;
 mod tls_peer_verify;
 
 pub use attestation_sim::SimAttestationAdapter;
 pub use attestation_tee::TeeAttestationAdapter;
-pub use auth_identity::{mesh_allowed_node_ids, resolve_mesh_caller_identity};
+pub use auth_identity::{
+    bind_dkg_sender_to_peer, mesh_allowed_node_ids, parse_spiffe_principal,
+    principal_from_cert_sans, resolve_mesh_caller_identity,
+    resolve_mesh_caller_identity_with_principal, route_class_for_path, MeshPrincipal, MeshRole,
+    RouteClass,
+};
 pub use auth_mtls::{build_mtls_server_config, MutualTlsAuthAdapter};
 pub use auth_static::StaticTokenAuthAdapter;
 pub use bucket_memory::{InMemoryBucketLedger, PersistedBucketLedger};
@@ -58,6 +68,11 @@ pub use frost_tr_bitcoin::{
 };
 #[cfg(feature = "dealer_lab")]
 pub use frost_tr_bitcoin::generate_tr_dealer;
+pub use frost_wire_cosign::{
+    sign_raw_wire, tr_state_local_only, HttpTrCosignTransport, NoopTrCosignTransport,
+    TrCommitRequest, TrCommitResponse, TrCosignPeerState, TrCosignTransport, TrSignShareRequest,
+    TrSignShareResponse,
+};
 pub use http::{build_router, AppState};
 pub use http_peer::{
     peer_addr_is_onion, post_json_with_retry, PeerHttpSettings, VaultTransport,
@@ -68,6 +83,7 @@ pub use intent_consume::{
 };
 pub use ledger_memory::InMemoryLedger;
 pub use peer_memory::InMemoryPeerDirectory;
+pub use rate_limit::SlidingWindowLimiter;
 pub use release_memory::InMemoryReleaseMesh;
 pub use session_persist::{
     HttpAntiNonceTransport, MemoryAntiNonceTransport, PersistedAntiNonce, QuorumAntiNonce,
@@ -80,4 +96,5 @@ pub use share_tpm::{
     ResolvedPassphrase, TpmSealAdapter, TpmSealPort,
 };
 pub use threshold_state::ThresholdVaultState;
-pub use tls_peer_verify::{build_mtls_rustls_client_config, TlsPeerVerifyPolicy};
+pub use tls_mtls_acceptor::{PeerCertAcceptor, PeerClientCert};
+pub use tls_peer_verify::{build_mtls_rustls_client_config, extract_sans, TlsPeerVerifyPolicy};

@@ -12,11 +12,21 @@ use crate::application::VaultAuthPort;
 use crate::domain::DomainError;
 
 /// Auth port for mTLS mode: transport already verified the client certificate.
-pub struct MutualTlsAuthAdapter;
+pub struct MutualTlsAuthAdapter {
+    reshare_trigger_allowed: bool,
+}
 
 impl MutualTlsAuthAdapter {
     pub fn new() -> Self {
-        Self
+        Self {
+            reshare_trigger_allowed: false,
+        }
+    }
+
+    pub fn with_reshare_trigger(allowed: bool) -> Self {
+        Self {
+            reshare_trigger_allowed: allowed,
+        }
     }
 }
 
@@ -40,6 +50,16 @@ impl VaultAuthPort for MutualTlsAuthAdapter {
         if token_header.filter(|t| !t.is_empty()).is_some() {
             return Err(DomainError::AuthRejected(
                 "static X-Vault-Token refused in mTLS mode; use client certificate".into(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn authorize_reshare_trigger(&self) -> Result<(), DomainError> {
+        if !self.reshare_trigger_allowed {
+            return Err(DomainError::AuthRejected(
+                "manual reshare trigger refused under mTLS without VAULT_ALLOW_MANUAL_RESHARE=1 (or lab)"
+                    .into(),
             ));
         }
         Ok(())
@@ -136,6 +156,17 @@ mod tests {
     #[test]
     fn mtls_allows_treasury_sign() {
         assert!(MutualTlsAuthAdapter::new().authorize_treasury_sign().is_ok());
+    }
+
+    #[test]
+    fn mtls_reshare_trigger_refused_by_default() {
+        let err = MutualTlsAuthAdapter::new()
+            .authorize_reshare_trigger()
+            .unwrap_err();
+        assert!(matches!(err, DomainError::AuthRejected(_)));
+        assert!(MutualTlsAuthAdapter::with_reshare_trigger(true)
+            .authorize_reshare_trigger()
+            .is_ok());
     }
 
     #[test]

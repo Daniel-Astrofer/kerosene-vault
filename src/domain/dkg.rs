@@ -1,4 +1,10 @@
-//! Joint Shamir-style DKG for the lab field (no single dealer holds the secret).
+//! Joint Shamir-style DKG for the **lab field** (no single dealer holds the secret).
+//!
+//! # Honesty (#17)
+//! Entropy is **deterministic** from the caller-supplied seed (typically
+//! `LAB_ATTESTATION_ROOT` + genesis roster). This is **not** FROST Bitcoin keygen
+//! and must never be treated as production wallet material. Prefer
+//! `VAULT_DKG_MODE=distributed_wire` for real shares.
 
 use crate::domain::{
     eval_poly, field_add, lab_random_u64, GroupKey, KeyShare, NodeId, ShareIndex, DomainError,
@@ -6,6 +12,8 @@ use crate::domain::{
 
 /// Each participant contributes a random degree-(t-1) polynomial; final share_j is
 /// the sum of evaluations at j. The joint secret is never assembled here.
+///
+/// Deterministic given `entropy` — lab visualize only.
 pub fn run_dkg(
     active_set: &[NodeId],
     t: usize,
