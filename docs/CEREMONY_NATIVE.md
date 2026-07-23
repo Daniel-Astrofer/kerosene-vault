@@ -76,7 +76,7 @@ TPM binds disk-at-rest to the machine; it does **not** isolate share RAM after u
 | **CHANNELS → LND inject** | CHANNELS bucket cannot spend shared Taproot key; kfe `ChannelsMeshInjectGateway` fail-closed (`CHANNELS_MESH_INJECT_NOT_WIRED`); go-live requires inject + disables auto-open — inject wiring still planned |
 | **Deposit xpub vs `tb1p`** | Ceremony yields stable mesh `tb1p` deposit (`tr()`); user-visible xpub / HD from group VK is not implemented; product `bitcoin.platform.master-xpub` ≠ mesh deposit |
 | **Economy / release durability (#18)** | `InMemoryEconomy` / `InMemoryReleaseMesh` — restart loses state; not an authenticated mesh ledger |
-| **Supply-chain audit (#38)** | `cargo-audit` couldn’t be executed in this environment (disk-full during tool install). Residual: no HIGH/CRITICAL advisory findings were produced here. |
+| **Supply-chain audit (#38)** | `cargo audit` (cargo-audit `v0.22.2`, DB last-updated `2026-07-23T06:23:12+02:00`) found **0 HIGH/CRITICAL** advisories for `backend/kerosene-vault` (`vulnerabilities.found=false`). Advisory database contains **unmaintained** only (informational), no actionable HIGH/CRITICAL. |
 | **Side-channel analysis (#39)** | Improved FROST round nonce zeroization on error paths in `frost_sign.rs` and `frost_wire_cosign.rs`. Residual: this is not a proof of side-channel freedom. |
 | **mTLS pin / CRL (#36)** | Short-lived rotation scripts exist; runtime pin/CRL not enforced |
 | **Legacy HTTP surface (#37)** | Path traversal blocked; large legacy route surface remains behind auth |
