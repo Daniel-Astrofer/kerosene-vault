@@ -176,6 +176,41 @@ fn tempfile_dir(label: &str) -> PathBuf {
     dir
 }
 
+#[test]
+fn rotate_lab_mtls_refreshes_spiffe_tree_and_java_materials() {
+    let root = tempfile_dir("mtls-rotate");
+    let certs = root.join("certs");
+    gen_lab_certs(&certs);
+
+    let before = std::fs::read(certs.join("vault-client.crt")).expect("client crt");
+    assert!(certs.join("spiffe/kfe/svid.pem").is_file());
+    assert!(certs.join("vault-client.pkcs8.key").is_file());
+    assert!(certs.join("kfe-client.p12").is_file());
+
+    let status = Command::new("bash")
+        .env("VAULT_LAB_MTLS_OUT", &certs)
+        .env("VAULT_LAB_MTLS_TTL_HOURS", "24")
+        .arg(
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("scripts/rotate_lab_mtls_certs.sh"),
+        )
+        .status()
+        .expect("run rotate_lab_mtls_certs.sh");
+    assert!(status.success(), "rotation failed: {status}");
+
+    let after = std::fs::read(certs.join("vault-client.crt")).expect("rotated client crt");
+    assert_ne!(before, after, "leaf cert should change on rotation");
+    assert!(certs.join("rotation.json").is_file());
+    let meta = std::fs::read_to_string(certs.join("rotation.json")).unwrap();
+    assert!(meta.contains("spiffe://kerosene.lab/kfe"));
+    assert!(meta.contains(&format!(
+        "\"trust_bundle\": \"{}/spiffe/trust-bundle.pem\"",
+        certs.display()
+    )));
+    assert!(certs.join("spiffe/vault/server/svid.pem").is_file());
+    assert!(certs.join("spiffe/trust-bundle.pem").is_file());
+}
+
 #[allow(dead_code)]
 fn _addr_type_check(a: SocketAddr) -> SocketAddr {
     a

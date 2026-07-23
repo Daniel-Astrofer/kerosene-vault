@@ -44,6 +44,8 @@ flowchart LR
 
 Env lab (compose / props): `BITCOIN_NETWORK=testnet3`, `VAULT_API_TOKEN` → header `X-Vault-Token`, `VAULT_DATA_PASSPHRASE`, `VAULT_DATA_DIR`, `VAULT_DKG_MODE=dealer_lab`, `VAULT_AUTH_MODE=static_token`. kfe: `kfe-service-vaultmesh-testnet3.properties` + `kfe.vaultmesh.api-token`.
 
+Gate visualize (staging mTLS): `VAULT_AUTH_MODE=mtls` + `VAULT_TLS_*`; certs via `scripts/gen_lab_mtls_certs.sh` / short-lived `scripts/rotate_lab_mtls_certs.sh`; SPIFFE-like layout in `backend/kerosene-vault/docs/MTLS_SPIFFE_LAYOUT.md`. kfe: `kfe.vaultmesh.tls.*` + HTTPS `base-url` (`kfe-service-vaultmesh-go-live.properties`); empty `api-token` under mTLS.
+
 ### Threat notes (obrigatório no threat model)
 
 1. **Nonce reuse FROST/Schnorr (crítico)** — reuso ⇒ extração algébrica de share. Lib ZF faz binding message+participants; **nossa** orquestração ainda pode errar (reusar nonces map, resign após abort, `session_id` recycle). Controles: `session_id` único persistido; nonces zeroize pós-uso; nunca resign com mesmos nonces; preferir commit bound a `session_id || message`. Detalhe operacional em §4.3.
@@ -620,7 +622,7 @@ cd backend/kerosene-vault && ./scripts/lab_pentest.sh
 
 ### Fase 8 — Staging TEE + go-live prod (corte limpo) (3–6 semanas)
 
-**Status (staging scaffold):** adapters TEE `sev|sgx` (`TeeAttestationAdapter`) com stub de staging (`ATTESTATION_STAGING_STUB`); produção ceremonial **recusa** stub; compose `vault-mesh-staging.compose.yaml`; checklist `scripts/genesis_ceremony_checklist.sh`; kfe `mesh-only` + `kfe.mpc.signing-enabled=false` + `KfeVaultMeshGoLiveGuard`. HW quote real ainda fail-closed sem stub.
+**Status (staging scaffold):** adapters TEE `sev|sgx` (`TeeAttestationAdapter`) com stub de staging (`ATTESTATION_STAGING_STUB`); produção ceremonial **recusa** stub; compose `vault-mesh-staging.compose.yaml` (**mTLS default** + cert gen/rotate); checklist `scripts/genesis_ceremony_checklist.sh`; kfe `mesh-only` + `kfe.mpc.signing-enabled=false` + `KfeVaultMeshGoLiveGuard` + client TLS `kfe.vaultmesh.tls.*`. HW quote real ainda fail-closed sem stub.
 
 **Entrega**
 
@@ -751,7 +753,7 @@ Itens **não fechados** na conversa — precisam de decisão explícita:
 | **Distributed DKG (in-process)** | **landed** | `VAULT_DKG_MODE=distributed`: FROST `part1/2/3` multi-party sim (n=3,t=2), **sem** `generate_with_dealer`; ToB check `min_signers` == constituição; shares só via `ShareStorePort` |
 | **Over-wire DKG HTTP** | **landed (lab+Gate checks)** | `/v1/dkg/round{1,2,3}` + `VAULT_DKG_MODE=distributed_wire`; peer auth `static_token` **or** `mtls` (HTTPS client cert, no token); roster+threshold frozen at round1; transcript binding; reject threshold bump / late join; compose notes + `scripts/lab_dkg_wire.sh`; in-process permanece fallback |
 | TEE seal shares | **advanced** (HW fail-closed) | `TeeSealAdapter` `KVSEAL01` versionado; unseal só após attestation OK; lab stub só com `ATTESTATION_STAGING_STUB` (recusado sob `--features production` / cerimônia prod); feature `tee_hw` compila SEV SNP derived-key (+ SGX fail-closed até SDK enclave); CI sem HW **fail-closed** sem stub — não é go-live |
-| mTLS auth | refuse stub | `MutualTlsAuthAdapter` |
-| HW attestation | **started** (staging stub) | `TeeAttestationAdapter` + `constitution.measurement_pin` (default = hash); sim forbidden when hardened; HW real ainda fail-closed |
+| mTLS auth | **landed** (lab/staging) | `MutualTlsAuthAdapter` + rustls; `gen_lab_mtls_certs.sh` / `rotate_lab_mtls_certs.sh`; SPIFFE-like layout `docs/MTLS_SPIFFE_LAYOUT.md`; kfe `kfe.vaultmesh.tls.*` (PEM/PKCS12); staging compose mTLS e2e |
+| HW attestation | **started** (quote verify path) | `TeeAttestationAdapter` SEV-SNP/SGX envelope + verify structure; `tee_hw` feature; bind `measurement_pin` + allowlist Hb; prod refuses sim/stub; CI fail-closed |
 | Daily rotation + reshare policy | **landed** | `QuorumDailyRotation` (governance_t quorum, stale day reject on sign); `VAULT_RESHARE_POLICY=daily\|manual`; `PolicyReshareHook` + FROST `refresh_dkg` n=3; ledger `day_advanced` / `reshare_completed` |
 | Anti-nonce replicated | **landed** (quorum) | `QuorumAntiNonce`: append-only `session_id` log + HTTP `/v1/anti-nonce/prepare` ACKs (`ceil(2n/3)`); refuse if seen on ≥1 peer or before quorum; persists across restart; multi-node sim tests |

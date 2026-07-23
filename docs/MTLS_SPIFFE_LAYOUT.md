@@ -1,0 +1,80 @@
+# Vault mesh mTLS — SPIFFE-like layout (Gate)
+
+Lab ≠ go-live. Materials under `lab-certs/` are for **visualize / staging** only.
+A real SPIRE/SPIFFE agent is **not** required; paths and URI SANs mirror the SPIFFE SVID layout so production can drop in an agent later.
+
+## Trust domain & SPIFFE IDs
+
+| Identity | SPIFFE ID (lab default) | Role |
+| --- | --- | --- |
+| Trust domain | `kerosene.lab` | Lab / staging visualize |
+| Vault server | `spiffe://kerosene.lab/vault/server` | rustls server cert (`serverAuth`) |
+| kfe client | `spiffe://kerosene.lab/kfe` | Client cert to vault (`clientAuth`) |
+
+Staging override: set `VAULT_MTLS_TRUST_DOMAIN=kerosene.staging` when generating.
+
+## On-disk layout
+
+After `./scripts/gen_lab_mtls_certs.sh` (or rotate):
+
+```text
+lab-certs/
+  ca.crt / ca.key                 # trust anchor (flat, compose mounts)
+  vault-server.crt / .key         # vault listen (VAULT_TLS_*)
+  vault-client.crt / .key         # PEM client (curl / ops)
+  vault-client.pkcs8.key          # PKCS#8 PEM for Java
+  kfe-client.p12                  # PKCS12 client keystore (kfe)
+  truststore.p12                  # PKCS12 truststore (CA only)
+  rotation.json                   # last leaf issue metadata (rotate)
+  spiffe/
+    trust-bundle.pem              # = ca.crt
+    vault/server/
+      svid.pem / key.pem          # SPIFFE-like SVID paths
+    kfe/
+      svid.pem / key.pem
+```
+
+Compose / vault continue to use the **flat** `VAULT_TLS_*` paths. The `spiffe/` tree is the documented agent-compatible mirror.
+
+## Short-lived rotation
+
+```bash
+# First materialization (long-lived lab CA + leaves)
+./backend/kerosene-vault/scripts/gen_lab_mtls_certs.sh
+
+# Rotate leaves only (default TTL 24h); reuses CA
+VAULT_LAB_MTLS_TTL_HOURS=24 \
+  ./backend/kerosene-vault/scripts/rotate_lab_mtls_certs.sh
+
+# Optional post-rotate hook (reload vault / notify kfe)
+VAULT_MTLS_ROTATE_HOOK=/path/to/hook.sh \
+  ./backend/kerosene-vault/scripts/rotate_lab_mtls_certs.sh
+```
+
+Hook receives env: `VAULT_LAB_MTLS_OUT`, `VAULT_TLS_CERT_PATH`, `VAULT_TLS_KEY_PATH`,
+`VAULT_TLS_CLIENT_CA_PATH`, `KFE_CLIENT_P12`, `ROTATION_JSON`.
+
+Production Gate still requires operational cert rotation (SPIRE or equivalent) before ceremony —
+these scripts are the **Gate visualize** path, not the ceremony CA.
+
+## kfe TLS properties
+
+When vaults run `VAULT_AUTH_MODE=mtls`, kfe must present a client cert and **must not**
+send `X-Vault-Token` (vault refuses static tokens in mTLS mode).
+
+```properties
+kfe.vaultmesh.base-url=https://127.0.0.1:7801
+kfe.vaultmesh.api-token=
+kfe.vaultmesh.tls.enabled=true
+# PEM (preferred with vault-client.pkcs8.key):
+kfe.vaultmesh.tls.cert-path=/certs/vault-client.crt
+kfe.vaultmesh.tls.key-path=/certs/vault-client.pkcs8.key
+kfe.vaultmesh.tls.ca-path=/certs/ca.crt
+# Or PKCS12:
+# kfe.vaultmesh.tls.keystore-path=/certs/kfe-client.p12
+# kfe.vaultmesh.tls.keystore-password=changeit
+# kfe.vaultmesh.tls.truststore-path=/certs/truststore.p12
+# kfe.vaultmesh.tls.truststore-password=changeit
+```
+
+See `kfe-service-vaultmesh-go-live.properties` and staging compose comments.
