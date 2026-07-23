@@ -13,9 +13,10 @@ use axum::routing::{get, post};
 use axum::Router;
 
 use crate::application::{BlobStorePort, LedgerPort, ReleaseStorePort};
-use crate::bootstrap::VaultRuntime;
+use crate::bootstrap::{CeremonyMode, VaultRuntime};
 use crate::domain::{
-    validate_destination, BucketKind, ContentHash, NodeId, SettlementIntent,
+    assert_shared_taproot_bucket, validate_destination, BucketKind, ContentHash, NodeId,
+    SettlementIntent,
 };
 
 #[derive(Clone)]
@@ -97,6 +98,9 @@ struct SignBody {
 }
 
 async fn v1_sign(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    if let Err(e) = state.runtime.auth.authorize_treasury_sign() {
+        return (StatusCode::UNAUTHORIZED, format!(r#"{{"error":"{e}"}}"#));
+    }
     let req: SignBody = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
@@ -142,6 +146,16 @@ struct BitcoinSighashBody {
 }
 
 async fn v1_bitcoin_sign_sighash(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    if let Err(e) = state.runtime.auth.authorize_treasury_sign() {
+        return (StatusCode::UNAUTHORIZED, format!(r#"{{"error":"{e}"}}"#));
+    }
+    // Raw sighash cannot bind Intent outputs — lab visualize only.
+    if !matches!(state.runtime.config.ceremony_mode, CeremonyMode::Lab) {
+        return (
+            StatusCode::FORBIDDEN,
+            r#"{"error":"raw sighash signing refused outside lab; use Intent-bound /v1/bitcoin/sign-psbt"}"#.into(),
+        );
+    }
     let req: BitcoinSighashBody = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
@@ -157,6 +171,7 @@ async fn v1_bitcoin_sign_sighash(State(state): State<AppState>, body: Bytes) -> 
         req.bucket.as_deref(),
         req.destination.as_deref(),
         req.amount_sats,
+        true,
     ) {
         return (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#));
     }
@@ -193,6 +208,9 @@ struct BitcoinPsbtBody {
 }
 
 async fn v1_bitcoin_sign_psbt(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    if let Err(e) = state.runtime.auth.authorize_treasury_sign() {
+        return (StatusCode::UNAUTHORIZED, format!(r#"{{"error":"{e}"}}"#));
+    }
     let req: BitcoinPsbtBody = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
@@ -207,12 +225,15 @@ async fn v1_bitcoin_sign_psbt(State(state): State<AppState>, body: Bytes) -> imp
         .as_deref()
         .filter(|s| !s.is_empty())
         .unwrap_or(req.session_id.as_str());
+    let destination = req.destination.as_deref().unwrap_or("");
+    let amount = req.amount_sats.unwrap_or(0);
     if let Err(e) = maybe_gate_intent(
         &state,
         Some(intent_id),
         req.bucket.as_deref(),
-        req.destination.as_deref(),
+        Some(destination).filter(|s| !s.is_empty()),
         req.amount_sats,
+        true,
     ) {
         return (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#));
     }
@@ -231,7 +252,7 @@ async fn v1_bitcoin_sign_psbt(State(state): State<AppState>, body: Bytes) -> imp
             format!(r#"{{"error":"fail-stop: online {online} < t {need}"}}"#),
         );
     }
-    match tr.sign_psbt(&req.session_id, &req.psbt) {
+    match tr.sign_psbt(&req.session_id, &req.psbt, destination, amount) {
         Ok(signed) => (StatusCode::OK, signed.to_json()),
         Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
     }
@@ -243,6 +264,7 @@ fn maybe_gate_intent(
     bucket: Option<&str>,
     destination: Option<&str>,
     amount_sats: Option<u64>,
+    require_shared_tr: bool,
 ) -> Result<(), crate::domain::DomainError> {
     let Some(id) = intent_id.filter(|s| !s.is_empty()) else {
         return Err(crate::domain::DomainError::InvalidIntent(
@@ -259,6 +281,9 @@ fn maybe_gate_intent(
     }
     validate_destination(state.runtime.config.bitcoin_network, destination)?;
     let bucket = BucketKind::parse(bucket_raw)?;
+    if require_shared_tr {
+        assert_shared_taproot_bucket(bucket)?;
+    }
     let constitution = state.runtime.ledger.constitution()?;
     let intent = SettlementIntent::new(id, bucket, destination, amount, constitution.hash)?;
     let _ = state.runtime.gate_intent.execute(intent)?;

@@ -134,6 +134,11 @@ mod tests {
     }
 
     #[test]
+    fn mtls_allows_treasury_sign() {
+        assert!(MutualTlsAuthAdapter::new().authorize_treasury_sign().is_ok());
+    }
+
+    #[test]
     fn mtls_is_not_static_token_mode() {
         let a = MutualTlsAuthAdapter::new();
         assert_eq!(a.mode_name(), "mtls");

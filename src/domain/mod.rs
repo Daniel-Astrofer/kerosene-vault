@@ -8,6 +8,7 @@ mod day_epoch;
 mod dkg;
 mod error;
 mod health;
+mod intent_bind;
 mod ledger;
 mod node_tier;
 mod peer;
@@ -23,15 +24,17 @@ pub use node_tier::{
     detect_tee_at_paths, detect_tee_devices, resolve_node_tier, seat_genesis_by_tier,
     SeatingCandidate, VaultNodeTier,
 };
-pub use bitcoin_net::{validate_destination, BitcoinNetwork};
+pub use bitcoin_net::{destination_script_pubkey, validate_destination, BitcoinNetwork};
 pub use bucket::{
-    evaluate_intent, BucketKind, BucketPolicy, ProfitSplits, SettlementIntent,
+    assert_shared_taproot_bucket, evaluate_intent, BucketKind, BucketPolicy, ProfitSplits,
+    SettlementIntent,
 };
 pub use constitution::{quorum_two_thirds, Constitution};
 pub use day_epoch::DayEpoch;
 pub use dkg::run_dkg;
 pub use error::DomainError;
-pub use health::{HealthStatus, NodeHealth};
+pub use health::{HealthStatus, NodeHealth, PeerReachability};
+pub use intent_bind::assert_outputs_match_intent;
 pub use ledger::{Epoch, EpochAdvanceProposal, LedgerEntry, LedgerEventKind};
 pub use peer::{NodeId, PeerEndpoint, PeerInfo};
 pub use release::{

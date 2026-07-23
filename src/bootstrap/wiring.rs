@@ -207,7 +207,10 @@ impl VaultRuntime {
                         )
                     })?
                     .to_string();
-                Arc::new(StaticTokenAuthAdapter::new(token))
+                Arc::new(StaticTokenAuthAdapter::with_treasury_signing(
+                    token,
+                    matches!(config.ceremony_mode, CeremonyMode::Lab),
+                ))
             }
             AuthMode::MutualTls => Arc::new(MutualTlsAuthAdapter::new()),
         };

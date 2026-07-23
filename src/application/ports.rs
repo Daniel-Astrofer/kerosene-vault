@@ -95,6 +95,11 @@ pub trait VaultAuthPort: Send + Sync {
     fn mode_name(&self) -> &'static str;
     fn is_static_token(&self) -> bool;
     fn authorize(&self, token_header: Option<&str>) -> Result<(), DomainError>;
+    /// Treasury signing (`/v1/sign`, `/v1/bitcoin/sign-*`). Lab static token may sign
+    /// only in lab ceremony; staging/prod require mTLS (no signing on lab token).
+    fn authorize_treasury_sign(&self) -> Result<(), DomainError> {
+        Ok(())
+    }
 }
 
 /// Anti-nonce session ledger: one signing_session_id → at most one nonce package, survives restart.

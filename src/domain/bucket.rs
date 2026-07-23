@@ -39,6 +39,24 @@ impl BucketKind {
     pub fn may_debit_users(self) -> bool {
         matches!(self, Self::Users)
     }
+
+    /// Shared Taproot FROST deposit key (single `tr()` until per-bucket keys exist)
+    /// may only be spent under USERS policy. Other buckets must not escape via the
+    /// same key with a looser allowlist/cap.
+    pub fn may_use_shared_taproot_key(self) -> bool {
+        matches!(self, Self::Users)
+    }
+}
+
+/// Refuse client-chosen bucket escape against the shared mesh Taproot key.
+pub fn assert_shared_taproot_bucket(bucket: BucketKind) -> Result<(), DomainError> {
+    if !bucket.may_use_shared_taproot_key() {
+        return Err(DomainError::InvalidIntent(format!(
+            "bucket {} cannot spend shared Taproot key; only USERS until per-bucket keys exist",
+            bucket.as_str()
+        )));
+    }
+    Ok(())
 }
 
 /// How PROFIT is split across child buckets (basis points, sum = 10_000).
@@ -138,8 +156,23 @@ impl BucketPolicy {
     }
 
     pub fn allows_destination(&self, dest: &str) -> bool {
-        self.destination_allowlist.contains(dest)
+        if self.destination_allowlist.contains(dest) {
+            return true;
+        }
+        // USERS on-chain withdraw: admit parseable Bitcoin addresses (network check
+        // + PSBT Intent bind happen at the HTTP/sign boundary). Opaque lab tags stay
+        // on the explicit allowlist for Intent-only paths.
+        if self.kind == BucketKind::Users {
+            return looks_like_bitcoin_address(dest);
+        }
+        false
     }
+}
+
+fn looks_like_bitcoin_address(dest: &str) -> bool {
+    use bitcoin::address::NetworkUnchecked;
+    use bitcoin::Address;
+    dest.trim().parse::<Address<NetworkUnchecked>>().is_ok()
 }
 
 /// Settlement intent as seen by the vault enclave (mirrors contracts Intent fields).
@@ -276,4 +309,22 @@ mod tests {
         assert_eq!(c, 5_000);
         assert_eq!(i, 5_000);
     }
+
+    #[test]
+    fn shared_taproot_key_users_only() {
+        assert!(BucketKind::Users.may_use_shared_taproot_key());
+        assert!(!BucketKind::Channels.may_use_shared_taproot_key());
+        assert!(assert_shared_taproot_bucket(BucketKind::Users).is_ok());
+        assert!(assert_shared_taproot_bucket(BucketKind::Channels).is_err());
+    }
+
+    #[test]
+    fn users_allows_parseable_address() {
+        let policy = BucketPolicy::lab_defaults(BucketKind::Users, 100, 1_000);
+        assert!(policy.allows_destination("tb1q-users-withdraw"));
+        assert!(policy.allows_destination("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"));
+        let channels = BucketPolicy::lab_defaults(BucketKind::Channels, 100, 1_000);
+        assert!(!channels.allows_destination("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"));
+    }
+
 }

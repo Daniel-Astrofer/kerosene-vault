@@ -3,8 +3,8 @@
 //! Intent / off-chain proofs keep using `frost-secp256k1`. This module holds a
 //! separate BIP-340 keyset used only for PSBT / Taproot key-path spends.
 //!
-//! On-chain signatures **must** cover the raw 32-byte sighash — no session/day
-//! binding in the signed message (policy is enforced *before* sign via Intent gate).
+//! On-chain signatures cover the raw 32-byte sighash. Policy is enforced *before*
+//! sign via Intent gate **and** PSBT output binding (destination + amount).
 
 use std::collections::BTreeMap;
 use std::str::FromStr;
@@ -346,11 +346,14 @@ impl FrostTrBitcoinOrchestrator {
         })
     }
 
-    /// Intent-gated callers pass a funded PSBT; we sign Taproot key-path inputs.
+    /// Intent-gated callers pass a funded PSBT; we bind outputs to Intent then sign
+    /// Taproot key-path inputs that match the mesh deposit key.
     pub fn sign_psbt(
         &self,
         session_id: &str,
         psbt_b64: &str,
+        destination: &str,
+        amount_sats: u64,
     ) -> Result<SignedPsbtResult, DomainError> {
         self.anti_nonce.claim_session(session_id)?;
         let day_epoch = self.rotation.current_day_epoch()?;
@@ -367,6 +370,23 @@ impl FrostTrBitcoinOrchestrator {
         let secp = Secp256k1::verification_only();
         let (tweaked, _) = UntweakedPublicKey::from(internal).tap_tweak(&secp, None);
         let our_output = tweaked.to_x_only_public_key();
+        let mesh_change_spk =
+            ScriptBuf::new_p2tr_tweaked(TweakedPublicKey::dangerous_assume_tweaked(our_output));
+
+        // Critical: bind Intent destination+amount to PSBT outputs before signing.
+        let payment_spk = crate::domain::destination_script_pubkey(self.network, destination)?;
+        let outs: Vec<(Vec<u8>, u64)> = psbt
+            .unsigned_tx
+            .output
+            .iter()
+            .map(|o| (o.script_pubkey.to_bytes(), o.value.to_sat()))
+            .collect();
+        crate::domain::assert_outputs_match_intent(
+            &outs,
+            payment_spk.as_bytes(),
+            amount_sats,
+            Some(mesh_change_spk.as_bytes()),
+        )?;
 
         let prevouts = collect_prevouts(&psbt)?;
         let tx = psbt.unsigned_tx.clone();
@@ -628,17 +648,22 @@ impl SignedPsbtResult {
     }
 }
 
-/// Lab helper: build a tiny unsigned key-path PSBT spending a synthetic P2TR output.
+/// Lab helper: build a tiny unsigned key-path PSBT spending a synthetic P2TR UTXO
+/// to `payment_spk` (Intent destination), with optional change back to mesh key.
 #[cfg(all(test, feature = "dealer_lab"))]
 pub fn lab_synthetic_funded_psbt(
-    output_key: XOnlyPublicKey,
+    mesh_output_key: XOnlyPublicKey,
     network: bitcoin::Network,
     amount_sats: u64,
+    payment_spk: ScriptBuf,
 ) -> Result<String, DomainError> {
     use bitcoin::absolute::LockTime;
     use bitcoin::{Amount, Sequence, Transaction, TxIn, Witness};
 
-    let spk = ScriptBuf::new_p2tr_tweaked(TweakedPublicKey::dangerous_assume_tweaked(output_key));
+    let mesh_spk =
+        ScriptBuf::new_p2tr_tweaked(TweakedPublicKey::dangerous_assume_tweaked(mesh_output_key));
+    let fee = 500u64;
+    let change = 200u64;
     let prev_tx = Transaction {
         version: bitcoin::transaction::Version::TWO,
         lock_time: LockTime::ZERO,
@@ -649,8 +674,8 @@ pub fn lab_synthetic_funded_psbt(
             witness: Witness::new(),
         }],
         output: vec![TxOut {
-            value: Amount::from_sat(amount_sats + 500),
-            script_pubkey: spk.clone(),
+            value: Amount::from_sat(amount_sats + fee + change),
+            script_pubkey: mesh_spk.clone(),
         }],
     };
     let spend = Transaction {
@@ -665,20 +690,26 @@ pub fn lab_synthetic_funded_psbt(
             sequence: Sequence::ENABLE_RBF_NO_LOCKTIME,
             witness: Witness::new(),
         }],
-        output: vec![TxOut {
-            value: Amount::from_sat(amount_sats),
-            script_pubkey: Address::p2tr_tweaked(
-                TweakedPublicKey::dangerous_assume_tweaked(output_key),
-                network,
-            )
-            .script_pubkey(),
-        }],
+        output: vec![
+            TxOut {
+                value: Amount::from_sat(amount_sats),
+                script_pubkey: payment_spk,
+            },
+            TxOut {
+                value: Amount::from_sat(change),
+                script_pubkey: Address::p2tr_tweaked(
+                    TweakedPublicKey::dangerous_assume_tweaked(mesh_output_key),
+                    network,
+                )
+                .script_pubkey(),
+            },
+        ],
     };
     let mut psbt = Psbt::from_unsigned_tx(spend)
         .map_err(|e| DomainError::ThresholdError(format!("psbt: {e}")))?;
     psbt.inputs[0].witness_utxo = Some(TxOut {
-        value: Amount::from_sat(amount_sats + 500),
-        script_pubkey: spk,
+        value: Amount::from_sat(amount_sats + fee + change),
+        script_pubkey: mesh_spk,
     });
     Ok(psbt.to_string())
 }
@@ -733,13 +764,49 @@ mod tests {
 
         let output = XOnlyPublicKey::from_slice(&hex::decode(&deposit.output_pubkey_hex).unwrap())
             .unwrap();
-        let psbt = lab_synthetic_funded_psbt(output, bitcoin::Network::Testnet, 1_000).unwrap();
-        let signed = orch.sign_psbt("btc-psbt-1", &psbt).unwrap();
+        let dest = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
+        let payment_spk = crate::domain::destination_script_pubkey(BitcoinNetwork::Testnet3, dest)
+            .unwrap();
+        let psbt =
+            lab_synthetic_funded_psbt(output, bitcoin::Network::Testnet, 1_000, payment_spk)
+                .unwrap();
+        let signed = orch.sign_psbt("btc-psbt-1", &psbt, dest, 1_000).unwrap();
         assert!(!signed.signed_psbt.is_empty());
         assert_eq!(signed.signatures.len(), 1);
         assert!(Psbt::from_str(&signed.signed_psbt).unwrap().inputs[0]
             .tap_key_sig
             .is_some());
+    }
+
+    #[test]
+    fn tr_rejects_unbound_psbt_destination() {
+        let state = generate_tr_dealer(3, 2).unwrap();
+        let tmp = TempProbe::new("unbound");
+        let anti = PersistedAntiNonce::open(tmp.0.join("sessions.log")).unwrap();
+        let rotation: Arc<dyn DailyRotationPort> =
+            Arc::new(LedgerDayEpochStub::new(Arc::new(SystemClock)));
+        let slot = Arc::new(FrostTrShareSlot::new());
+        slot.install(state);
+        let orch = FrostTrBitcoinOrchestrator::new(
+            slot,
+            Box::new(anti),
+            rotation,
+            BitcoinNetwork::Testnet3,
+        );
+        let deposit = orch.deposit_info().unwrap();
+        let output = XOnlyPublicKey::from_slice(&hex::decode(&deposit.output_pubkey_hex).unwrap())
+            .unwrap();
+        let claimed = "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx";
+        let attacker = "tb1qrp33g0q5c5txsp9arysrx4k6zdkfs4nce4xj0gdcccefvpysxf3q0sl5k7";
+        let attacker_spk =
+            crate::domain::destination_script_pubkey(BitcoinNetwork::Testnet3, attacker).unwrap();
+        let psbt =
+            lab_synthetic_funded_psbt(output, bitcoin::Network::Testnet, 1_000, attacker_spk)
+                .unwrap();
+        let err = orch
+            .sign_psbt("btc-psbt-atk", &psbt, claimed, 1_000)
+            .unwrap_err();
+        assert!(matches!(err, DomainError::InvalidIntent(_)));
     }
 
     #[test]

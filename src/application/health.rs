@@ -1,7 +1,11 @@
+use std::net::{SocketAddr, TcpStream, ToSocketAddrs};
 use std::sync::Arc;
+use std::time::Duration;
 
 use crate::application::ports::{AttestationPort, PeerDirectoryPort};
-use crate::domain::{DomainError, HealthStatus, NodeHealth, NodeId, VaultNodeTier};
+use crate::domain::{
+    DomainError, HealthStatus, NodeHealth, NodeId, PeerReachability, VaultNodeTier,
+};
 
 pub struct GetHealth {
     node_id: NodeId,
@@ -10,6 +14,8 @@ pub struct GetHealth {
     node_tier: VaultNodeTier,
     tee_available: bool,
     genesis_roster: Vec<String>,
+    /// When true, attempt cheap clearnet TCP connects (not Tor-complete).
+    probe_peers: bool,
 }
 
 impl GetHealth {
@@ -38,15 +44,41 @@ impl GetHealth {
             node_tier,
             tee_available,
             genesis_roster,
+            probe_peers: false,
         }
+    }
+
+    pub fn with_peer_probe(mut self, enabled: bool) -> Self {
+        self.probe_peers = enabled;
+        self
     }
 
     pub fn execute(&self) -> Result<NodeHealth, DomainError> {
         let peers = self.peers.list_peers()?;
-        let status = if peers.is_empty() {
-            HealthStatus::Starting
+        let (peer_reachability, peers_reachable, status) = if peers.is_empty() {
+            (PeerReachability::None, None, HealthStatus::Starting)
+        } else if self.probe_peers {
+            let reachable = peers
+                .iter()
+                .filter(|p| cheap_tcp_reachable(&p.endpoint.address))
+                .count();
+            let configured = peers.len();
+            let reach = PeerReachability::Probed {
+                reachable,
+                configured,
+            };
+            let status = if reachable == 0 {
+                HealthStatus::Degraded
+            } else {
+                HealthStatus::Ready
+            };
+            (reach, Some(reachable), status)
         } else {
-            HealthStatus::Ready
+            (
+                PeerReachability::DirectoryOnly,
+                None,
+                HealthStatus::Ready,
+            )
         };
         Ok(NodeHealth {
             node_id: self.node_id.clone(),
@@ -56,6 +88,29 @@ impl GetHealth {
             tee_available: self.tee_available,
             peer_count: peers.len(),
             genesis_roster: self.genesis_roster.clone(),
+            peer_reachability,
+            peers_reachable,
         })
     }
+}
+
+/// Best-effort clearnet TCP dial. Onion / non-socket addresses return false
+/// without claiming Tor reachability.
+fn cheap_tcp_reachable(addr: &str) -> bool {
+    let trimmed = addr.trim();
+    if trimmed.is_empty() || trimmed.contains(".onion") {
+        return false;
+    }
+    let candidate = if trimmed.contains(':') {
+        trimmed.to_string()
+    } else {
+        format!("{trimmed}:7701")
+    };
+    let Ok(mut iter) = candidate.to_socket_addrs() else {
+        return false;
+    };
+    let Some(sa) = iter.next() else {
+        return false;
+    };
+    TcpStream::connect_timeout(&SocketAddr::from(sa), Duration::from_millis(80)).is_ok()
 }

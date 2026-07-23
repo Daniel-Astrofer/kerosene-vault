@@ -28,6 +28,11 @@ fn health_ready_when_peers_present() {
     assert_eq!(health.status, HealthStatus::Ready);
     assert_eq!(health.attestation_mode, AttestationMode::Sim.as_str());
     assert!(health.genesis_roster.is_empty());
+    assert_eq!(
+        health.peer_reachability,
+        kerosene_vault::domain::PeerReachability::DirectoryOnly
+    );
+    assert!(health.peers_reachable.is_none());
 }
 
 #[test]
@@ -91,8 +96,12 @@ fn sim_forbidden_when_refuse_sim() {
         tls_client_ca_path: Some("/lab/certs/ca.crt".into()),
         tls_client_cert_path: Some("/lab/certs/vault-client.crt".into()),
         tls_client_key_path: Some("/lab/certs/vault-client.key".into()),
+        tls_verify_policy: kerosene_vault::adapters::TlsPeerVerifyPolicy::Hostname,
         share_store_mode: kerosene_vault::bootstrap::ShareStoreMode::TeeSeal,
         share_passphrase: None,
+        share_tpm_seal: false,
+        share_tpm_stub: false,
+        share_tpm_clear_fallback: false,
         data_dir: None,
         anti_nonce_shared_dir: None,
         measurement_pin_hex: None,

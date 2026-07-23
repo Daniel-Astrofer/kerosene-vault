@@ -75,6 +75,32 @@ pub fn validate_destination(network: BitcoinNetwork, destination: &str) -> Resul
     }
 }
 
+
+/// Resolve Intent destination to a scriptPubKey for PSBT binding.
+/// Opaque lab tags cannot bind on-chain — callers must use a real address.
+pub fn destination_script_pubkey(
+    network: BitcoinNetwork,
+    destination: &str,
+) -> Result<bitcoin::ScriptBuf, DomainError> {
+    validate_destination(network, destination)?;
+    let dest = destination.trim();
+    let unchecked = dest.parse::<Address<NetworkUnchecked>>().map_err(|_| {
+        DomainError::InvalidIntent(
+            "PSBT Intent bind requires a Bitcoin address destination (opaque lab tags cannot bind outputs)"
+                .into(),
+        )
+    })?;
+    let checked = unchecked
+        .require_network(network.to_bitcoin())
+        .map_err(|_| {
+            DomainError::BitcoinNetworkMismatch(format!(
+                "address not valid for {}",
+                network.as_str()
+            ))
+        })?;
+    Ok(checked.script_pubkey())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

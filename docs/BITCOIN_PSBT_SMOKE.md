@@ -37,6 +37,9 @@ curl -s -H "X-Vault-Token: $TOKEN" "$VAULT/v1/bitcoin/deposit"
 
 - Online &lt; t → vault returns fail-stop; kfe marks provider failure (no mpc fallback)
 - `mesh-only=true` disables local Core `walletprocesspsbt` signing even if the flag is set
+- Intent↔PSBT bind: vault refuses sign unless PSBT pays Intent `destination`/`amount_sats` (change only back to mesh `tr()`)
+- Shared Taproot key: only `bucket=USERS` until per-bucket keys exist (CHANNELS/INFRA escape rejected)
+- Staging/prod: mTLS required; static lab token cannot authorize treasury signing
 
 ## Remaining gaps vs legacy Core/mpc path
 
@@ -44,6 +47,7 @@ curl -s -H "X-Vault-Token: $TOKEN" "$VAULT/v1/bitcoin/deposit"
 - Single key-path Taproot spend path; no BIP32 change derivation under FROST yet
 - Multi-input works if all inputs are mesh `tr()` UTXOs; mixed script types not signed
 - Distributed DKG for Taproot keyset still lab-dealer for this path
+- Raw `/v1/bitcoin/sign-sighash` remains lab-only (cannot bind outputs)
 
 ## Day advance + Taproot reshare
 
