@@ -59,6 +59,31 @@ pub trait BucketLedgerPort: Send + Sync {
     fn record_spend(&self, kind: BucketKind, amount_sats: u64) -> Result<(), DomainError>;
     fn is_consumed(&self, intent_id: &str) -> Result<bool, DomainError>;
     fn mark_consumed(&self, intent_id: &str) -> Result<(), DomainError>;
+    /// Atomic check-and-insert. Returns [`DomainError::IntentReplay`] if already consumed.
+    fn try_consume(&self, intent_id: &str) -> Result<(), DomainError> {
+        if self.is_consumed(intent_id)? {
+            return Err(DomainError::IntentReplay(intent_id.to_string()));
+        }
+        self.mark_consumed(intent_id)
+    }
+    /// Validate + record spend + consume under one critical section (TOCTOU-safe).
+    fn authorize_spend_and_consume(
+        &self,
+        intent_id: &str,
+        kind: BucketKind,
+        amount_sats: u64,
+        validate: &dyn Fn(&BucketPolicy, u64) -> Result<(), DomainError>,
+    ) -> Result<(), DomainError> {
+        if self.is_consumed(intent_id)? {
+            return Err(DomainError::IntentReplay(intent_id.to_string()));
+        }
+        let policy = self.policy(kind)?;
+        let spent = self.spent_today(kind)?;
+        validate(&policy, spent)?;
+        self.record_spend(kind, amount_sats)?;
+        self.try_consume(intent_id)?;
+        Ok(())
+    }
 }
 
 /// Miner reward pool + eligibility (F9). Vaults never invent payout destinations.

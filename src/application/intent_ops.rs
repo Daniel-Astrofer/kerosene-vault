@@ -24,29 +24,40 @@ impl GateIntent {
         }
     }
 
-    /// Evaluate + consume intent id (replay-safe). Does not sign.
+    /// Evaluate + consume intent id (atomic + durable when backed by persisted ledger).
+    /// Does not sign.
     pub fn execute(&self, intent: SettlementIntent) -> Result<GateReceipt, DomainError> {
-        if self.buckets.is_consumed(&intent.intent_id)? {
-            return Err(DomainError::IntentReplay(intent.intent_id));
-        }
         let constitution = self.ledger.constitution()?;
-        let mut policy = self.buckets.policy(intent.bucket)?;
-        let spent = self.buckets.spent_today(intent.bucket)?;
-        // F9: open MINERS — destination must be an eligible registered operator (bank Intent;
-        // vaults never invent self-pay). Registered dest is admitted into the allowlist for this check.
-        if constitution.profit_splits.miners_bps > 0 && intent.bucket == BucketKind::Miners {
+        let miners_open =
+            constitution.profit_splits.miners_bps > 0 && intent.bucket == BucketKind::Miners;
+        if miners_open {
             assert_bank_issued_miner_payout(&self.economy.snapshot()?, &intent)?;
-            policy
-                .destination_allowlist
-                .insert(intent.destination.clone());
         }
-        evaluate_intent(&intent, &policy, spent, &constitution.hash)?;
-        self.buckets.record_spend(intent.bucket, intent.amount_sats)?;
-        self.buckets.mark_consumed(&intent.intent_id)?;
+        let policy_hash = constitution.hash.clone();
+        let intent_id = intent.intent_id.clone();
+        let bucket = intent.bucket;
+        let amount_sats = intent.amount_sats;
+
+        self.buckets.authorize_spend_and_consume(
+            &intent_id,
+            bucket,
+            amount_sats,
+            &|policy, spent| {
+                let mut policy = policy.clone();
+                // F9: open MINERS — destination must be an eligible registered operator
+                // (bank Intent; vaults never invent self-pay). Admit registered dest for check.
+                if miners_open {
+                    policy
+                        .destination_allowlist
+                        .insert(intent.destination.clone());
+                }
+                evaluate_intent(&intent, &policy, spent, &policy_hash)
+            },
+        )?;
         Ok(GateReceipt {
-            intent_id: intent.intent_id,
-            bucket: intent.bucket,
-            amount_sats: intent.amount_sats,
+            intent_id,
+            bucket,
+            amount_sats,
             status: "ACCEPTED",
         })
     }
