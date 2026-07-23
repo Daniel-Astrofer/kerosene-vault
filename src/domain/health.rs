@@ -25,18 +25,27 @@ pub struct NodeHealth {
     pub attestation_mode: String,
     pub tee_available: bool,
     pub peer_count: usize,
+    /// Seated genesis / wire-DKG roster (SEV-priority); empty if unknown.
+    pub genesis_roster: Vec<String>,
 }
 
 impl NodeHealth {
     pub fn to_json(&self) -> String {
+        let roster = self
+            .genesis_roster
+            .iter()
+            .map(|id| format!(r#""{id}""#))
+            .collect::<Vec<_>>()
+            .join(",");
         format!(
-            r#"{{"node_id":"{}","status":"{}","node_tier":"{}","attestation_mode":"{}","tee_available":{},"peer_count":{}}}"#,
+            r#"{{"node_id":"{}","status":"{}","node_tier":"{}","attestation_mode":"{}","tee_available":{},"peer_count":{},"genesis_roster":[{}]}}"#,
             self.node_id,
             self.status.as_str(),
             self.node_tier,
             self.attestation_mode,
             self.tee_available,
-            self.peer_count
+            self.peer_count,
+            roster
         )
     }
 }

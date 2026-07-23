@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use super::http_peer::PeerHttpSettings;
 use crate::application::AntiNoncePort;
 use crate::domain::{quorum_two_thirds, DomainError};
 
@@ -102,7 +103,7 @@ pub trait AntiNonceQuorumTransport: Send + Sync {
 pub struct HttpAntiNonceTransport {
     peer_prepare_urls: Vec<String>,
     auth_token: Option<String>,
-    timeout: Duration,
+    peer_http: PeerHttpSettings,
 }
 
 impl HttpAntiNonceTransport {
@@ -111,10 +112,22 @@ impl HttpAntiNonceTransport {
         auth_token: Option<String>,
         timeout: Duration,
     ) -> Self {
+        let mut peer_http = PeerHttpSettings::clearnet_defaults();
+        peer_http.timeout = timeout;
+        peer_http.connect_timeout = timeout;
+        peer_http.max_retries = 1;
+        Self::with_peer_http(peer_prepare_urls, auth_token, peer_http)
+    }
+
+    pub fn with_peer_http(
+        peer_prepare_urls: Vec<String>,
+        auth_token: Option<String>,
+        peer_http: PeerHttpSettings,
+    ) -> Self {
         Self {
             peer_prepare_urls,
             auth_token,
-            timeout,
+            peer_http,
         }
     }
 }
@@ -125,30 +138,46 @@ impl AntiNonceQuorumTransport for HttpAntiNonceTransport {
         if self.peer_prepare_urls.is_empty() {
             return Ok(out);
         }
-        let client = reqwest::blocking::Client::builder()
-            .timeout(self.timeout)
-            .build()
-            .map_err(|e| DomainError::ThresholdError(format!("anti-nonce http client: {e}")))?;
+        let client = self.peer_http.build_blocking_client()?;
         let body = serde_json::json!({ "session_id": session_id }).to_string();
         for url in &self.peer_prepare_urls {
-            let mut req = client
-                .post(url)
-                .header("Content-Type", "application/json")
-                .body(body.clone());
-            if let Some(token) = self.auth_token.as_deref() {
-                req = req.header("X-Vault-Token", token);
+            let attempts = self.peer_http.max_retries.max(1);
+            let mut ack = None;
+            for attempt in 0..attempts {
+                let mut req = client
+                    .post(url)
+                    .header("Content-Type", "application/json")
+                    .body(body.clone());
+                if let Some(token) = self.auth_token.as_deref() {
+                    req = req.header("X-Vault-Token", token);
+                }
+                match req.send() {
+                    Ok(resp) if resp.status().is_success() => {
+                        let text = resp.text().unwrap_or_default();
+                        ack = Some(PrepareAck {
+                            already_seen: parse_already_seen(&text),
+                        });
+                        break;
+                    }
+                    Ok(resp) => {
+                        if !PeerHttpSettings::should_retry_status(resp.status())
+                            || attempt + 1 >= attempts
+                        {
+                            break;
+                        }
+                        std::thread::sleep(self.peer_http.backoff_delay(attempt));
+                    }
+                    Err(_) => {
+                        if attempt + 1 >= attempts {
+                            break; // unreachable peer — does not count toward quorum
+                        }
+                        std::thread::sleep(self.peer_http.backoff_delay(attempt));
+                    }
+                }
             }
-            let resp = match req.send() {
-                Ok(r) => r,
-                Err(_) => continue, // unreachable peer — does not count toward quorum
-            };
-            if !resp.status().is_success() {
-                continue;
+            if let Some(a) = ack {
+                out.push(a);
             }
-            let text = resp.text().unwrap_or_default();
-            out.push(PrepareAck {
-                already_seen: parse_already_seen(&text),
-            });
         }
         Ok(out)
     }

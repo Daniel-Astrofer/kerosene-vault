@@ -206,8 +206,11 @@ A maioria dos operadores de vault são **computadores domésticos** (ex. Ryzen d
 | `VAULT_NODE_TIER` | `domestic` (ou `auto` → sem `/dev/sev-guest`) | `sev` / `sgx` só com HW |
 | `ATTESTATION_MODE` | `software` | `sev` / `sgx` |
 | `VAULT_SHARE_STORE` | `aead_disk` (+ TPM seal opcional) | `tee_seal` |
+| `VAULT_DKG_MODE` | `distributed_wire` (mesmo path do lab) | idem |
 | `VAULT_PEER_TIERS` | opcional | `vault-epyc=sev,...` para preferência de assento |
 | `ATTESTATION_STAGING_STUB` | off | **proibido** em produção |
+
+Runbook curto: `backend/kerosene-vault/docs/CEREMONY_NATIVE.md`. Checklist: `./scripts/genesis_ceremony_checklist.sh`.
 
 #### TPM 2.0 vs SEV-SNP (tabela honesta)
 

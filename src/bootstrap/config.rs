@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
 
+use crate::adapters::{peer_addr_is_onion, PeerHttpSettings, VaultTransport};
 use crate::domain::{
-    resolve_node_tier, AttestationMode, BitcoinNetwork, DomainError, GovernanceRewardConfig, NodeId,
-    ResharePolicy, VaultNodeTier,
+    resolve_node_tier, seat_genesis_by_tier, AttestationMode, BitcoinNetwork, DomainError,
+    GovernanceRewardConfig, NodeId, ResharePolicy, SeatingCandidate, VaultNodeTier,
 };
+use std::time::Duration;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CeremonyMode {
@@ -176,6 +178,12 @@ pub struct VaultConfig {
     pub governance_reward_sats: u64,
     /// Optional bps of current miner pool added to job bounty (`VAULT_GOVERNANCE_REWARD_BPS`).
     pub governance_reward_bps: u32,
+    /// Mesh transport: `clearnet` (lab LAN) or `tor` (SOCKS → onion peers).
+    pub transport: VaultTransport,
+    /// Outbound HTTP settings for peer DKG / anti-nonce (SOCKS, timeouts, retries).
+    pub peer_http: PeerHttpSettings,
+    /// Explicit clearnet publish flag — refused for production ceremony over Tor.
+    pub clearnet_publish: bool,
 }
 
 impl VaultConfig {
@@ -318,7 +326,8 @@ impl VaultConfig {
         let measurement_pin_hex = env_nonempty_first(&["VAULT_MEASUREMENT_PIN"]);
 
         // Lab P0 / Gate: VAULT_DKG_MODE (preferred); VAULT_DKG legacy alias.
-        // `distributed` wins over the lab dealer default. Dealer never default in hardened.
+        // Production/staging default = over-wire FROST (same path as lab distributed_wire).
+        // In-process `distributed` is lab/single-node only. Dealer never default in hardened.
         let dkg_raw = std::env::var("VAULT_DKG_MODE")
             .or_else(|_| std::env::var("VAULT_DKG"))
             .ok();
@@ -326,7 +335,7 @@ impl VaultConfig {
             Some(raw) => DkgMode::parse(raw).ok_or_else(|| {
                 DomainError::AttestationRejected(format!("unknown VAULT_DKG_MODE={raw}"))
             })?,
-            None if hardened => DkgMode::Distributed,
+            None if hardened => DkgMode::DistributedWire,
             None if cfg!(feature = "dealer_lab") => DkgMode::DealerLab,
             None => DkgMode::Distributed,
         };
@@ -340,6 +349,56 @@ impl VaultConfig {
             .ok()
             .and_then(|s| s.parse::<u32>().ok())
             .unwrap_or(0);
+
+        let transport_raw = std::env::var("VAULT_TRANSPORT").unwrap_or_else(|_| {
+            // Production ceremony defaults to Tor; lab/staging stay clearnet unless set.
+            if matches!(ceremony_mode, CeremonyMode::Production) {
+                "tor".into()
+            } else {
+                "clearnet".into()
+            }
+        });
+        let transport = VaultTransport::parse(&transport_raw).ok_or_else(|| {
+            DomainError::AttestationRejected(format!("unknown VAULT_TRANSPORT={transport_raw}"))
+        })?;
+
+        let mut peer_http = if transport.is_tor() {
+            PeerHttpSettings::tor_defaults()
+        } else {
+            PeerHttpSettings::clearnet_defaults()
+        };
+        peer_http.transport = transport;
+        if let Some(socks) = env_nonempty_first(&["VAULT_SOCKS_PROXY", "VAULT_TOR_SOCKS"]) {
+            peer_http.socks_proxy = Some(PeerHttpSettings::normalize_socks_proxy(&socks));
+        } else if !transport.is_tor() {
+            peer_http.socks_proxy = None;
+        }
+        if let Ok(s) = std::env::var("VAULT_HTTP_TIMEOUT_SECS") {
+            if let Ok(secs) = s.parse::<u64>() {
+                peer_http.timeout = Duration::from_secs(secs.max(1));
+            }
+        }
+        if let Ok(s) = std::env::var("VAULT_HTTP_CONNECT_TIMEOUT_SECS") {
+            if let Ok(secs) = s.parse::<u64>() {
+                peer_http.connect_timeout = Duration::from_secs(secs.max(1));
+            }
+        }
+        if let Ok(s) = std::env::var("VAULT_HTTP_MAX_RETRIES") {
+            if let Ok(n) = s.parse::<u32>() {
+                peer_http.max_retries = n.max(1);
+            }
+        }
+        if let Ok(s) = std::env::var("VAULT_HTTP_RETRY_BASE_MS") {
+            if let Ok(ms) = s.parse::<u64>() {
+                peer_http.retry_base_ms = ms;
+            }
+        }
+        if let Ok(s) = std::env::var("VAULT_HTTP_RETRY_JITTER_MS") {
+            if let Ok(ms) = s.parse::<u64>() {
+                peer_http.retry_jitter_ms = ms;
+            }
+        }
+        let clearnet_publish = env_flag("VAULT_CLEARNET_PUBLISH");
 
         let cfg = Self {
             node_id,
@@ -379,6 +438,9 @@ impl VaultConfig {
             reshare_policy,
             governance_reward_sats,
             governance_reward_bps,
+            transport,
+            peer_http,
+            clearnet_publish,
         };
         cfg.validate_hygiene()?;
         Ok(cfg)
@@ -446,6 +508,11 @@ impl VaultConfig {
                     "dealer DKG refused in staging/production (ToB 2024)".into(),
                 ));
             }
+            if !matches!(self.dkg_mode, DkgMode::DistributedWire) {
+                return Err(DomainError::DealerForbidden(
+                    "staging/production ceremony requires VAULT_DKG_MODE=distributed_wire (real FROST over-wire; not dealer or in-process sim)".into(),
+                ));
+            }
             if self.auth_mode == AuthMode::StaticToken {
                 return Err(DomainError::AuthRejected(
                     "static token refused in staging/production; use mTLS".into(),
@@ -460,6 +527,48 @@ impl VaultConfig {
         if self.auth_mode == AuthMode::MutualTls {
             self.require_mtls_paths()?;
             self.require_mtls_client_identity()?;
+        }
+        self.validate_transport_hygiene()?;
+        Ok(())
+    }
+
+    /// Production ceremony requires private Tor mesh (onion peers + SOCKS); refuse clearnet publish.
+    pub fn validate_transport_hygiene(&self) -> Result<(), DomainError> {
+        if self.transport.is_tor() {
+            let socks = self.peer_http.socks_proxy.as_deref().unwrap_or("");
+            if socks.is_empty() {
+                return Err(DomainError::LabFlagForbidden(
+                    "VAULT_TRANSPORT=tor requires VAULT_SOCKS_PROXY (e.g. socks5h://127.0.0.1:9050)"
+                        .into(),
+                ));
+            }
+            for (id, addr) in &self.seed_peers {
+                if !peer_addr_is_onion(addr) {
+                    return Err(DomainError::AttestationRejected(format!(
+                        "VAULT_TRANSPORT=tor requires onion VAULT_SEED_PEERS (peer {id}={addr})"
+                    )));
+                }
+            }
+        }
+
+        if self.ceremony_mode == CeremonyMode::Production {
+            if !self.transport.is_tor() {
+                return Err(DomainError::LabFlagForbidden(
+                    "production ceremony requires VAULT_TRANSPORT=tor (private Tor mesh; not clearnet LAN)"
+                        .into(),
+                ));
+            }
+            if self.clearnet_publish {
+                return Err(DomainError::LabFlagForbidden(
+                    "VAULT_CLEARNET_PUBLISH refused in production ceremony (do not expose vault ports on clearnet)"
+                        .into(),
+                ));
+            }
+            if self.seed_peers.is_empty() {
+                return Err(DomainError::AttestationRejected(
+                    "production ceremony requires VAULT_SEED_PEERS (onion addresses)".into(),
+                ));
+            }
         }
         Ok(())
     }
@@ -502,6 +611,40 @@ impl VaultConfig {
             .get(peer_id)
             .copied()
             .unwrap_or(VaultNodeTier::Domestic)
+    }
+
+    /// Candidates for genesis seating: local + seed peers (pads added by caller if needed).
+    pub fn seating_candidates(&self) -> Result<Vec<SeatingCandidate>, DomainError> {
+        let mut candidates = vec![SeatingCandidate {
+            id: self.node_id.clone(),
+            tier: self.node_tier,
+        }];
+        for (id, _) in &self.seed_peers {
+            candidates.push(SeatingCandidate {
+                id: NodeId::new(id.clone())?,
+                tier: self.peer_tier(id),
+            });
+        }
+        Ok(candidates)
+    }
+
+    /// Target genesis size (`VAULT_GENESIS_N` or local+seeds, min 2).
+    pub fn effective_genesis_n(&self) -> usize {
+        self.genesis_n
+            .unwrap_or_else(|| self.seed_peers.len().saturating_add(1).max(2))
+    }
+
+    /// SEV-priority seating for genesis / wire DKG roster (§3.1).
+    pub fn seat_genesis(&self) -> Result<Vec<NodeId>, DomainError> {
+        let mut candidates = self.seating_candidates()?;
+        let n = self.effective_genesis_n();
+        while candidates.len() < n {
+            candidates.push(SeatingCandidate {
+                id: NodeId::new(format!("vault-pad-{}", candidates.len()))?,
+                tier: VaultNodeTier::Domestic,
+            });
+        }
+        Ok(seat_genesis_by_tier(&candidates, n))
     }
 
     /// Paths for rustls mTLS serve (`VAULT_TLS_*`).
@@ -632,6 +775,9 @@ mod tests {
             reshare_policy: ResharePolicy::Manual,
             governance_reward_sats: 0,
             governance_reward_bps: 0,
+            transport: VaultTransport::Clearnet,
+            peer_http: PeerHttpSettings::clearnet_defaults(),
+            clearnet_publish: false,
         }
     }
 
@@ -641,6 +787,24 @@ mod tests {
         cfg.tls_client_ca_path = Some("/lab/certs/ca.crt".into());
         cfg.tls_client_cert_path = Some("/lab/certs/vault-client.crt".into());
         cfg.tls_client_key_path = Some("/lab/certs/vault-client.key".into());
+        cfg
+    }
+
+    fn with_tor_mesh(mut cfg: VaultConfig) -> VaultConfig {
+        cfg.transport = VaultTransport::Tor;
+        cfg.peer_http = PeerHttpSettings::tor_defaults();
+        cfg.clearnet_publish = false;
+        cfg.seed_peers = vec![
+            (
+                "vault-2".into(),
+                "http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion:7701".into(),
+            ),
+            (
+                "vault-3".into(),
+                "http://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.onion:7701".into(),
+            ),
+        ];
+        cfg.genesis_n = Some(3);
         cfg
     }
 
@@ -700,7 +864,7 @@ mod tests {
         cfg = with_mtls_paths(cfg);
         cfg.share_store_mode = ShareStoreMode::TeeSeal;
         cfg.dealer_requested = false;
-        cfg.dkg_mode = DkgMode::Distributed;
+        cfg.dkg_mode = DkgMode::DistributedWire;
         assert_eq!(
             cfg.validate_hygiene(),
             Err(DomainError::LabFlagForbidden(
@@ -723,7 +887,7 @@ mod tests {
         cfg = with_mtls_paths(cfg);
         cfg.share_store_mode = ShareStoreMode::TeeSeal;
         cfg.dealer_requested = false;
-        cfg.dkg_mode = DkgMode::Distributed;
+        cfg.dkg_mode = DkgMode::DistributedWire;
         assert!(cfg.validate_hygiene().is_ok());
     }
 
@@ -739,7 +903,7 @@ mod tests {
         cfg.auth_mode = AuthMode::StaticToken;
         cfg.share_store_mode = ShareStoreMode::TeeSeal;
         cfg.dealer_requested = false;
-        cfg.dkg_mode = DkgMode::Distributed;
+        cfg.dkg_mode = DkgMode::DistributedWire;
         assert!(matches!(
             cfg.validate_hygiene(),
             Err(DomainError::AuthRejected(_))
@@ -764,10 +928,103 @@ mod tests {
         cfg.hardened = true;
         cfg.auth_mode = AuthMode::MutualTls;
         cfg = with_mtls_paths(cfg);
+        cfg = with_tor_mesh(cfg);
         cfg.share_store_mode = ShareStoreMode::AeadDisk;
         cfg.dealer_requested = false;
         cfg.dkg_mode = DkgMode::DistributedWire;
         assert!(cfg.validate_hygiene().is_ok());
+    }
+
+    #[test]
+    fn production_refuses_clearnet_transport() {
+        let mut cfg = base();
+        cfg.node_tier = VaultNodeTier::Domestic;
+        cfg.attestation_mode = AttestationMode::Software;
+        cfg.ceremony_mode = CeremonyMode::Production;
+        cfg.refuse_sim = true;
+        cfg.hardened = true;
+        cfg.auth_mode = AuthMode::MutualTls;
+        cfg = with_mtls_paths(cfg);
+        cfg.share_store_mode = ShareStoreMode::AeadDisk;
+        cfg.dealer_requested = false;
+        cfg.dkg_mode = DkgMode::DistributedWire;
+        cfg.transport = VaultTransport::Clearnet;
+        cfg.peer_http = PeerHttpSettings::clearnet_defaults();
+        cfg.seed_peers = vec![("vault-2".into(), "vault-2:7701".into())];
+        assert!(matches!(
+            cfg.validate_hygiene(),
+            Err(DomainError::LabFlagForbidden(_))
+        ));
+    }
+
+    #[test]
+    fn production_refuses_clearnet_publish_flag() {
+        let mut cfg = base();
+        cfg.node_tier = VaultNodeTier::Domestic;
+        cfg.attestation_mode = AttestationMode::Software;
+        cfg.ceremony_mode = CeremonyMode::Production;
+        cfg.refuse_sim = true;
+        cfg.hardened = true;
+        cfg.auth_mode = AuthMode::MutualTls;
+        cfg = with_mtls_paths(cfg);
+        cfg = with_tor_mesh(cfg);
+        cfg.clearnet_publish = true;
+        cfg.share_store_mode = ShareStoreMode::AeadDisk;
+        cfg.dealer_requested = false;
+        cfg.dkg_mode = DkgMode::DistributedWire;
+        assert!(matches!(
+            cfg.validate_hygiene(),
+            Err(DomainError::LabFlagForbidden(_))
+        ));
+    }
+
+    #[test]
+    fn tor_transport_refuses_non_onion_peers() {
+        let mut cfg = base();
+        cfg.transport = VaultTransport::Tor;
+        cfg.peer_http = PeerHttpSettings::tor_defaults();
+        cfg.seed_peers = vec![("vault-2".into(), "vault-2:7701".into())];
+        assert!(matches!(
+            cfg.validate_transport_hygiene(),
+            Err(DomainError::AttestationRejected(_))
+        ));
+    }
+
+    #[test]
+    fn production_refuses_in_process_distributed_dkg() {
+        let mut cfg = base();
+        cfg.node_tier = VaultNodeTier::Domestic;
+        cfg.attestation_mode = AttestationMode::Software;
+        cfg.ceremony_mode = CeremonyMode::Production;
+        cfg.refuse_sim = true;
+        cfg.hardened = true;
+        cfg.auth_mode = AuthMode::MutualTls;
+        cfg = with_mtls_paths(cfg);
+        cfg.share_store_mode = ShareStoreMode::AeadDisk;
+        cfg.dealer_requested = false;
+        cfg.dkg_mode = DkgMode::Distributed;
+        assert!(matches!(
+            cfg.validate_hygiene(),
+            Err(DomainError::DealerForbidden(_))
+        ));
+    }
+
+    #[test]
+    fn seat_genesis_prefers_sev_peers() {
+        let mut cfg = base();
+        cfg.node_id = NodeId::new("vault-home").unwrap();
+        cfg.node_tier = VaultNodeTier::Domestic;
+        cfg.seed_peers = vec![
+            ("vault-epyc".into(), "epyc:7701".into()),
+            ("vault-home-2".into(), "h2:7701".into()),
+        ];
+        cfg.peer_tiers
+            .insert("vault-epyc".into(), VaultNodeTier::Sev);
+        cfg.genesis_n = Some(2);
+        let seats = cfg.seat_genesis().unwrap();
+        assert_eq!(seats.len(), 2);
+        assert_eq!(seats[0].as_str(), "vault-epyc");
+        assert_eq!(seats[1].as_str(), "vault-home");
     }
 
     #[test]
@@ -784,7 +1041,7 @@ mod tests {
         cfg = with_mtls_paths(cfg);
         cfg.share_store_mode = ShareStoreMode::TeeSeal;
         cfg.dealer_requested = false;
-        cfg.dkg_mode = DkgMode::Distributed;
+        cfg.dkg_mode = DkgMode::DistributedWire;
         assert!(matches!(
             cfg.validate_hygiene(),
             Err(DomainError::AttestationRejected(_))
@@ -805,7 +1062,7 @@ mod tests {
         cfg = with_mtls_paths(cfg);
         cfg.share_store_mode = ShareStoreMode::TeeSeal;
         cfg.dealer_requested = false;
-        cfg.dkg_mode = DkgMode::Distributed;
+        cfg.dkg_mode = DkgMode::DistributedWire;
         assert!(matches!(
             cfg.validate_hygiene(),
             Err(DomainError::LabFlagForbidden(_))
@@ -848,7 +1105,7 @@ mod tests {
             cfg.auth_mode = AuthMode::StaticToken;
             cfg.share_store_mode = ShareStoreMode::AeadDisk;
             cfg.dealer_requested = false;
-            cfg.dkg_mode = DkgMode::Distributed;
+            cfg.dkg_mode = DkgMode::DistributedWire;
             assert!(
                 matches!(cfg.validate_hygiene(), Err(DomainError::AuthRejected(_))),
                 "static_token must be refused in {:?}",

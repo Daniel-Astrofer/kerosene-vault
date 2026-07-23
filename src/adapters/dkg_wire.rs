@@ -19,7 +19,6 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
-use std::time::Duration;
 
 use frost_secp256k1 as frost;
 use frost_secp256k1::keys::dkg::{round1, round2};
@@ -29,6 +28,7 @@ use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use super::http_peer::{post_json_with_retry, PeerHttpSettings};
 use crate::application::ShareStorePort;
 use crate::domain::DomainError;
 
@@ -251,8 +251,11 @@ fn assert_threshold(kp: &KeyPackage, pk: &PublicKeyPackage, min: u16, max: u16) 
     Ok(())
 }
 
-fn build_http_client(auth: &WireDkgPeerAuth) -> Result<reqwest::Client, DomainError> {
-    let builder = reqwest::Client::builder().timeout(Duration::from_secs(30));
+fn build_http_client(
+    auth: &WireDkgPeerAuth,
+    peer_http: &PeerHttpSettings,
+) -> Result<reqwest::Client, DomainError> {
+    let builder = peer_http.apply_builder(reqwest::Client::builder())?;
     match auth {
         WireDkgPeerAuth::StaticToken(_) => builder
             .build()
@@ -315,6 +318,7 @@ pub struct WireDkgHub {
     local_node_id: String,
     peer_addrs: BTreeMap<String, String>,
     peer_auth: WireDkgPeerAuth,
+    peer_http: PeerHttpSettings,
     sessions: Mutex<BTreeMap<String, SessionInner>>,
     /// Completed local share (single session at a time for lab).
     completed: Mutex<Option<(KeyPackage, PublicKeyPackage, u16)>>,
@@ -327,11 +331,26 @@ impl WireDkgHub {
         peer_addrs: BTreeMap<String, String>,
         peer_auth: WireDkgPeerAuth,
     ) -> Result<Self, DomainError> {
-        let http = build_http_client(&peer_auth)?;
+        Self::with_peer_http(
+            local_node_id,
+            peer_addrs,
+            peer_auth,
+            PeerHttpSettings::clearnet_defaults(),
+        )
+    }
+
+    pub fn with_peer_http(
+        local_node_id: impl Into<String>,
+        peer_addrs: BTreeMap<String, String>,
+        peer_auth: WireDkgPeerAuth,
+        peer_http: PeerHttpSettings,
+    ) -> Result<Self, DomainError> {
+        let http = build_http_client(&peer_auth, &peer_http)?;
         Ok(Self {
             local_node_id: local_node_id.into(),
             peer_addrs,
             peer_auth,
+            peer_http,
             sessions: Mutex::new(BTreeMap::new()),
             completed: Mutex::new(None),
             http,
@@ -712,7 +731,7 @@ impl WireDkgHub {
         }
     }
 
-    /// Fan-out round1 package to configured peers (best-effort HTTP/HTTPS).
+    /// Fan-out round1 package to configured peers (HTTP/HTTPS; SOCKS when Tor).
     pub async fn fanout_round1(&self, msg: &Round1WireMessage) -> Result<(), DomainError> {
         let mtls = self.peer_auth.is_mtls();
         for (peer_id, addr) in &self.peer_addrs {
@@ -720,18 +739,15 @@ impl WireDkgHub {
                 continue;
             }
             let url = format!("{}/v1/dkg/round1", peer_base_url(addr, mtls));
-            let res = self
-                .apply_peer_auth_headers(
-                    self.http
-                        .post(&url)
-                        .header("Content-Type", "application/json")
-                        .json(msg),
-                )
-                .send()
-                .await
-                .map_err(|e| {
-                    DomainError::ThresholdError(format!("round1 fanout to {peer_id}: {e}"))
-                })?;
+            let res = post_json_with_retry(
+                &self.http,
+                &self.peer_http,
+                &url,
+                |req| self.apply_peer_auth_headers(req),
+                msg,
+            )
+            .await
+            .map_err(|e| DomainError::ThresholdError(format!("round1 fanout to {peer_id}: {e}")))?;
             if !res.status().is_success() {
                 let body = res.text().await.unwrap_or_default();
                 return Err(DomainError::ThresholdError(format!(
@@ -752,21 +768,20 @@ impl WireDkgHub {
                 ))
             })?;
             let url = format!("{}/v1/dkg/round2", peer_base_url(addr, mtls));
-            let res = self
-                .apply_peer_auth_headers(
-                    self.http
-                        .post(&url)
-                        .header("Content-Type", "application/json")
-                        .json(msg),
-                )
-                .send()
-                .await
-                .map_err(|e| {
-                    DomainError::ThresholdError(format!(
-                        "round2 fanout to {}: {e}",
-                        msg.recipient_node_id
-                    ))
-                })?;
+            let res = post_json_with_retry(
+                &self.http,
+                &self.peer_http,
+                &url,
+                |req| self.apply_peer_auth_headers(req),
+                msg,
+            )
+            .await
+            .map_err(|e| {
+                DomainError::ThresholdError(format!(
+                    "round2 fanout to {}: {e}",
+                    msg.recipient_node_id
+                ))
+            })?;
             if !res.status().is_success() {
                 let body = res.text().await.unwrap_or_default();
                 return Err(DomainError::ThresholdError(format!(

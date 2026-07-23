@@ -63,6 +63,9 @@ fn lab_mtls_cfg(listen: &str, certs: &Path, data_dir: &Path) -> VaultConfig {
         reshare_policy: kerosene_vault::domain::ResharePolicy::Manual,
         governance_reward_sats: 0,
         governance_reward_bps: 0,
+        transport: kerosene_vault::adapters::VaultTransport::Clearnet,
+        peer_http: kerosene_vault::adapters::PeerHttpSettings::clearnet_defaults(),
+        clearnet_publish: false,
     }
 }
 

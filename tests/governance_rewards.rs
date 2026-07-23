@@ -14,8 +14,8 @@ use kerosene_vault::application::{
     ReshareHookPort, UpsertMiner,
 };
 use kerosene_vault::domain::{
-    Constitution, DayEpoch, EconomyState, GovernanceJobKind, GovernanceRewardConfig,
-    LedgerEventKind, MinerOperator, NodeId, ReleasePolicy, ResharePolicy,
+    AttestationMode, Constitution, DayEpoch, EconomyState, GovernanceJobKind, GovernanceRewardConfig,
+    LedgerEventKind, MinerOperator, NodeId, ReleasePolicy, ResharePolicy, VaultNodeTier,
 };
 
 struct FixedClock(u64);
@@ -115,7 +115,14 @@ fn day_rotation_and_reshare_accrue_governance_rewards() {
         .count()
         >= 2);
 
-    let status = GetEconomyStatus::new(economy, ledger, gov_cfg())
+    let status = GetEconomyStatus::new(
+        economy,
+        ledger,
+        gov_cfg(),
+        VaultNodeTier::Domestic,
+        AttestationMode::Sim,
+        false,
+    )
         .execute()
         .unwrap();
     assert_eq!(status.pending_governance_reward_sats, 2_000);

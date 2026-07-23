@@ -27,6 +27,7 @@ fn health_ready_when_peers_present() {
     assert_eq!(health.peer_count, 1);
     assert_eq!(health.status, HealthStatus::Ready);
     assert_eq!(health.attestation_mode, AttestationMode::Sim.as_str());
+    assert!(health.genesis_roster.is_empty());
 }
 
 #[test]
@@ -100,6 +101,9 @@ fn sim_forbidden_when_refuse_sim() {
         reshare_policy: kerosene_vault::domain::ResharePolicy::Manual,
         governance_reward_sats: 0,
         governance_reward_bps: 0,
+        transport: kerosene_vault::adapters::VaultTransport::Clearnet,
+        peer_http: kerosene_vault::adapters::PeerHttpSettings::clearnet_defaults(),
+        clearnet_publish: false,
     };
     assert_eq!(
         cfg.validate_attestation_policy(),

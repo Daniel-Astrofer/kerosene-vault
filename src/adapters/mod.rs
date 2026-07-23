@@ -16,6 +16,7 @@ mod frost_reshare;
 mod frost_sign;
 mod frost_tr_bitcoin;
 mod http;
+mod http_peer;
 mod ledger_memory;
 mod peer_memory;
 mod release_memory;
@@ -52,6 +53,9 @@ pub use frost_tr_bitcoin::{
 #[cfg(feature = "dealer_lab")]
 pub use frost_tr_bitcoin::generate_tr_dealer;
 pub use http::{build_router, AppState};
+pub use http_peer::{
+    peer_addr_is_onion, post_json_with_retry, PeerHttpSettings, VaultTransport,
+};
 pub use ledger_memory::InMemoryLedger;
 pub use peer_memory::InMemoryPeerDirectory;
 pub use release_memory::InMemoryReleaseMesh;

@@ -23,12 +23,14 @@ use crate::application::{
 };
 use crate::bootstrap::{AuthMode, CeremonyMode, DkgMode, ShareStoreMode, VaultConfig};
 use crate::domain::{
-    run_dkg, seat_genesis_by_tier, Constitution, DomainError, EconomyState, Measurement, NodeId,
-    PeerEndpoint, PeerInfo, ReleasePolicy, SeatingCandidate, VaultNodeTier,
+    run_dkg, Constitution, DomainError, EconomyState, Measurement, NodeId, PeerEndpoint, PeerInfo,
+    ReleasePolicy,
 };
 
 pub struct VaultRuntime {
     pub config: VaultConfig,
+    /// Genesis / wire-DKG roster after SEV-priority seating (§3.1).
+    pub genesis_roster: Vec<NodeId>,
     pub get_health: GetHealth,
     pub ping_peer: PingPeer,
     pub get_ledger: GetLedgerSnapshot,
@@ -95,25 +97,15 @@ impl VaultRuntime {
         }
 
         // Genesis seating: prefer SEV > SGX > domestic when filling signing_n.
-        let mut candidates = vec![SeatingCandidate {
-            id: config.node_id.clone(),
-            tier: config.node_tier,
-        }];
-        for (id, _) in &config.seed_peers {
-            candidates.push(SeatingCandidate {
-                id: NodeId::new(id.clone())?,
-                tier: config.peer_tier(id),
-            });
+        // Same roster drives ledger active_set and over-wire FROST DKG start.
+        let active_set = config.seat_genesis()?;
+        let n = active_set.len();
+        if !active_set.iter().any(|id| id == &config.node_id) {
+            return Err(DomainError::ThresholdError(format!(
+                "local node {} not seated in genesis roster (SEV/SGX peers filled VAULT_GENESIS_N seats; this node is waiting-set only)",
+                config.node_id
+            )));
         }
-        let n = config.genesis_n.unwrap_or(candidates.len().max(2));
-        // Lab pads only when under-provisioned (still domestic tier).
-        while candidates.len() < n {
-            candidates.push(SeatingCandidate {
-                id: NodeId::new(format!("vault-pad-{}", candidates.len()))?,
-                tier: VaultNodeTier::Domestic,
-            });
-        }
-        let active_set = seat_genesis_by_tier(&candidates, n);
 
         let mut constitution = if config.open_economy {
             Constitution::v1_open(n)?
@@ -133,7 +125,7 @@ impl VaultRuntime {
         let dkg_set = active_set.clone();
         let ledger = Arc::new(InMemoryLedger::genesis(
             constitution,
-            active_set,
+            active_set.clone(),
             config.node_id.clone(),
         )?);
 
@@ -323,10 +315,10 @@ impl VaultRuntime {
             AuthMode::MutualTls => None,
         };
         let peer_count = peer_prepare.len();
-        let anti_transport = Arc::new(HttpAntiNonceTransport::new(
+        let anti_transport = Arc::new(HttpAntiNonceTransport::with_peer_http(
             peer_prepare,
             peer_auth_token,
-            std::time::Duration::from_millis(1_500),
+            config.peer_http.clone(),
         ));
         let anti_nonce: Arc<dyn AntiNoncePort> = Arc::new(QuorumAntiNonce::open(
             data_root.join("used_sessions.log"),
@@ -354,9 +346,12 @@ impl VaultRuntime {
             data_root.join("day_epoch"),
         ));
 
+        // Wire DKG fan-out only to seated peers (not waiting-set seeds cut by tier).
         let mut peer_addrs = BTreeMap::new();
         for (id, addr) in &config.seed_peers {
-            peer_addrs.insert(id.clone(), addr.clone());
+            if active_set.iter().any(|s| s.as_str() == id.as_str()) {
+                peer_addrs.insert(id.clone(), addr.clone());
+            }
         }
         let peer_auth = match config.auth_mode {
             AuthMode::StaticToken => WireDkgPeerAuth::StaticToken(wire_token),
@@ -369,10 +364,11 @@ impl VaultRuntime {
                 }
             }
         };
-        let wire_dkg = Arc::new(WireDkgHub::new(
+        let wire_dkg = Arc::new(WireDkgHub::with_peer_http(
             config.node_id.as_str().to_string(),
             peer_addrs,
             peer_auth,
+            config.peer_http.clone(),
         )?);
 
         #[cfg(feature = "dealer_lab")]
@@ -473,12 +469,16 @@ impl VaultRuntime {
             }
         };
 
-        let get_health = GetHealth::new(
+        let get_health = GetHealth::with_roster(
             config.node_id.clone(),
             peers_port.clone(),
             attestation.clone(),
             config.node_tier,
             config.tee_available,
+            dkg_set
+                .iter()
+                .map(|n| n.as_str().to_string())
+                .collect(),
         );
         let ping_peer = PingPeer::new(peers_port, attestation, clock.clone(), measurement);
         let get_ledger = GetLedgerSnapshot::new(ledger_port.clone());
@@ -534,6 +534,7 @@ impl VaultRuntime {
 
         Ok(Self {
             config,
+            genesis_roster: dkg_set,
             get_health,
             ping_peer,
             get_ledger,

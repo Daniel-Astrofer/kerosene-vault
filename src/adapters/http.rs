@@ -362,8 +362,9 @@ async fn v1_reshare_trigger(State(state): State<AppState>, body: Bytes) -> impl 
     }
 }
 
-/// Round1: start local part1 (`roster` present) or ingest a peer package (`package_hex`).
-/// Optional `fanout: true` on start POSTs the local package to `VAULT_SEED_PEERS`.
+/// Round1: start local part1 (`roster` / seated genesis) or ingest a peer package (`package_hex`).
+/// Optional `fanout: true` on start POSTs the local package to seated `VAULT_SEED_PEERS`.
+/// Omitting `roster` uses SEV-priority `genesis_roster` from boot seating (production-native path).
 async fn v1_dkg_round1(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
     #[derive(serde::Deserialize)]
     struct Round1Body {
@@ -395,10 +396,52 @@ async fn v1_dkg_round1(State(state): State<AppState>, body: Bytes) -> impl IntoR
         }
     };
 
-    if let Some(roster) = req.roster {
+    let is_start = req.roster.is_some() || req.package_hex.is_none();
+    if is_start && req.package_hex.is_none() {
+        let seated: Vec<String> = state
+            .runtime
+            .genesis_roster
+            .iter()
+            .map(|n| n.as_str().to_string())
+            .collect();
+        let roster = match &req.roster {
+            None => seated.clone(),
+            Some(r) if r.is_empty() => seated.clone(),
+            Some(roster_in) => {
+                let mut provided = roster_in.clone();
+                provided.sort();
+                let mut expected = seated.clone();
+                expected.sort();
+                if provided != expected
+                    && matches!(
+                        state.runtime.config.ceremony_mode,
+                        crate::bootstrap::CeremonyMode::Staging
+                            | crate::bootstrap::CeremonyMode::Production
+                    )
+                {
+                    return (
+                        StatusCode::BAD_REQUEST,
+                        format!(
+                            r#"{{"error":"DKG roster must match seated genesis roster {:?} (got {:?})"}}"#,
+                            seated, roster_in
+                        ),
+                    );
+                }
+                if roster_in.len() == seated.len() {
+                    seated
+                } else {
+                    roster_in.clone()
+                }
+            }
+        };
+        if roster.len() < 2 {
+            return (
+                StatusCode::BAD_REQUEST,
+                r#"{"error":"genesis_roster empty; set VAULT_SEED_PEERS + VAULT_GENESIS_N"}"#.into(),
+            );
+        }
         let max = req.max_signers.unwrap_or(roster.len() as u16);
         let min = req.min_signers.unwrap_or_else(|| {
-            // Match constitution-style ⌈2n/3⌉ for lab when omitted.
             ((max as usize * 2).div_ceil(3)).max(2).min(max as usize) as u16
         });
         let start = crate::adapters::DkgStartRequest {
@@ -407,13 +450,16 @@ async fn v1_dkg_round1(State(state): State<AppState>, body: Bytes) -> impl IntoR
             min_signers: min,
             roster,
         };
-        match state.runtime.wire_dkg.start(start) {
+        return match state.runtime.wire_dkg.start(start) {
             Ok((status, wire)) => {
                 if req.fanout {
                     if let Err(e) = state.runtime.wire_dkg.fanout_round1(&wire).await {
                         return (
                             StatusCode::BAD_GATEWAY,
-                            format!(r#"{{"error":"{e}","status":{}}}"#, serde_json::to_string(&status).unwrap_or_default()),
+                            format!(
+                                r#"{{"error":"{e}","status":{}}}"#,
+                                serde_json::to_string(&status).unwrap_or_default()
+                            ),
                         );
                     }
                 }
@@ -427,30 +473,30 @@ async fn v1_dkg_round1(State(state): State<AppState>, body: Bytes) -> impl IntoR
                 )
             }
             Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
-        }
-    } else {
-        let Some(package_hex) = req.package_hex else {
-            return (
-                StatusCode::BAD_REQUEST,
-                r#"{"error":"round1 requires roster (start) or package_hex (ingest)"}"#.into(),
-            );
         };
-        let msg = crate::adapters::Round1WireMessage {
-            session_id: req.session_id,
-            sender_node_id: req.sender_node_id.unwrap_or_default(),
-            sender_identifier: req.sender_identifier.unwrap_or(0),
-            max_signers: req.max_signers.unwrap_or(0),
-            min_signers: req.min_signers.unwrap_or(0),
-            transcript_hex: req.transcript_hex.unwrap_or_default(),
-            package_hex,
-        };
-        match state.runtime.wire_dkg.ingest_round1(msg) {
-            Ok(status) => (
-                StatusCode::OK,
-                serde_json::to_string(&status).unwrap_or_else(|e| format!(r#"{{"error":"{e}"}}"#)),
-            ),
-            Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
-        }
+    }
+
+    let Some(package_hex) = req.package_hex else {
+        return (
+            StatusCode::BAD_REQUEST,
+            r#"{"error":"round1 requires roster (start) or package_hex (ingest)"}"#.into(),
+        );
+    };
+    let msg = crate::adapters::Round1WireMessage {
+        session_id: req.session_id,
+        sender_node_id: req.sender_node_id.unwrap_or_default(),
+        sender_identifier: req.sender_identifier.unwrap_or(0),
+        max_signers: req.max_signers.unwrap_or(0),
+        min_signers: req.min_signers.unwrap_or(0),
+        transcript_hex: req.transcript_hex.unwrap_or_default(),
+        package_hex,
+    };
+    match state.runtime.wire_dkg.ingest_round1(msg) {
+        Ok(status) => (
+            StatusCode::OK,
+            serde_json::to_string(&status).unwrap_or_else(|e| format!(r#"{{"error":"{e}"}}"#)),
+        ),
+        Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
     }
 }
 

@@ -9,6 +9,7 @@ pub struct GetHealth {
     attestation: Arc<dyn AttestationPort>,
     node_tier: VaultNodeTier,
     tee_available: bool,
+    genesis_roster: Vec<String>,
 }
 
 impl GetHealth {
@@ -19,12 +20,24 @@ impl GetHealth {
         node_tier: VaultNodeTier,
         tee_available: bool,
     ) -> Self {
+        Self::with_roster(node_id, peers, attestation, node_tier, tee_available, vec![])
+    }
+
+    pub fn with_roster(
+        node_id: NodeId,
+        peers: Arc<dyn PeerDirectoryPort>,
+        attestation: Arc<dyn AttestationPort>,
+        node_tier: VaultNodeTier,
+        tee_available: bool,
+        genesis_roster: Vec<String>,
+    ) -> Self {
         Self {
             node_id,
             peers,
             attestation,
             node_tier,
             tee_available,
+            genesis_roster,
         }
     }
 
@@ -42,6 +55,7 @@ impl GetHealth {
             attestation_mode: self.attestation.mode().as_str().to_string(),
             tee_available: self.tee_available,
             peer_count: peers.len(),
+            genesis_roster: self.genesis_roster.clone(),
         })
     }
 }
