@@ -2,9 +2,10 @@ use std::collections::BTreeSet;
 use std::sync::Arc;
 
 use crate::application::ports::{BlobStorePort, ClockPort, LedgerPort, ReleaseStorePort};
+use crate::application::AccrueGovernanceWork;
 use crate::domain::{
-    lab_rebuild_binary_hash, AllowlistEntry, ContentHash, DomainError, NodeId, ReleaseCandidate,
-    ReleasePhase,
+    lab_rebuild_binary_hash, AllowlistEntry, ContentHash, DomainError, GovernanceJobKind, NodeId,
+    ReleaseCandidate, ReleasePhase,
 };
 
 pub struct ProposeRelease {
@@ -125,6 +126,7 @@ pub struct CosignRelease {
     ledger: Arc<dyn LedgerPort>,
     clock: Arc<dyn ClockPort>,
     local_node: NodeId,
+    governance: Option<Arc<AccrueGovernanceWork>>,
 }
 
 impl CosignRelease {
@@ -139,7 +141,13 @@ impl CosignRelease {
             ledger,
             clock,
             local_node,
+            governance: None,
         }
+    }
+
+    pub fn with_governance(mut self, governance: Arc<AccrueGovernanceWork>) -> Self {
+        self.governance = Some(governance);
+        self
     }
 
     pub fn execute(&self, release_id: &str) -> Result<ReleaseCandidate, DomainError> {
@@ -149,6 +157,13 @@ impl CosignRelease {
         candidate.predicates_ok(&policy, self.clock.unix_now_secs(), &constitution.hash)?;
         candidate.add_cosign(&self.local_node)?;
         self.releases.save_candidate(candidate.clone())?;
+        if let Some(gov) = &self.governance {
+            gov.execute(
+                GovernanceJobKind::ReleaseCosign,
+                &[self.local_node.clone()],
+                release_id,
+            )?;
+        }
         Ok(candidate)
     }
 }
@@ -157,6 +172,7 @@ pub struct ActivateRelease {
     releases: Arc<dyn ReleaseStorePort>,
     ledger: Arc<dyn LedgerPort>,
     clock: Arc<dyn ClockPort>,
+    governance: Option<Arc<AccrueGovernanceWork>>,
 }
 
 impl ActivateRelease {
@@ -169,7 +185,13 @@ impl ActivateRelease {
             releases,
             ledger,
             clock,
+            governance: None,
         }
+    }
+
+    pub fn with_governance(mut self, governance: Arc<AccrueGovernanceWork>) -> Self {
+        self.governance = Some(governance);
+        self
     }
 
     pub fn execute(&self, release_id: &str) -> Result<AllowlistEntry, DomainError> {
@@ -191,8 +213,20 @@ impl ActivateRelease {
             constitution_hash: constitution.hash,
         };
         candidate.phase = ReleasePhase::Allowlisted;
+        let cosigners: Vec<NodeId> = candidate
+            .cosigns
+            .iter()
+            .filter_map(|id| NodeId::new(id.clone()).ok())
+            .collect();
         self.releases.save_candidate(candidate)?;
         self.releases.put_allowlist(entry.clone())?;
+        if let Some(gov) = &self.governance {
+            gov.execute(
+                GovernanceJobKind::ReleaseActivate,
+                &cosigners,
+                release_id,
+            )?;
+        }
         Ok(entry)
     }
 }

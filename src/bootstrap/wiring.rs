@@ -11,13 +11,15 @@ use crate::adapters::{
     ThresholdVaultState, WireDkgHub, WireDkgPeerAuth,
 };
 #[cfg(feature = "dealer_lab")]
-use crate::adapters::{dealer_fatal_banner, generate_tr_dealer, DealerLabAdapter};
+use crate::adapters::{
+    dealer_fatal_banner, generate_tr_dealer, load_tr_shares, persist_tr_shares, DealerLabAdapter,
+};
 use crate::application::{
-    AccrueMinerRewards, AllocateProfit, AntiNoncePort, CosignRelease, DailyRotationPort, DkgPort,
-    GateIntent, GetAllowlist, GetEconomyStatus, GetHealth, GetLedgerSnapshot, PingPeer,
-    ProposeEpochAdvance, ProposeMinerPayouts, ProposeRelease, RebuildRelease, ReshareHookPort,
-    ShareStorePort,
-    SignMessage, StaticOnlineCount, UpsertMiner, VaultAuthPort, VoteEpochAdvance, ActivateRelease,
+    AccrueGovernanceWork, AccrueMinerRewards, AllocateProfit, AntiNoncePort, CosignRelease,
+    DailyRotationPort, DkgPort, GateIntent, GetAllowlist, GetEconomyStatus, GetHealth,
+    GetLedgerSnapshot, PingPeer, ProposeEpochAdvance, ProposeMinerPayouts, ProposeRelease,
+    RebuildRelease, ReshareHookPort, ShareStorePort, SignMessage, StaticOnlineCount, UpsertMiner,
+    VaultAuthPort, VoteEpochAdvance, ActivateRelease,
 };
 use crate::bootstrap::{AuthMode, CeremonyMode, DkgMode, ShareStoreMode, VaultConfig};
 use crate::domain::{
@@ -184,6 +186,13 @@ impl VaultRuntime {
 
         let economy = Arc::new(InMemoryEconomy::new(EconomyState::new_open()));
         let economy_port: Arc<dyn crate::application::EconomyPort> = economy.clone();
+        let governance_reward = config.governance_reward_config();
+        let accrue_governance = Arc::new(AccrueGovernanceWork::new(
+            economy_port.clone(),
+            ledger_port.clone(),
+            config.node_id.clone(),
+            governance_reward,
+        ));
 
         let auth: Arc<dyn VaultAuthPort> = match config.auth_mode {
             AuthMode::StaticToken => {
@@ -315,17 +324,23 @@ impl VaultRuntime {
         )?);
         let frost_shares = Arc::new(FrostShareSlot::new());
         let frost_tr_shares = Arc::new(FrostTrShareSlot::new());
-        let reshare_hook: Arc<dyn ReshareHookPort> = Arc::new(PolicyReshareHook::new(
-            config.reshare_policy,
-            ledger_port.clone(),
-            config.node_id.clone(),
-            frost_shares.clone(),
-        ));
-        let daily_rotation: Arc<dyn DailyRotationPort> = Arc::new(QuorumDailyRotation::new(
+        let reshare_hook: Arc<dyn ReshareHookPort> = Arc::new(
+            PolicyReshareHook::new(
+                config.reshare_policy,
+                ledger_port.clone(),
+                config.node_id.clone(),
+                frost_shares.clone(),
+                frost_tr_shares.clone(),
+            )
+            .with_share_store(share_store.clone())
+            .with_governance(accrue_governance.clone()),
+        );
+        let daily_rotation: Arc<dyn DailyRotationPort> = Arc::new(QuorumDailyRotation::with_persist(
             clock.clone(),
             rotation_quorum,
             config.node_id.as_str(),
             reshare_hook.clone(),
+            data_root.join("day_epoch"),
         ));
 
         let mut peer_addrs = BTreeMap::new();
@@ -382,7 +397,15 @@ impl VaultRuntime {
                     Box::new(SharedAntiNonce(anti_nonce.clone())),
                     daily_rotation.clone(),
                 );
-                let tr_state = generate_tr_dealer(max, min)?;
+                // Prefer sealed Taproot material in VAULT_DATA_DIR; dealer only if missing.
+                let tr_state = match load_tr_shares(share_store.as_ref()) {
+                    Ok(existing) => existing,
+                    Err(_) => {
+                        let fresh = generate_tr_dealer(max, min)?;
+                        persist_tr_shares(&fresh, share_store.as_ref())?;
+                        fresh
+                    }
+                };
                 frost_tr_shares.install(tr_state);
                 let tr_orch = FrostTrBitcoinOrchestrator::new(
                     frost_tr_shares.clone(),
@@ -460,13 +483,19 @@ impl VaultRuntime {
             ledger_port.clone(),
             clock.clone(),
             config.node_id.clone(),
-        );
+        )
+        .with_governance(accrue_governance.clone());
         let activate_release =
-            ActivateRelease::new(release_port.clone(), ledger_port.clone(), clock);
+            ActivateRelease::new(release_port.clone(), ledger_port.clone(), clock)
+                .with_governance(accrue_governance.clone());
         let get_allowlist = GetAllowlist::new(release_port);
         let gate_intent = GateIntent::new(bucket_port, ledger_port.clone(), economy_port.clone());
         let allocate_profit = AllocateProfit::new(ledger_port.clone());
-        let get_economy = GetEconomyStatus::new(economy_port.clone(), ledger_port.clone());
+        let get_economy = GetEconomyStatus::new(
+            economy_port.clone(),
+            ledger_port.clone(),
+            governance_reward,
+        );
         let upsert_miner = UpsertMiner::new(economy_port.clone());
         let accrue_rewards = AccrueMinerRewards::new(economy_port.clone(), ledger_port.clone());
         let propose_miner_payouts = ProposeMinerPayouts::new(economy_port, ledger_port);

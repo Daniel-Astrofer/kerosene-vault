@@ -294,6 +294,8 @@ Control plane dos servidores preferencialmente **só via mesh**.
 
 Elegibilidade reward: atestação diária + uptime (ex. 95%/30d) + streak; payout crypto via **Intent** do `kfe-service` a partir do bucket MINERS — vaults **não** se auto-pagam.
 
+**Governance job bounty (mesh):** após quorum de `day_advanced` / `reshare_completed` (e no path de release cosign/activate), a economy acruja bounty aos operadores elegíveis que participaram (voto/reshare/cosign). Config: `VAULT_GOVERNANCE_REWARD_SATS` e/ou `VAULT_GOVERNANCE_REWARD_BPS` (bps do pool atual). Ledger emite `governance_reward_accrued`; `/economy/status` expõe `pending_governance_reward_sats`. Payout continua bank-issued (MINERS Intent) — aqui só accrual + elegibilidade.
+
 Fase 1 permissioned (reward 0/simbólico) → fase 2 abre p% de verdade.
 
 **Assinatura de transação:** quorum **2/3** dos **vaults** detentores de share do bucket (`t = ⌈2n/3⌉`). Fail-stop se online &lt; `t`.
@@ -656,7 +658,7 @@ Rollback permitido: fail-stop + runbook operacional. **Proibido:** religar mpc-s
 
 ### Fase 9 — Economia aberta + resiliência do banco (contínuo)
 
-**Status (lab scaffold):** `Constitution::v1_open` com `p_reward_bps=100` (1%) e `ProfitSplits::open_with_reward`; `EconomyState` + elegibilidade (uptime 95%/30d, streak, waiting set não dilui); accrue `/economy/accrue`; proposta de payout MINERS `/economy/payout/propose` (Intents bank-issued — vaults **não** self-pay); gate rejeita destino MINERS não registrado (`MinerSelfPayForbidden`); PQ dual-stack placeholder `crypto_suite_id_pq`; `VAULT_ECONOMY=open`; testes `tests/economy_f9.rs`. Survivability: fail-closed abaixo de `t`; kfe ledger independente do cofre.
+**Status (lab scaffold):** `Constitution::v1_open` com `p_reward_bps=100` (1%) e `ProfitSplits::open_with_reward`; `EconomyState` + elegibilidade (uptime 95%/30d, streak, waiting set não dilui); accrue `/economy/accrue`; proposta de payout MINERS `/economy/payout/propose` (Intents bank-issued — vaults **não** self-pay); gate rejeita destino MINERS não registrado (`MinerSelfPayForbidden`); PQ dual-stack placeholder `crypto_suite_id_pq`; `VAULT_ECONOMY=open`; bounty de governança (`VAULT_GOVERNANCE_REWARD_SATS` / `_BPS`) em day rotation / reshare / release cosign→activate → `governance_reward_accrued` + `pending_governance_reward_sats` em `/economy/status`; testes `tests/economy_f9.rs` + `tests/governance_rewards.rs`. Survivability: fail-closed abaixo de `t`; kfe ledger independente do cofre.
 
 **Entrega**
 
@@ -671,11 +673,13 @@ Rollback permitido: fail-stop + runbook operacional. **Proibido:** religar mpc-s
 ```bash
 # Open economy smoke
 VAULT_ECONOMY=open cargo test --test economy_f9
+# Governance job bounty (rotation + release)
+VAULT_GOVERNANCE_REWARD_SATS=1000 cargo test --test governance_rewards
 # Accrue 1% then propose bank Intents:
 # POST /economy/accrue/1000000
 # POST /economy/miner/upsert/{id}/{dest}/{uptime}/{streak}/{bond}/{waiting}
 # POST /economy/payout/propose/{amount}/{prefix}
-# GET  /economy/status
+# GET  /economy/status   # includes pending_governance_reward_sats
 ```
 
 ---
@@ -760,4 +764,5 @@ Itens **não fechados** na conversa — precisam de decisão explícita:
 | mTLS auth | **landed** (lab/staging) | `MutualTlsAuthAdapter` + rustls; `gen_lab_mtls_certs.sh` / `rotate_lab_mtls_certs.sh`; SPIFFE-like layout `docs/MTLS_SPIFFE_LAYOUT.md`; kfe `kfe.vaultmesh.tls.*` (PEM/PKCS12); staging compose mTLS e2e |
 | HW attestation | **started** (quote verify path) | `TeeAttestationAdapter` SEV-SNP/SGX envelope + verify structure; `tee_hw` feature; bind `measurement_pin` + allowlist Hb; prod refuses sim/stub; CI fail-closed |
 | Daily rotation + reshare policy | **landed** | Vault: persists `day_epoch` under `VAULT_DATA_DIR` (load on boot); peer vote/advance APIs; `PolicyReshareHook` refreshes **Intent + Taproot** (`frost-secp256k1-tr`, group VK invariant → same `tb1p`); TR packages via `ShareStorePort` (no fresh dealer TR every boot); `VAULT_RESHARE_POLICY=daily\|manual`; docs `DAY_ADVANCE_RESHARE.md`. **kfe orchestration:** `KfeVaultMeshDayRotationWorker` requests vote/advance/reshare via mesh HTTP; vaults do not self-cron the day. |
+| Governance job rewards | **landed** | `AccrueGovernanceWork` on day/reshare + release cosign/activate; `VAULT_GOVERNANCE_REWARD_SATS`/`_BPS`; ledger `governance_reward_accrued`; `/economy/status` `pending_governance_reward_sats` |
 | Anti-nonce replicated | **landed** (quorum) | `QuorumAntiNonce`: append-only `session_id` log + HTTP `/v1/anti-nonce/prepare` ACKs (`ceil(2n/3)`); refuse if seen on ≥1 peer or before quorum; persists across restart; multi-node sim tests |

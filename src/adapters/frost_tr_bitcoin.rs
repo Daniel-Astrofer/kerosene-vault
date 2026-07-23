@@ -24,8 +24,12 @@ use frost_secp256k1_tr::{Identifier, Signature, SigningPackage};
 use rand::rngs::OsRng;
 use zeroize::Zeroize;
 
-use crate::application::{AntiNoncePort, DailyRotationPort};
+use crate::application::{AntiNoncePort, DailyRotationPort, ShareStorePort};
 use crate::domain::{BitcoinNetwork, DomainError};
+
+const TR_PUBKEY_SHARE_ID: &str = "frost-tr-dkg-pubkey";
+const TR_ROSTER_SHARE_ID: &str = "frost-tr-roster";
+const TR_MIN_SHARE_ID: &str = "frost-tr-min-signers";
 
 #[derive(Clone)]
 pub struct FrostTrShareState {
@@ -55,6 +59,188 @@ impl FrostTrShareSlot {
             .clone()
             .ok_or_else(|| DomainError::ThresholdError("taproot FROST shares not installed".into()))
     }
+
+    pub fn replace(&self, state: FrostTrShareState) {
+        *self.inner.write().expect("tr share lock") = Some(state);
+    }
+
+    pub fn is_installed(&self) -> bool {
+        self.inner.read().expect("tr share lock").is_some()
+    }
+}
+
+/// Persist Taproot FROST key packages via ShareStorePort (AEAD lab / TEE seal).
+pub fn persist_tr_shares(
+    state: &FrostTrShareState,
+    store: &dyn ShareStorePort,
+) -> Result<(), DomainError> {
+    let mut roster = Vec::new();
+    for (id, kp) in &state.key_packages {
+        let id_hex = hex::encode(id.serialize());
+        let bytes = kp
+            .serialize()
+            .map_err(|e| DomainError::ThresholdError(format!("tr key package serialize: {e}")))?;
+        store.put_share(&format!("frost-tr-dkg-id-{id_hex}"), &bytes)?;
+        roster.push(id_hex);
+    }
+    let pk_bytes = state.pubkey_package.serialize().map_err(|e| {
+        DomainError::ThresholdError(format!("tr pubkey package serialize: {e}"))
+    })?;
+    store.put_share(TR_PUBKEY_SHARE_ID, &pk_bytes)?;
+    store.put_share(TR_ROSTER_SHARE_ID, roster.join(",").as_bytes())?;
+    store.put_share(
+        TR_MIN_SHARE_ID,
+        state.min_signers.to_string().as_bytes(),
+    )?;
+    Ok(())
+}
+
+/// Load Taproot FROST material previously sealed by [`persist_tr_shares`].
+pub fn load_tr_shares(store: &dyn ShareStorePort) -> Result<FrostTrShareState, DomainError> {
+    let roster_raw = store.get_share(TR_ROSTER_SHARE_ID)?;
+    let roster = String::from_utf8(roster_raw).map_err(|_| {
+        DomainError::ShareStoreForbidden("frost-tr roster is not utf8".into())
+    })?;
+    let min_raw = store.get_share(TR_MIN_SHARE_ID)?;
+    let min_signers: usize = String::from_utf8(min_raw)
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .ok_or_else(|| DomainError::ShareStoreForbidden("frost-tr min_signers corrupt".into()))?;
+    let pk_bytes = store.get_share(TR_PUBKEY_SHARE_ID)?;
+    let pubkey_package = PublicKeyPackage::deserialize(&pk_bytes).map_err(|e| {
+        DomainError::ThresholdError(format!("tr pubkey package deserialize: {e}"))
+    })?;
+
+    let mut key_packages = BTreeMap::new();
+    for id_hex in roster.split(',').filter(|s| !s.is_empty()) {
+        let id_bytes = hex::decode(id_hex).map_err(|e| {
+            DomainError::ShareStoreForbidden(format!("frost-tr roster id hex: {e}"))
+        })?;
+        let id = Identifier::deserialize(&id_bytes).map_err(|e| {
+            DomainError::ThresholdError(format!("tr identifier deserialize: {e}"))
+        })?;
+        let kp_bytes = store.get_share(&format!("frost-tr-dkg-id-{id_hex}"))?;
+        let kp = KeyPackage::deserialize(&kp_bytes).map_err(|e| {
+            DomainError::ThresholdError(format!("tr key package deserialize: {e}"))
+        })?;
+        key_packages.insert(id, kp);
+    }
+    if key_packages.is_empty() {
+        return Err(DomainError::ShareStoreForbidden(
+            "frost-tr roster empty".into(),
+        ));
+    }
+    Ok(FrostTrShareState {
+        key_packages,
+        pubkey_package,
+        min_signers,
+    })
+}
+
+/// Multi-round Taproot FROST refresh DKG (preserves group verifying key → same `tb1p`).
+pub fn refresh_tr_shares_in_process(
+    old_key_packages: &BTreeMap<Identifier, KeyPackage>,
+    old_pubkey: &PublicKeyPackage,
+) -> Result<(BTreeMap<Identifier, KeyPackage>, PublicKeyPackage), DomainError> {
+    use frost_secp256k1_tr::keys::refresh::{
+        refresh_dkg_part1, refresh_dkg_part2, refresh_dkg_shares,
+    };
+
+    if old_key_packages.is_empty() {
+        return Err(DomainError::ThresholdError(
+            "tr reshare requires at least one key package".into(),
+        ));
+    }
+    let identifiers: Vec<Identifier> = old_key_packages.keys().copied().collect();
+    let max_signers = identifiers.len() as u16;
+    let min_signers = *old_key_packages
+        .values()
+        .next()
+        .map(|kp| kp.min_signers())
+        .ok_or_else(|| DomainError::ThresholdError("empty tr key packages".into()))?;
+    if max_signers < 2 || min_signers < 2 || min_signers > max_signers {
+        return Err(DomainError::ThresholdError(format!(
+            "bad tr reshare params: max={max_signers} min={min_signers}"
+        )));
+    }
+
+    let mut rng = OsRng;
+
+    let mut round1_secrets = BTreeMap::new();
+    let mut round1_packages = BTreeMap::new();
+    for id in &identifiers {
+        let (secret, package) = refresh_dkg_part1(*id, max_signers, min_signers, &mut rng)
+            .map_err(|e| DomainError::ThresholdError(format!("frost-tr refresh part1: {e}")))?;
+        round1_secrets.insert(*id, secret);
+        round1_packages.insert(*id, package);
+    }
+
+    let mut round2_secrets = BTreeMap::new();
+    let mut round2_inbox: BTreeMap<
+        Identifier,
+        BTreeMap<Identifier, frost::keys::dkg::round2::Package>,
+    > = BTreeMap::new();
+    for id in &identifiers {
+        let mut received = round1_packages.clone();
+        received.remove(id);
+        let secret = round1_secrets
+            .remove(id)
+            .ok_or_else(|| DomainError::ThresholdError("missing tr refresh round1 secret".into()))?;
+        let (r2_secret, outbound) = refresh_dkg_part2(secret, &received)
+            .map_err(|e| DomainError::ThresholdError(format!("frost-tr refresh part2: {e}")))?;
+        round2_secrets.insert(*id, r2_secret);
+        for (receiver, package) in outbound {
+            round2_inbox
+                .entry(receiver)
+                .or_default()
+                .insert(*id, package);
+        }
+    }
+
+    let old_vk = *old_pubkey.verifying_key();
+    let mut new_key_packages = BTreeMap::new();
+    let mut new_pubkey: Option<PublicKeyPackage> = None;
+    for id in &identifiers {
+        let mut r1_received = round1_packages.clone();
+        r1_received.remove(id);
+        let r2_received = round2_inbox.get(id).ok_or_else(|| {
+            DomainError::ThresholdError(format!("missing tr refresh round2 inbox for {id:?}"))
+        })?;
+        let r2_secret = round2_secrets.get(id).ok_or_else(|| {
+            DomainError::ThresholdError("missing tr refresh round2 secret".into())
+        })?;
+        let old_kp = old_key_packages.get(id).ok_or_else(|| {
+            DomainError::ThresholdError(format!("missing old tr key package for {id:?}"))
+        })?;
+        let (kp, pk) = refresh_dkg_shares(
+            r2_secret,
+            &r1_received,
+            r2_received,
+            old_pubkey.clone(),
+            old_kp.clone(),
+        )
+        .map_err(|e| DomainError::ThresholdError(format!("frost-tr refresh part3: {e}")))?;
+
+        if *kp.min_signers() != min_signers {
+            return Err(DomainError::ThresholdError(format!(
+                "tr reshare threshold drift: got {} want {min_signers}",
+                kp.min_signers()
+            )));
+        }
+        // Invariant: Taproot group verifying key MUST stay identical (deposit tb1p unchanged).
+        if *pk.verifying_key() != old_vk {
+            return Err(DomainError::ThresholdError(
+                "tr reshare changed group verifying key (forbidden)".into(),
+            ));
+        }
+        new_key_packages.insert(*id, kp);
+        new_pubkey = Some(pk);
+    }
+
+    let pubkey = new_pubkey.ok_or_else(|| {
+        DomainError::ThresholdError("tr reshare produced no pubkey package".into())
+    })?;
+    Ok((new_key_packages, pubkey))
 }
 
 #[derive(Debug)]
@@ -574,6 +760,116 @@ mod tests {
         orch.sign_sighash("reuse-a", &[1u8; 32]).unwrap();
         let err = orch.sign_sighash("reuse-a", &[2u8; 32]).unwrap_err();
         assert!(matches!(err, DomainError::NonceReuse(_)));
+    }
+
+    #[test]
+    fn tr_reshare_preserves_deposit_and_sign_works() {
+        use crate::adapters::{
+            AeadDiskShareStore, DealerLabAdapter, FrostShareSlot, FrostShareState, InMemoryLedger,
+            PolicyReshareHook, QuorumDailyRotation,
+        };
+        use crate::domain::{Constitution, NodeId, ResharePolicy};
+
+        let intent = DealerLabAdapter::generate(3, 2).unwrap();
+        let tr = generate_tr_dealer(3, 2).unwrap();
+        let tmp = TempProbe::new("tr-reshare");
+        let store = Arc::new(AeadDiskShareStore::new(
+            tmp.0.join("shares"),
+            "lab-tr-reshare-pass",
+        ));
+        persist_tr_shares(&tr, store.as_ref()).unwrap();
+        let loaded = load_tr_shares(store.as_ref()).unwrap();
+        assert_eq!(
+            loaded.pubkey_package.verifying_key(),
+            tr.pubkey_package.verifying_key()
+        );
+
+        let writer = NodeId::new("vault-1").unwrap();
+        let ledger = Arc::new(
+            InMemoryLedger::genesis(
+                Constitution::v1_lab(3).unwrap(),
+                vec![
+                    writer.clone(),
+                    NodeId::new("vault-2").unwrap(),
+                    NodeId::new("vault-3").unwrap(),
+                ],
+                writer.clone(),
+            )
+            .unwrap(),
+        );
+        let intent_slot = Arc::new(FrostShareSlot::new());
+        intent_slot.install(FrostShareState {
+            key_packages: intent.key_packages,
+            pubkey_package: intent.pubkey_package,
+            min_signers: 2,
+        });
+        let tr_slot = Arc::new(FrostTrShareSlot::new());
+        tr_slot.install(tr);
+        let hook = Arc::new(
+            PolicyReshareHook::new(
+                ResharePolicy::Daily,
+                ledger,
+                writer,
+                intent_slot,
+                tr_slot.clone(),
+            )
+            .with_share_store(store.clone()),
+        );
+
+        let clock = Arc::new(FakeClock(AtomicU64::new(1_704_067_200)));
+        let rotation: Arc<dyn DailyRotationPort> = Arc::new(QuorumDailyRotation::with_persist(
+            clock.clone(),
+            1,
+            "v1",
+            hook,
+            tmp.0.join("day_epoch"),
+        ));
+        let anti = PersistedAntiNonce::open(tmp.0.join("sessions.log")).unwrap();
+        let orch = FrostTrBitcoinOrchestrator::new(
+            tr_slot.clone(),
+            Box::new(anti),
+            rotation.clone(),
+            BitcoinNetwork::Testnet3,
+        );
+        let before = orch.deposit_info().unwrap();
+        assert!(before.address.starts_with("tb1p"));
+
+        // Advance day → Intent + Taproot reshare; deposit must stay identical.
+        clock.0.store(1_704_067_200 + 86_400, Ordering::SeqCst);
+        assert_eq!(rotation.advance().unwrap().as_str(), "2024-01-02");
+        let after = orch.deposit_info().unwrap();
+        assert_eq!(before.address, after.address);
+        assert_eq!(before.output_pubkey_hex, after.output_pubkey_hex);
+        assert_eq!(before.descriptor, after.descriptor);
+
+        let sig = orch.sign_sighash("post-reshare-1", &[9u8; 32]).unwrap();
+        assert_eq!(sig.signature_hex.len(), 128);
+        assert_eq!(sig.day_epoch, "2024-01-02");
+
+        // ShareStorePort after reshare still yields same group key.
+        let reloaded = load_tr_shares(store.as_ref()).unwrap();
+        assert_eq!(
+            *reloaded.pubkey_package.verifying_key(),
+            *tr_slot.snapshot().unwrap().pubkey_package.verifying_key()
+        );
+    }
+
+    #[test]
+    fn refresh_tr_n3_preserves_group_key() {
+        let state = generate_tr_dealer(3, 2).unwrap();
+        let old_vk = *state.pubkey_package.verifying_key();
+        let (new_packages, new_pk) =
+            refresh_tr_shares_in_process(&state.key_packages, &state.pubkey_package).unwrap();
+        assert_eq!(new_packages.len(), 3);
+        assert_eq!(*new_pk.verifying_key(), old_vk);
+        let mut changed = false;
+        for (id, old_kp) in &state.key_packages {
+            if old_kp.signing_share() != new_packages[id].signing_share() {
+                changed = true;
+                break;
+            }
+        }
+        assert!(changed, "expected refreshed TR signing shares to differ");
     }
 
     struct FakeClock(AtomicU64);

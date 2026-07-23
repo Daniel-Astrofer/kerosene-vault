@@ -46,7 +46,8 @@ pub use frost_reshare::{
 };
 pub use frost_sign::{FrostAggregateResult, FrostSignOrchestrator};
 pub use frost_tr_bitcoin::{
-    FrostTrBitcoinOrchestrator, FrostTrShareSlot, FrostTrShareState, SignedPsbtResult,
+    load_tr_shares, persist_tr_shares, refresh_tr_shares_in_process, FrostTrBitcoinOrchestrator,
+    FrostTrShareSlot, FrostTrShareState, SignedPsbtResult,
 };
 #[cfg(feature = "dealer_lab")]
 pub use frost_tr_bitcoin::generate_tr_dealer;

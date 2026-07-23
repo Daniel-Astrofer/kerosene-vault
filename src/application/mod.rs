@@ -10,8 +10,8 @@ mod sign;
 pub mod ports;
 
 pub use economy_ops::{
-    economy_snapshot_json, AccrueMinerRewards, AccrueReceipt, EconomyStatusView, GetEconomyStatus,
-    ProposeMinerPayouts, PayoutProposal, UpsertMiner,
+    economy_snapshot_json, AccrueGovernanceWork, AccrueMinerRewards, AccrueReceipt,
+    EconomyStatusView, GetEconomyStatus, ProposeMinerPayouts, PayoutProposal, UpsertMiner,
 };
 pub use health::GetHealth;
 pub use intent_ops::{AllocateProfit, GateIntent, GateReceipt, ProfitAllocation};

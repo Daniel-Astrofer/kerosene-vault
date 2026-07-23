@@ -35,7 +35,8 @@ pub use release::{
 };
 pub use reshare_policy::ResharePolicy;
 pub use reward::{
-    assert_bank_issued_miner_payout, EconomyState, MinerOperator, MinerPayoutShare, RewardPolicy,
+    assert_bank_issued_miner_payout, EconomyState, GovernanceAccrual, GovernanceJobKind,
+    GovernanceRewardConfig, MinerOperator, MinerPayoutShare, RewardPolicy,
 };
 pub use threshold::{
     derive_nonce, eval_poly, field_add, field_mul, interpolate_secret, lab_random_u64,

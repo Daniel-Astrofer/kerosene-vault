@@ -1,4 +1,4 @@
-use crate::domain::{AttestationMode, BitcoinNetwork, DomainError, NodeId, ResharePolicy};
+use crate::domain::{AttestationMode, BitcoinNetwork, DomainError, GovernanceRewardConfig, NodeId, ResharePolicy};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CeremonyMode {
@@ -161,6 +161,10 @@ pub struct VaultConfig {
     pub dkg_mode: DkgMode,
     /// FROST reshare cadence (`VAULT_RESHARE_POLICY=daily|manual`).
     pub reshare_policy: ResharePolicy,
+    /// Fixed sats bounty per governance job (`VAULT_GOVERNANCE_REWARD_SATS`).
+    pub governance_reward_sats: u64,
+    /// Optional bps of current miner pool added to job bounty (`VAULT_GOVERNANCE_REWARD_BPS`).
+    pub governance_reward_bps: u32,
 }
 
 impl VaultConfig {
@@ -284,6 +288,14 @@ impl VaultConfig {
         };
         let dealer_requested = matches!(dkg_mode, DkgMode::DealerLab);
         let reshare_policy = ResharePolicy::from_env_or_default()?;
+        let governance_reward_sats = std::env::var("VAULT_GOVERNANCE_REWARD_SATS")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(0);
+        let governance_reward_bps = std::env::var("VAULT_GOVERNANCE_REWARD_BPS")
+            .ok()
+            .and_then(|s| s.parse::<u32>().ok())
+            .unwrap_or(0);
 
         let cfg = Self {
             node_id,
@@ -318,9 +330,18 @@ impl VaultConfig {
             dealer_requested,
             dkg_mode,
             reshare_policy,
+            governance_reward_sats,
+            governance_reward_bps,
         };
         cfg.validate_hygiene()?;
         Ok(cfg)
+    }
+
+    pub fn governance_reward_config(&self) -> GovernanceRewardConfig {
+        GovernanceRewardConfig {
+            reward_sats: self.governance_reward_sats,
+            reward_bps_of_pool: self.governance_reward_bps,
+        }
     }
 
     pub fn validate_attestation_policy(&self) -> Result<(), DomainError> {
@@ -514,6 +535,8 @@ mod tests {
             dealer_requested: true,
             dkg_mode: DkgMode::DealerLab,
             reshare_policy: ResharePolicy::Manual,
+            governance_reward_sats: 0,
+            governance_reward_bps: 0,
         }
     }
 

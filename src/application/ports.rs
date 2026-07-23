@@ -1,8 +1,9 @@
 use crate::domain::{
     AttestationMode, AttestationQuote, AllowlistEntry, BucketKind, BucketPolicy, Constitution,
-    ContentHash, DayEpoch, DomainError, EconomyState, Epoch, EpochAdvanceProposal, LedgerEntry,
-    Measurement, MinerOperator, MinerPayoutShare, NodeId, PeerInfo, ReleaseCandidate,
-    ReleasePolicy, ResharePolicy,
+    ContentHash, DayEpoch, DomainError, EconomyState, Epoch, EpochAdvanceProposal,
+    GovernanceAccrual, GovernanceJobKind, GovernanceRewardConfig, LedgerEntry, Measurement,
+    MinerOperator, MinerPayoutShare, NodeId, PeerInfo, ReleaseCandidate, ReleasePolicy,
+    ResharePolicy,
 };
 
 pub trait PeerDirectoryPort: Send + Sync {
@@ -65,6 +66,12 @@ pub trait EconomyPort: Send + Sync {
     fn snapshot(&self) -> Result<EconomyState, DomainError>;
     fn upsert_operator(&self, op: MinerOperator) -> Result<(), DomainError>;
     fn accrue_from_profit(&self, profit_sats: u64, p_reward_bps: u32) -> Result<u64, DomainError>;
+    fn accrue_governance_job(
+        &self,
+        job: GovernanceJobKind,
+        participants: &[NodeId],
+        config: &GovernanceRewardConfig,
+    ) -> Result<GovernanceAccrual, DomainError>;
     fn propose_equal_payouts(&self, amount: u64) -> Result<Vec<MinerPayoutShare>, DomainError>;
     fn debit_pool(&self, amount: u64) -> Result<(), DomainError>;
 }
@@ -109,7 +116,13 @@ pub trait ReshareHookPort: Send + Sync {
         ResharePolicy::Manual
     }
     /// Called after governance quorum advances the day_epoch.
-    fn on_day_advance(&self, from: &DayEpoch, to: &DayEpoch) -> Result<(), DomainError>;
+    /// `participants` are vaults that voted for the target day (eligibility hook).
+    fn on_day_advance(
+        &self,
+        from: &DayEpoch,
+        to: &DayEpoch,
+        participants: &[NodeId],
+    ) -> Result<(), DomainError>;
     /// Explicit FROST reshare (`VAULT_RESHARE_POLICY=manual` or ops trigger).
     fn trigger_manual(&self, reason: &str) -> Result<(), DomainError> {
         let _ = reason;

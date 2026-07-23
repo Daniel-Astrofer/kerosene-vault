@@ -3,7 +3,10 @@
 use std::sync::Mutex;
 
 use crate::application::ports::EconomyPort;
-use crate::domain::{DomainError, EconomyState, MinerOperator};
+use crate::domain::{
+    DomainError, EconomyState, GovernanceAccrual, GovernanceJobKind, GovernanceRewardConfig,
+    MinerOperator,
+};
 
 pub struct InMemoryEconomy {
     inner: Mutex<EconomyState>,
@@ -39,6 +42,19 @@ impl EconomyPort for InMemoryEconomy {
             .lock()
             .expect("economy lock")
             .accrue_from_profit(profit_sats, p_reward_bps))
+    }
+
+    fn accrue_governance_job(
+        &self,
+        job: GovernanceJobKind,
+        participants: &[crate::domain::NodeId],
+        config: &GovernanceRewardConfig,
+    ) -> Result<GovernanceAccrual, DomainError> {
+        Ok(self
+            .inner
+            .lock()
+            .expect("economy lock")
+            .accrue_governance_job(job, participants, config))
     }
 
     fn propose_equal_payouts(

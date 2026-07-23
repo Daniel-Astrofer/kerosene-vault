@@ -1,5 +1,6 @@
 //! Miner rewards, waiting set, and eligibility (F9).
 //! Payouts are bank-issued Intents from MINERS — vaults never self-pay.
+//! Governance jobs (day rotation / reshare / release cosign) accrue into the same pool.
 
 use std::collections::BTreeMap;
 
@@ -25,6 +26,53 @@ impl RewardPolicy {
             min_bond_sats: 0, // permissioned early; raise when opening set
             waiting_pool_share_bps: 0,
         }
+    }
+}
+
+/// Governance work that earns the same spirit of miner rewards as profit share.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GovernanceJobKind {
+    DayAdvanced,
+    ReshareCompleted,
+    ReleaseCosign,
+    ReleaseActivate,
+}
+
+impl GovernanceJobKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::DayAdvanced => "day_advanced",
+            Self::ReshareCompleted => "reshare_completed",
+            Self::ReleaseCosign => "release_cosign",
+            Self::ReleaseActivate => "release_activate",
+        }
+    }
+}
+
+/// Fixed sats and/or bps-of-current-pool bounty for a governance job.
+/// Env: `VAULT_GOVERNANCE_REWARD_SATS`, `VAULT_GOVERNANCE_REWARD_BPS`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GovernanceRewardConfig {
+    pub reward_sats: u64,
+    pub reward_bps_of_pool: u32,
+}
+
+impl GovernanceRewardConfig {
+    pub fn disabled() -> Self {
+        Self {
+            reward_sats: 0,
+            reward_bps_of_pool: 0,
+        }
+    }
+
+    pub fn is_enabled(self) -> bool {
+        self.reward_sats > 0 || self.reward_bps_of_pool > 0
+    }
+
+    pub fn bounty_sats(self, current_pool_sats: u64) -> u64 {
+        let from_bps =
+            current_pool_sats.saturating_mul(self.reward_bps_of_pool as u64) / 10_000;
+        self.reward_sats.saturating_add(from_bps)
     }
 }
 
@@ -56,8 +104,22 @@ pub struct EconomyState {
     pub operators: BTreeMap<String, MinerOperator>,
     pub miner_pool_sats: u64,
     pub accrued_profit_sats: u64,
+    /// Governance job bounty still sitting in the miner pool (pending bank Intent).
+    pub pending_governance_reward_sats: u64,
+    /// Lifetime governance credits per operator (eligibility / audit hook).
+    pub governance_credits: BTreeMap<String, u64>,
     /// Optional PQ suite alongside classical (dual-stack placeholder).
     pub crypto_suite_id_pq: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GovernanceAccrual {
+    pub job: GovernanceJobKind,
+    pub bounty_sats: u64,
+    pub accrued_to_pool_sats: u64,
+    pub credited: Vec<(NodeId, u64)>,
+    pub participants: Vec<NodeId>,
+    pub eligible_credited: usize,
 }
 
 impl EconomyState {
@@ -67,6 +129,8 @@ impl EconomyState {
             operators: BTreeMap::new(),
             miner_pool_sats: 0,
             accrued_profit_sats: 0,
+            pending_governance_reward_sats: 0,
+            governance_credits: BTreeMap::new(),
             crypto_suite_id_pq: "ml-dsa-65-placeholder".into(),
         }
     }
@@ -98,6 +162,80 @@ impl EconomyState {
         self.miner_pool_sats = self.miner_pool_sats.saturating_add(miners);
         self.accrued_profit_sats = self.accrued_profit_sats.saturating_add(profit_sats);
         miners
+    }
+
+    /// Accrue a governance job bounty for eligible operators who participated.
+    /// Full bounty lands in the miner pool (bank-issued payout later); credits split equally.
+    pub fn accrue_governance_job(
+        &mut self,
+        job: GovernanceJobKind,
+        participants: &[NodeId],
+        config: &GovernanceRewardConfig,
+    ) -> GovernanceAccrual {
+        let participants: Vec<NodeId> = {
+            let mut seen = BTreeMap::new();
+            let mut out = Vec::new();
+            for p in participants {
+                if seen.insert(p.as_str().to_string(), ()).is_none() {
+                    out.push(p.clone());
+                }
+            }
+            out
+        };
+        let bounty = config.bounty_sats(self.miner_pool_sats);
+        if bounty == 0 {
+            return GovernanceAccrual {
+                job,
+                bounty_sats: 0,
+                accrued_to_pool_sats: 0,
+                credited: Vec::new(),
+                participants,
+                eligible_credited: 0,
+            };
+        }
+
+        let eligible: Vec<NodeId> = participants
+            .iter()
+            .filter(|id| {
+                self.operators
+                    .get(id.as_str())
+                    .map(|o| o.is_eligible(&self.policy))
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
+
+        let mut credited = Vec::new();
+        if !eligible.is_empty() {
+            let n = eligible.len() as u64;
+            let each = bounty / n;
+            let mut rem = bounty - each * n;
+            for id in &eligible {
+                let mut share = each;
+                if rem > 0 {
+                    share += 1;
+                    rem -= 1;
+                }
+                *self
+                    .governance_credits
+                    .entry(id.as_str().to_string())
+                    .or_insert(0) += share;
+                credited.push((id.clone(), share));
+            }
+        }
+
+        self.miner_pool_sats = self.miner_pool_sats.saturating_add(bounty);
+        self.pending_governance_reward_sats =
+            self.pending_governance_reward_sats.saturating_add(bounty);
+
+        GovernanceAccrual {
+            job,
+            bounty_sats: bounty,
+            accrued_to_pool_sats: bounty,
+            eligible_credited: credited.len(),
+            credited,
+            participants,
+        }
     }
 
     /// Equal split of `amount` among eligible active miners (bank will issue Intents).
@@ -139,6 +277,8 @@ impl EconomyState {
             });
         }
         self.miner_pool_sats -= amount;
+        let from_gov = amount.min(self.pending_governance_reward_sats);
+        self.pending_governance_reward_sats -= from_gov;
         Ok(())
     }
 
@@ -213,5 +353,80 @@ mod tests {
         let got = eco.accrue_from_profit(1_000_000, 100);
         assert_eq!(got, 10_000);
         assert_eq!(eco.miner_pool_sats, 10_000);
+    }
+
+    #[test]
+    fn governance_job_splits_among_eligible_participants() {
+        let mut eco = EconomyState::new_open();
+        let a = NodeId::new("vault-1").unwrap();
+        let b = NodeId::new("vault-2").unwrap();
+        let wait = NodeId::new("vault-wait").unwrap();
+        eco.upsert_operator(MinerOperator {
+            node_id: a.clone(),
+            payout_destination: "bc1q-a".into(),
+            uptime_bps_30d: 9_900,
+            attestation_streak_days: 2,
+            bond_sats: 0,
+            waiting: false,
+        })
+        .unwrap();
+        eco.upsert_operator(MinerOperator {
+            node_id: b.clone(),
+            payout_destination: "bc1q-b".into(),
+            uptime_bps_30d: 9_900,
+            attestation_streak_days: 2,
+            bond_sats: 0,
+            waiting: false,
+        })
+        .unwrap();
+        eco.upsert_operator(MinerOperator {
+            node_id: wait.clone(),
+            payout_destination: "bc1q-w".into(),
+            uptime_bps_30d: 9_900,
+            attestation_streak_days: 2,
+            bond_sats: 0,
+            waiting: true,
+        })
+        .unwrap();
+
+        let cfg = GovernanceRewardConfig {
+            reward_sats: 1_000,
+            reward_bps_of_pool: 0,
+        };
+        let got = eco.accrue_governance_job(
+            GovernanceJobKind::DayAdvanced,
+            &[a.clone(), b.clone(), wait],
+            &cfg,
+        );
+        assert_eq!(got.accrued_to_pool_sats, 1_000);
+        assert_eq!(got.eligible_credited, 2);
+        assert_eq!(eco.miner_pool_sats, 1_000);
+        assert_eq!(eco.pending_governance_reward_sats, 1_000);
+        assert_eq!(eco.governance_credits.get("vault-1"), Some(&500));
+        assert_eq!(eco.governance_credits.get("vault-2"), Some(&500));
+        assert!(!eco.governance_credits.contains_key("vault-wait"));
+    }
+
+    #[test]
+    fn governance_bps_of_pool_adds_to_fixed_bounty() {
+        let mut eco = EconomyState::new_open();
+        eco.miner_pool_sats = 10_000;
+        let a = NodeId::new("vault-1").unwrap();
+        eco.upsert_operator(MinerOperator {
+            node_id: a.clone(),
+            payout_destination: "bc1q-a".into(),
+            uptime_bps_30d: 9_900,
+            attestation_streak_days: 1,
+            bond_sats: 0,
+            waiting: false,
+        })
+        .unwrap();
+        let cfg = GovernanceRewardConfig {
+            reward_sats: 100,
+            reward_bps_of_pool: 100, // 1% of 10_000 = 100
+        };
+        let got = eco.accrue_governance_job(GovernanceJobKind::ReleaseCosign, &[a], &cfg);
+        assert_eq!(got.bounty_sats, 200);
+        assert_eq!(eco.miner_pool_sats, 10_200);
     }
 }

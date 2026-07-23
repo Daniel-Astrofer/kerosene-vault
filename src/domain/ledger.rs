@@ -51,6 +51,8 @@ pub enum LedgerEventKind {
     DayAdvanced,
     /// FROST share refresh completed (group verifying key unchanged).
     ReshareCompleted,
+    /// Governance job bounty accrued to miner pool (bank Intent later).
+    GovernanceRewardAccrued,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -112,6 +114,7 @@ fn kind_str(k: &LedgerEventKind) -> &'static str {
         LedgerEventKind::VoteRecorded => "vote_recorded",
         LedgerEventKind::DayAdvanced => "day_advanced",
         LedgerEventKind::ReshareCompleted => "reshare_completed",
+        LedgerEventKind::GovernanceRewardAccrued => "governance_reward_accrued",
     }
 }
 

@@ -88,6 +88,8 @@ fn sim_forbidden_when_refuse_sim() {
         dealer_requested: false,
         dkg_mode: kerosene_vault::bootstrap::DkgMode::Distributed,
         reshare_policy: kerosene_vault::domain::ResharePolicy::Manual,
+        governance_reward_sats: 0,
+        governance_reward_bps: 0,
     };
     assert_eq!(
         cfg.validate_attestation_policy(),

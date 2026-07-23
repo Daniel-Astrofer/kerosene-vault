@@ -2,8 +2,14 @@
 //!
 //! Lab may still bind signing to the active day. Calendar ahead of the ledger day
 //! without a quorum `advance` → stale rejection (no silent auto-roll).
+//!
+//! `day_epoch` is persisted under `VAULT_DATA_DIR` so restarts resume the same
+//! ledger day. Peers gossip via existing `/v1/day/vote` + `/v1/day/advance`
+//! (no vault-side calendar cron — the server asks).
 
 use std::collections::HashMap;
+use std::fs;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::application::{ClockPort, DailyRotationPort, ReshareHookPort};
@@ -13,7 +19,12 @@ use crate::domain::{DayEpoch, DomainError};
 pub struct NoopReshareHook;
 
 impl ReshareHookPort for NoopReshareHook {
-    fn on_day_advance(&self, _from: &DayEpoch, _to: &DayEpoch) -> Result<(), DomainError> {
+    fn on_day_advance(
+        &self,
+        _from: &DayEpoch,
+        _to: &DayEpoch,
+        _participants: &[crate::domain::NodeId],
+    ) -> Result<(), DomainError> {
         Ok(())
     }
 }
@@ -38,7 +49,12 @@ impl Default for RecordingReshareHook {
 }
 
 impl ReshareHookPort for RecordingReshareHook {
-    fn on_day_advance(&self, from: &DayEpoch, to: &DayEpoch) -> Result<(), DomainError> {
+    fn on_day_advance(
+        &self,
+        from: &DayEpoch,
+        to: &DayEpoch,
+        _participants: &[crate::domain::NodeId],
+    ) -> Result<(), DomainError> {
         self.advances
             .lock()
             .expect("reshare log")
@@ -55,6 +71,7 @@ pub struct QuorumDailyRotation {
     quorum_t: usize,
     local_voter: String,
     reshare: Arc<dyn ReshareHookPort>,
+    persist_path: Option<PathBuf>,
 }
 
 impl QuorumDailyRotation {
@@ -64,7 +81,38 @@ impl QuorumDailyRotation {
         local_voter: impl Into<String>,
         reshare: Arc<dyn ReshareHookPort>,
     ) -> Self {
-        let current = DayEpoch::from_unix_secs(clock.unix_now_secs());
+        Self::with_persist_path(clock, quorum_t, local_voter, reshare, None)
+    }
+
+    /// Load `day_epoch` from `path` on boot (if present); persist on every advance.
+    pub fn with_persist(
+        clock: Arc<dyn ClockPort>,
+        quorum_t: usize,
+        local_voter: impl Into<String>,
+        reshare: Arc<dyn ReshareHookPort>,
+        path: impl Into<PathBuf>,
+    ) -> Self {
+        Self::with_persist_path(
+            clock,
+            quorum_t,
+            local_voter,
+            reshare,
+            Some(path.into()),
+        )
+    }
+
+    fn with_persist_path(
+        clock: Arc<dyn ClockPort>,
+        quorum_t: usize,
+        local_voter: impl Into<String>,
+        reshare: Arc<dyn ReshareHookPort>,
+        persist_path: Option<PathBuf>,
+    ) -> Self {
+        let from_clock = DayEpoch::from_unix_secs(clock.unix_now_secs());
+        let current = match persist_path.as_ref() {
+            Some(path) => load_day_epoch(path).unwrap_or(from_clock),
+            None => from_clock,
+        };
         Self {
             clock,
             current: Mutex::new(current),
@@ -72,8 +120,37 @@ impl QuorumDailyRotation {
             quorum_t: quorum_t.max(1),
             local_voter: local_voter.into(),
             reshare,
+            persist_path,
         }
     }
+
+    fn write_persist(&self, epoch: &DayEpoch) -> Result<(), DomainError> {
+        let Some(path) = self.persist_path.as_ref() else {
+            return Ok(());
+        };
+        persist_day_epoch(path, epoch)
+    }
+}
+
+fn load_day_epoch(path: &Path) -> Option<DayEpoch> {
+    let raw = fs::read_to_string(path).ok()?;
+    DayEpoch::parse(raw.trim()).ok()
+}
+
+fn persist_day_epoch(path: &Path, epoch: &DayEpoch) -> Result<(), DomainError> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).map_err(|e| {
+            DomainError::ThresholdError(format!("day_epoch mkdir: {e}"))
+        })?;
+    }
+    let tmp = path.with_extension("tmp");
+    fs::write(&tmp, format!("{}\n", epoch.as_str())).map_err(|e| {
+        DomainError::ThresholdError(format!("day_epoch write: {e}"))
+    })?;
+    fs::rename(&tmp, path).map_err(|e| {
+        DomainError::ThresholdError(format!("day_epoch rename: {e}"))
+    })?;
+    Ok(())
 }
 
 impl DailyRotationPort for QuorumDailyRotation {
@@ -113,7 +190,10 @@ impl DailyRotationPort for QuorumDailyRotation {
         let mut g = self.current.lock().expect("day_epoch");
         let from = g.clone();
         if live == from {
-            return Ok(from);
+            // Idempotent: still ensure disk matches (boot without file).
+            drop(g);
+            self.write_persist(&live)?;
+            return Ok(live);
         }
         if live < from {
             return Err(DomainError::DayEpochStale {
@@ -123,7 +203,17 @@ impl DailyRotationPort for QuorumDailyRotation {
         }
         *g = live.clone();
         drop(g);
-        self.reshare.on_day_advance(&from, &live)?;
+        self.write_persist(&live)?;
+        let participants: Vec<crate::domain::NodeId> = {
+            let votes = self.votes.lock().expect("day votes");
+            votes
+                .iter()
+                .filter(|(_, e)| *e == &live)
+                .filter_map(|(voter, _)| crate::domain::NodeId::new(voter.clone()).ok())
+                .collect()
+        };
+        self.reshare
+            .on_day_advance(&from, &live, &participants)?;
         Ok(live)
     }
 
@@ -200,6 +290,24 @@ mod tests {
         }
     }
 
+    struct TempProbe(PathBuf);
+    impl TempProbe {
+        fn new(name: &str) -> Self {
+            let p = std::env::temp_dir().join(format!(
+                "kv-day-{name}-{}",
+                std::process::id()
+            ));
+            let _ = fs::remove_dir_all(&p);
+            fs::create_dir_all(&p).unwrap();
+            Self(p)
+        }
+    }
+    impl Drop for TempProbe {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
     #[test]
     fn quorum_advance_invokes_reshare_and_rejects_stale() {
         // 2024-01-01 00:00 UTC
@@ -237,5 +345,35 @@ mod tests {
             rot.require_epoch(&stale),
             Err(DomainError::DayEpochStale { .. })
         ));
+    }
+
+    #[test]
+    fn day_epoch_persists_across_restart() {
+        let tmp = TempProbe::new("persist");
+        let path = tmp.0.join("day_epoch");
+        let clock = Arc::new(FakeClock(AtomicU64::new(1_704_067_200)));
+        let hook = Arc::new(RecordingReshareHook::new());
+        let rot = QuorumDailyRotation::with_persist(
+            clock.clone(),
+            1,
+            "v1",
+            hook.clone(),
+            path.clone(),
+        );
+        assert_eq!(rot.current_day_epoch().unwrap().as_str(), "2024-01-01");
+
+        clock.0.store(1_704_067_200 + 86_400, Ordering::SeqCst);
+        assert_eq!(rot.advance().unwrap().as_str(), "2024-01-02");
+        assert_eq!(fs::read_to_string(&path).unwrap().trim(), "2024-01-02");
+
+        // Calendar still on day 2; boot from disk must not roll back to clock-only.
+        let rot2 = QuorumDailyRotation::with_persist(
+            clock.clone(),
+            1,
+            "v1",
+            Arc::new(RecordingReshareHook::new()),
+            path,
+        );
+        assert_eq!(rot2.current_day_epoch().unwrap().as_str(), "2024-01-02");
     }
 }

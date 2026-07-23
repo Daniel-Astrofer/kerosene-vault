@@ -58,6 +58,8 @@ fn lab_mtls_cfg(listen: &str, certs: &Path, data_dir: &Path) -> VaultConfig {
         dealer_requested: true,
         dkg_mode: DkgMode::DealerLab,
         reshare_policy: kerosene_vault::domain::ResharePolicy::Manual,
+        governance_reward_sats: 0,
+        governance_reward_bps: 0,
     }
 }
 

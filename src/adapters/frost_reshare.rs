@@ -14,9 +14,12 @@ use frost_secp256k1::keys::{KeyPackage, PublicKeyPackage};
 use frost_secp256k1::Identifier;
 use rand::rngs::OsRng;
 
-use crate::application::{LedgerPort, ReshareHookPort};
+use crate::adapters::frost_tr_bitcoin::{
+    persist_tr_shares, refresh_tr_shares_in_process, FrostTrShareSlot, FrostTrShareState,
+};
+use crate::application::{AccrueGovernanceWork, LedgerPort, ReshareHookPort, ShareStorePort};
 use crate::domain::{
-    DayEpoch, DomainError, LedgerEntry, LedgerEventKind, NodeId, ResharePolicy,
+    DayEpoch, DomainError, GovernanceJobKind, LedgerEntry, LedgerEventKind, NodeId, ResharePolicy,
 };
 
 /// Live FROST material shared between sign orchestrator and reshare hook.
@@ -181,12 +184,15 @@ fn append_ledger_event(
     ledger.append(entry)
 }
 
-/// Policy-driven reshare hook: constitution ledger events + optional FROST refresh.
+/// Policy-driven reshare hook: constitution ledger events + Intent + Taproot FROST refresh.
 pub struct PolicyReshareHook {
     policy: ResharePolicy,
     ledger: Arc<dyn LedgerPort>,
     writer: NodeId,
     shares: Arc<FrostShareSlot>,
+    tr_shares: Arc<FrostTrShareSlot>,
+    share_store: Option<Arc<dyn ShareStorePort>>,
+    governance: Option<Arc<AccrueGovernanceWork>>,
 }
 
 impl PolicyReshareHook {
@@ -195,12 +201,46 @@ impl PolicyReshareHook {
         ledger: Arc<dyn LedgerPort>,
         writer: NodeId,
         shares: Arc<FrostShareSlot>,
+        tr_shares: Arc<FrostTrShareSlot>,
     ) -> Self {
         Self {
             policy,
             ledger,
             writer,
             shares,
+            tr_shares,
+            share_store: None,
+            governance: None,
+        }
+    }
+
+    pub fn with_share_store(mut self, store: Arc<dyn ShareStorePort>) -> Self {
+        self.share_store = Some(store);
+        self
+    }
+
+    pub fn with_governance(mut self, governance: Arc<AccrueGovernanceWork>) -> Self {
+        self.governance = Some(governance);
+        self
+    }
+
+    fn accrue(
+        &self,
+        job: GovernanceJobKind,
+        participants: &[NodeId],
+        context: &str,
+    ) -> Result<(), DomainError> {
+        if let Some(gov) = &self.governance {
+            gov.execute(job, participants, context)?;
+        }
+        Ok(())
+    }
+
+    fn reward_participants(&self, participants: &[NodeId]) -> Result<Vec<NodeId>, DomainError> {
+        if participants.is_empty() {
+            Ok(self.ledger.epoch()?.active_set)
+        } else {
+            Ok(participants.to_vec())
         }
     }
 
@@ -221,7 +261,12 @@ impl PolicyReshareHook {
         )
     }
 
-    fn run_reshare(&self, reason: &str, from_day: Option<&DayEpoch>, to_day: Option<&DayEpoch>) -> Result<(), DomainError> {
+    fn refresh_intent(
+        &self,
+        reason: &str,
+        from_day: Option<&DayEpoch>,
+        to_day: Option<&DayEpoch>,
+    ) -> Result<String, DomainError> {
         let snap = self.shares.snapshot()?;
         let old_vk_hex = hex::encode(
             snap.pubkey_package
@@ -239,7 +284,7 @@ impl PolicyReshareHook {
         );
         if old_vk_hex != new_vk_hex {
             return Err(DomainError::ThresholdError(
-                "reshare verifying key mismatch".into(),
+                "intent reshare verifying key mismatch".into(),
             ));
         }
         let min_signers = snap.min_signers;
@@ -251,7 +296,73 @@ impl PolicyReshareHook {
 
         let constitution = self.ledger.constitution()?;
         let payload = format!(
-            r#"{{"reason":"{}","participants":{},"min_signers":{},"verifying_key":"{}","constitution_hash":"{}","from_day":"{}","to_day":"{}"}}"#,
+            r#"{{"reason":"{}","suite":"frost-secp256k1","participants":{},"min_signers":{},"verifying_key":"{}","constitution_hash":"{}","from_day":"{}","to_day":"{}"}}"#,
+            reason,
+            snap.key_packages.len(),
+            min_signers,
+            new_vk_hex,
+            constitution.hash,
+            from_day.map(|d| d.as_str()).unwrap_or(""),
+            to_day.map(|d| d.as_str()).unwrap_or(""),
+        );
+        append_ledger_event(
+            self.ledger.as_ref(),
+            &self.writer,
+            LedgerEventKind::ReshareCompleted,
+            &payload,
+        )?;
+        Ok(new_vk_hex)
+    }
+
+    fn refresh_taproot(
+        &self,
+        reason: &str,
+        from_day: Option<&DayEpoch>,
+        to_day: Option<&DayEpoch>,
+    ) -> Result<(), DomainError> {
+        if !self.tr_shares.is_installed() {
+            return Ok(());
+        }
+        let snap = self.tr_shares.snapshot()?;
+        let old_vk = *snap.pubkey_package.verifying_key();
+        let old_vk_hex = hex::encode(
+            snap.pubkey_package
+                .verifying_key()
+                .serialize()
+                .map_err(|e| DomainError::ThresholdError(format!("tr vk serialize: {e}")))?,
+        );
+        let (new_packages, new_pubkey) =
+            refresh_tr_shares_in_process(&snap.key_packages, &snap.pubkey_package)?;
+        // Invariant: Taproot group verifying key MUST stay identical (tb1p unchanged).
+        if *new_pubkey.verifying_key() != old_vk {
+            return Err(DomainError::ThresholdError(
+                "tr reshare verifying key mismatch (deposit would change)".into(),
+            ));
+        }
+        let new_vk_hex = hex::encode(
+            new_pubkey
+                .verifying_key()
+                .serialize()
+                .map_err(|e| DomainError::ThresholdError(format!("tr vk serialize: {e}")))?,
+        );
+        assert_eq!(
+            old_vk_hex, new_vk_hex,
+            "tr reshare must preserve group verifying key"
+        );
+        let min_signers = snap.min_signers;
+        let new_state = FrostTrShareState {
+            key_packages: new_packages,
+            pubkey_package: new_pubkey,
+            min_signers,
+        };
+        if let Some(store) = self.share_store.as_ref() {
+            persist_tr_shares(&new_state, store.as_ref())?;
+        }
+        self.tr_shares.replace(new_state);
+
+        let constitution = self.ledger.constitution()?;
+        let payload = format!(
+            r#"{{"reason":"{}","suite":"frost-secp256k1-tr","participants":{},"min_signers":{},"verifying_key":"{}","constitution_hash":"{}","from_day":"{}","to_day":"{}"}}"#,
             reason,
             snap.key_packages.len(),
             min_signers,
@@ -267,6 +378,19 @@ impl PolicyReshareHook {
             &payload,
         )
     }
+
+    fn run_reshare(
+        &self,
+        reason: &str,
+        from_day: Option<&DayEpoch>,
+        to_day: Option<&DayEpoch>,
+        participants: &[NodeId],
+    ) -> Result<(), DomainError> {
+        self.refresh_intent(reason, from_day, to_day)?;
+        self.refresh_taproot(reason, from_day, to_day)?;
+        let rewarded = self.reward_participants(participants)?;
+        self.accrue(GovernanceJobKind::ReshareCompleted, &rewarded, reason)
+    }
 }
 
 impl ReshareHookPort for PolicyReshareHook {
@@ -274,16 +398,29 @@ impl ReshareHookPort for PolicyReshareHook {
         self.policy
     }
 
-    fn on_day_advance(&self, from: &DayEpoch, to: &DayEpoch) -> Result<(), DomainError> {
+    fn on_day_advance(
+        &self,
+        from: &DayEpoch,
+        to: &DayEpoch,
+        participants: &[NodeId],
+    ) -> Result<(), DomainError> {
         self.record_day_advanced(from, to)?;
+        let rewarded = self.reward_participants(participants)?;
+        self.accrue(
+            GovernanceJobKind::DayAdvanced,
+            &rewarded,
+            &format!("{}->{}", from.as_str(), to.as_str()),
+        )?;
         match self.policy {
-            ResharePolicy::Daily => self.run_reshare("day_advance", Some(from), Some(to)),
+            ResharePolicy::Daily => {
+                self.run_reshare("day_advance", Some(from), Some(to), &rewarded)
+            }
             ResharePolicy::Manual => Ok(()),
         }
     }
 
     fn trigger_manual(&self, reason: &str) -> Result<(), DomainError> {
-        self.run_reshare(reason, None, None)
+        self.run_reshare(reason, None, None, &[])
     }
 }
 
@@ -330,6 +467,7 @@ mod tests {
             .unwrap(),
         );
         let shares = Arc::new(FrostShareSlot::new());
+        let tr_shares = Arc::new(FrostTrShareSlot::new());
         let bundle = DistributedDkgAdapter::run_in_process(3, 2).unwrap();
         shares.install(FrostShareState {
             key_packages: bundle.key_packages,
@@ -341,10 +479,15 @@ mod tests {
             ledger.clone(),
             writer,
             shares,
+            tr_shares,
         );
         let from = DayEpoch::parse("2024-01-01").unwrap();
         let to = DayEpoch::parse("2024-01-02").unwrap();
-        hook.on_day_advance(&from, &to).unwrap();
+        let voters = vec![
+            NodeId::new("vault-1").unwrap(),
+            NodeId::new("vault-2").unwrap(),
+        ];
+        hook.on_day_advance(&from, &to, &voters).unwrap();
 
         let kinds: Vec<_> = ledger
             .entries()
@@ -373,6 +516,7 @@ mod tests {
             .unwrap(),
         );
         let shares = Arc::new(FrostShareSlot::new());
+        let tr_shares = Arc::new(FrostTrShareSlot::new());
         let bundle = DistributedDkgAdapter::run_in_process(3, 2).unwrap();
         shares.install(FrostShareState {
             key_packages: bundle.key_packages,
@@ -384,10 +528,11 @@ mod tests {
             ledger.clone(),
             writer,
             shares.clone(),
+            tr_shares,
         );
         let from = DayEpoch::parse("2024-01-01").unwrap();
         let to = DayEpoch::parse("2024-01-02").unwrap();
-        hook.on_day_advance(&from, &to).unwrap();
+        hook.on_day_advance(&from, &to, &[]).unwrap();
         let kinds: Vec<_> = ledger
             .entries()
             .unwrap()

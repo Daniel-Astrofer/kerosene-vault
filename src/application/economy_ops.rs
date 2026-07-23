@@ -1,21 +1,31 @@
-//! Miner economy use cases (F9): accrue p%, propose bank-issued MINERS Intents.
+//! Miner economy use cases (F9): accrue p%, governance job bounty, propose bank-issued MINERS Intents.
 
 use std::sync::Arc;
 
 use crate::application::ports::{EconomyPort, LedgerPort};
 use crate::domain::{
-    assert_bank_issued_miner_payout, DomainError, EconomyState, MinerOperator, MinerPayoutShare,
-    SettlementIntent,
+    assert_bank_issued_miner_payout, DomainError, EconomyState, GovernanceAccrual,
+    GovernanceJobKind, GovernanceRewardConfig, LedgerEntry, LedgerEventKind, MinerOperator,
+    MinerPayoutShare, NodeId, SettlementIntent,
 };
 
 pub struct GetEconomyStatus {
     economy: Arc<dyn EconomyPort>,
     ledger: Arc<dyn LedgerPort>,
+    governance_reward: GovernanceRewardConfig,
 }
 
 impl GetEconomyStatus {
-    pub fn new(economy: Arc<dyn EconomyPort>, ledger: Arc<dyn LedgerPort>) -> Self {
-        Self { economy, ledger }
+    pub fn new(
+        economy: Arc<dyn EconomyPort>,
+        ledger: Arc<dyn LedgerPort>,
+        governance_reward: GovernanceRewardConfig,
+    ) -> Self {
+        Self {
+            economy,
+            ledger,
+            governance_reward,
+        }
     }
 
     pub fn execute(&self) -> Result<EconomyStatusView, DomainError> {
@@ -28,6 +38,9 @@ impl GetEconomyStatus {
         Ok(EconomyStatusView {
             miner_pool_sats: eco.miner_pool_sats,
             accrued_profit_sats: eco.accrued_profit_sats,
+            pending_governance_reward_sats: eco.pending_governance_reward_sats,
+            governance_reward_sats: self.governance_reward.reward_sats,
+            governance_reward_bps: self.governance_reward.reward_bps_of_pool,
             p_reward_bps: constitution.p_reward_bps,
             eligible_miners: eligible,
             waiting_miners: waiting,
@@ -43,6 +56,9 @@ impl GetEconomyStatus {
 pub struct EconomyStatusView {
     pub miner_pool_sats: u64,
     pub accrued_profit_sats: u64,
+    pub pending_governance_reward_sats: u64,
+    pub governance_reward_sats: u64,
+    pub governance_reward_bps: u32,
     pub p_reward_bps: u32,
     pub eligible_miners: usize,
     pub waiting_miners: usize,
@@ -55,9 +71,12 @@ pub struct EconomyStatusView {
 impl EconomyStatusView {
     pub fn to_json(&self) -> String {
         format!(
-            r#"{{"miner_pool_sats":{},"accrued_profit_sats":{},"p_reward_bps":{},"eligible_miners":{},"waiting_miners":{},"crypto_suite_id":"{}","crypto_suite_id_pq":"{}","survivability_ok":{},"open_economy":{}}}"#,
+            r#"{{"miner_pool_sats":{},"accrued_profit_sats":{},"pending_governance_reward_sats":{},"governance_reward_sats":{},"governance_reward_bps":{},"p_reward_bps":{},"eligible_miners":{},"waiting_miners":{},"crypto_suite_id":"{}","crypto_suite_id_pq":"{}","survivability_ok":{},"open_economy":{}}}"#,
             self.miner_pool_sats,
             self.accrued_profit_sats,
+            self.pending_governance_reward_sats,
+            self.governance_reward_sats,
+            self.governance_reward_bps,
             self.p_reward_bps,
             self.eligible_miners,
             self.waiting_miners,
@@ -128,6 +147,102 @@ impl AccrueReceipt {
     }
 }
 
+/// Accrue governance job bounty + append ledger `governance_reward_accrued`.
+pub struct AccrueGovernanceWork {
+    economy: Arc<dyn EconomyPort>,
+    ledger: Arc<dyn LedgerPort>,
+    writer: NodeId,
+    config: GovernanceRewardConfig,
+}
+
+impl AccrueGovernanceWork {
+    pub fn new(
+        economy: Arc<dyn EconomyPort>,
+        ledger: Arc<dyn LedgerPort>,
+        writer: NodeId,
+        config: GovernanceRewardConfig,
+    ) -> Self {
+        Self {
+            economy,
+            ledger,
+            writer,
+            config,
+        }
+    }
+
+    pub fn config(&self) -> GovernanceRewardConfig {
+        self.config
+    }
+
+    pub fn execute(
+        &self,
+        job: GovernanceJobKind,
+        participants: &[NodeId],
+        context: &str,
+    ) -> Result<GovernanceAccrual, DomainError> {
+        if !self.config.is_enabled() {
+            return Ok(GovernanceAccrual {
+                job,
+                bounty_sats: 0,
+                accrued_to_pool_sats: 0,
+                credited: Vec::new(),
+                participants: participants.to_vec(),
+                eligible_credited: 0,
+            });
+        }
+        let accrual = self
+            .economy
+            .accrue_governance_job(job, participants, &self.config)?;
+        if accrual.accrued_to_pool_sats == 0 && accrual.bounty_sats == 0 {
+            return Ok(accrual);
+        }
+
+        let credited = accrual
+            .credited
+            .iter()
+            .map(|(id, sats)| format!(r#"{{"node_id":"{}","sats":{}}}"#, id.as_str(), sats))
+            .collect::<Vec<_>>()
+            .join(",");
+        let parts = accrual
+            .participants
+            .iter()
+            .map(|id| format!("\"{}\"", id.as_str()))
+            .collect::<Vec<_>>()
+            .join(",");
+        let payload = format!(
+            r#"{{"job":"{}","context":"{}","bounty_sats":{},"accrued_to_pool_sats":{},"eligible_credited":{},"participants":[{}],"credited":[{}]}}"#,
+            job.as_str(),
+            escape_json(context),
+            accrual.bounty_sats,
+            accrual.accrued_to_pool_sats,
+            accrual.eligible_credited,
+            parts,
+            credited
+        );
+        let epoch = self.ledger.epoch()?.number;
+        let prev = self
+            .ledger
+            .head()?
+            .map(|e| e.entry_hash)
+            .unwrap_or_else(|| "genesis-prev".into());
+        let next_index = self.ledger.entries()?.len() as u64;
+        let entry = LedgerEntry::chain(
+            next_index,
+            epoch,
+            LedgerEventKind::GovernanceRewardAccrued,
+            &payload,
+            self.writer.clone(),
+            &prev,
+        );
+        self.ledger.append(entry)?;
+        Ok(accrual)
+    }
+}
+
+fn escape_json(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
 /// Propose equal MINERS Intents for the bank to submit — vaults do not broadcast payouts.
 pub struct ProposeMinerPayouts {
     economy: Arc<dyn EconomyPort>,
@@ -192,18 +307,23 @@ pub fn economy_snapshot_json(eco: &EconomyState) -> String {
         .values()
         .map(|o| {
             format!(
-                r#"{{"node_id":"{}","waiting":{},"eligible":{},"uptime_bps_30d":{},"streak":{}}}"#,
+                r#"{{"node_id":"{}","waiting":{},"eligible":{},"uptime_bps_30d":{},"streak":{},"governance_credits":{}}}"#,
                 o.node_id.as_str(),
                 o.waiting,
                 o.is_eligible(&eco.policy),
                 o.uptime_bps_30d,
-                o.attestation_streak_days
+                o.attestation_streak_days,
+                eco.governance_credits
+                    .get(o.node_id.as_str())
+                    .copied()
+                    .unwrap_or(0)
             )
         })
         .collect();
     format!(
-        r#"{{"miner_pool_sats":{},"operators":[{}],"crypto_suite_id_pq":"{}"}}"#,
+        r#"{{"miner_pool_sats":{},"pending_governance_reward_sats":{},"operators":[{}],"crypto_suite_id_pq":"{}"}}"#,
         eco.miner_pool_sats,
+        eco.pending_governance_reward_sats,
         ops.join(","),
         eco.crypto_suite_id_pq
     )
