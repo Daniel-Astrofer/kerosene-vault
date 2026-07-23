@@ -2,19 +2,20 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::adapters::{
-    AeadDiskShareStore, DistributedDkgAdapter, DistributedWireDkgPort, FrostSignOrchestrator,
-    InMemoryBucketLedger, InMemoryEconomy, InMemoryLedger, InMemoryPeerDirectory,
-    InMemoryReleaseMesh, LedgerDayEpochStub, MutualTlsAuthAdapter, NoopReshareHook,
-    PersistedAntiNonce, QuorumDailyRotation, ReplicatedAntiNonce, SimAttestationAdapter,
-    StaticTokenAuthAdapter, SystemClock, TeeAttestationAdapter, TeeSealAdapter,
-    ThresholdVaultState, WireDkgHub,
+    AeadDiskShareStore, DistributedDkgAdapter, DistributedWireDkgPort, FrostShareSlot,
+    FrostShareState, FrostSignOrchestrator, HttpAntiNonceTransport, InMemoryBucketLedger,
+    InMemoryEconomy, InMemoryLedger, InMemoryPeerDirectory, InMemoryReleaseMesh,
+    MutualTlsAuthAdapter, PolicyReshareHook, QuorumAntiNonce, QuorumDailyRotation,
+    SharedAntiNonce, SimAttestationAdapter, StaticTokenAuthAdapter, SystemClock,
+    TeeAttestationAdapter, TeeSealAdapter, ThresholdVaultState, WireDkgHub, WireDkgPeerAuth,
 };
 #[cfg(feature = "dealer_lab")]
 use crate::adapters::{dealer_fatal_banner, DealerLabAdapter};
 use crate::application::{
     AccrueMinerRewards, AllocateProfit, AntiNoncePort, CosignRelease, DailyRotationPort, DkgPort,
     GateIntent, GetAllowlist, GetEconomyStatus, GetHealth, GetLedgerSnapshot, PingPeer,
-    ProposeEpochAdvance, ProposeMinerPayouts, ProposeRelease, RebuildRelease, ShareStorePort,
+    ProposeEpochAdvance, ProposeMinerPayouts, ProposeRelease, RebuildRelease, ReshareHookPort,
+    ShareStorePort,
     SignMessage, StaticOnlineCount, UpsertMiner, VaultAuthPort, VoteEpochAdvance, ActivateRelease,
 };
 use crate::bootstrap::{AuthMode, CeremonyMode, DkgMode, ShareStoreMode, VaultConfig};
@@ -53,6 +54,8 @@ pub struct VaultRuntime {
     pub share_store: Arc<dyn ShareStorePort>,
     pub dkg: Arc<dyn DkgPort>,
     pub daily_rotation: Arc<dyn DailyRotationPort>,
+    pub reshare_hook: Arc<dyn ReshareHookPort>,
+    pub frost_shares: Arc<FrostShareSlot>,
     pub anti_nonce: Arc<dyn AntiNoncePort>,
     /// Present after dealer_lab or distributed FROST DKG keygen.
     pub frost: Option<Arc<FrostSignOrchestrator>>,
@@ -147,11 +150,15 @@ impl VaultRuntime {
                     Arc::new(SimAttestationAdapter::new(config.lab_root.as_bytes()))
                 }
                 crate::domain::AttestationMode::Sev | crate::domain::AttestationMode::Sgx => {
-                    Arc::new(TeeAttestationAdapter::new(
+                    let refuse_stub = matches!(config.ceremony_mode, CeremonyMode::Production)
+                        || cfg!(feature = "production");
+                    Arc::new(TeeAttestationAdapter::with_policy(
                         config.attestation_mode,
                         config.attestation_staging_stub,
+                        refuse_stub,
                         config.lab_root.as_bytes(),
                         measurement.clone(),
+                        Vec::new(),
                     )?)
                 }
             };
@@ -202,20 +209,73 @@ impl VaultRuntime {
                 ))
             }
             ShareStoreMode::TeeSeal => {
-                if config.attestation_staging_stub
-                    && !matches!(config.ceremony_mode, CeremonyMode::Production)
+                #[cfg(feature = "production")]
                 {
-                    let pass = config
-                        .share_passphrase
-                        .clone()
-                        .unwrap_or_else(|| "kerosene-vault-lab-passphrase".into());
-                    Arc::new(TeeSealAdapter::staging_stub(
-                        data_root.join("tee-shares"),
-                        pass,
-                        measurement.clone(),
-                    ))
-                } else {
-                    Arc::new(TeeSealAdapter::fail_closed(measurement.clone()))
+                    // Production feature: never wire staging stub.
+                    #[cfg(feature = "tee_hw")]
+                    {
+                        if matches!(
+                            config.attestation_mode,
+                            crate::domain::AttestationMode::Sev
+                                | crate::domain::AttestationMode::Sgx
+                        ) {
+                            Arc::new(TeeSealAdapter::hw(
+                                data_root.join("tee-shares"),
+                                config.attestation_mode,
+                                measurement.clone(),
+                                attestation.clone(),
+                            )?)
+                        } else {
+                            Arc::new(TeeSealAdapter::fail_closed(measurement.clone()))
+                        }
+                    }
+                    #[cfg(not(feature = "tee_hw"))]
+                    {
+                        let _ = &attestation;
+                        Arc::new(TeeSealAdapter::fail_closed(measurement.clone()))
+                    }
+                }
+                #[cfg(not(feature = "production"))]
+                {
+                    if config.attestation_staging_stub
+                        && !matches!(config.ceremony_mode, CeremonyMode::Production)
+                    {
+                        let pass = config
+                            .share_passphrase
+                            .clone()
+                            .unwrap_or_else(|| "kerosene-vault-lab-passphrase".into());
+                        Arc::new(
+                            TeeSealAdapter::staging_stub(
+                                data_root.join("tee-shares"),
+                                pass,
+                                measurement.clone(),
+                            )
+                            .with_attestation(attestation.clone()),
+                        )
+                    } else {
+                        #[cfg(feature = "tee_hw")]
+                        {
+                            if matches!(
+                                config.attestation_mode,
+                                crate::domain::AttestationMode::Sev
+                                    | crate::domain::AttestationMode::Sgx
+                            ) {
+                                Arc::new(TeeSealAdapter::hw(
+                                    data_root.join("tee-shares"),
+                                    config.attestation_mode,
+                                    measurement.clone(),
+                                    attestation.clone(),
+                                )?)
+                            } else {
+                                Arc::new(TeeSealAdapter::fail_closed(measurement.clone()))
+                            }
+                        }
+                        #[cfg(not(feature = "tee_hw"))]
+                        {
+                            let _ = &attestation;
+                            Arc::new(TeeSealAdapter::fail_closed(measurement.clone()))
+                        }
+                    }
                 }
             }
         };
@@ -224,38 +284,65 @@ impl VaultRuntime {
             .effective_vault_token()
             .unwrap_or("kerosene-vault-lab-only")
             .to_string();
-        let mut peer_ingest = Vec::new();
+        let mut peer_prepare = Vec::new();
         for (_, addr) in &config.seed_peers {
             let base = if addr.starts_with("http://") || addr.starts_with("https://") {
                 addr.clone()
             } else {
                 format!("http://{addr}")
             };
-            peer_ingest.push(format!("{base}/v1/anti-nonce/ingest"));
+            peer_prepare.push(format!("{base}/v1/anti-nonce/prepare"));
         }
-        let anti_nonce: Arc<dyn AntiNoncePort> = Arc::new(ReplicatedAntiNonce::open(
+        // Lab static_token: send X-Vault-Token. mTLS mode: omit token (peer identity is TLS).
+        let peer_auth_token = match config.auth_mode {
+            AuthMode::StaticToken => Some(wire_token.clone()),
+            AuthMode::MutualTls => None,
+        };
+        let peer_count = peer_prepare.len();
+        let anti_transport = Arc::new(HttpAntiNonceTransport::new(
+            peer_prepare,
+            peer_auth_token,
+            std::time::Duration::from_millis(1_500),
+        ));
+        let anti_nonce: Arc<dyn AntiNoncePort> = Arc::new(QuorumAntiNonce::open(
             data_root.join("used_sessions.log"),
-            config.effective_anti_nonce_shared_dir(),
-            config.node_id.as_str(),
-            peer_ingest,
-            wire_token.clone(),
+            anti_transport,
+            peer_count,
         )?);
+        let frost_shares = Arc::new(FrostShareSlot::new());
+        let reshare_hook: Arc<dyn ReshareHookPort> = Arc::new(PolicyReshareHook::new(
+            config.reshare_policy,
+            ledger_port.clone(),
+            config.node_id.clone(),
+            frost_shares.clone(),
+        ));
         let daily_rotation: Arc<dyn DailyRotationPort> = Arc::new(QuorumDailyRotation::new(
             clock.clone(),
             rotation_quorum,
             config.node_id.as_str(),
-            Arc::new(NoopReshareHook),
+            reshare_hook.clone(),
         ));
 
         let mut peer_addrs = BTreeMap::new();
         for (id, addr) in &config.seed_peers {
             peer_addrs.insert(id.clone(), addr.clone());
         }
+        let peer_auth = match config.auth_mode {
+            AuthMode::StaticToken => WireDkgPeerAuth::StaticToken(wire_token),
+            AuthMode::MutualTls => {
+                let (cert, key, ca) = config.require_mtls_client_identity()?;
+                WireDkgPeerAuth::MutualTls {
+                    client_cert_path: std::path::PathBuf::from(cert),
+                    client_key_path: std::path::PathBuf::from(key),
+                    ca_path: std::path::PathBuf::from(ca),
+                }
+            }
+        };
         let wire_dkg = Arc::new(WireDkgHub::new(
             config.node_id.as_str().to_string(),
             peer_addrs,
-            wire_token,
-        ));
+            peer_auth,
+        )?);
 
         #[cfg(feature = "dealer_lab")]
         let (dkg, frost): (Arc<dyn DkgPort>, Option<Arc<FrostSignOrchestrator>>) = {
@@ -274,21 +361,29 @@ impl VaultRuntime {
                     let _ = share_store.put_share(config.node_id.as_str(), blob.as_bytes());
                     let _ = kp;
                 }
-                let orch = FrostSignOrchestrator::new(
-                    bundle.key_packages,
-                    bundle.pubkey_package,
-                    t,
-                    Box::new(PersistedAntiNonce::open(
-                        data_root.join("frost_sessions.log"),
-                    )?),
-                    Box::new(LedgerDayEpochStub::new(clock.clone())),
+                frost_shares.install(FrostShareState {
+                    key_packages: bundle.key_packages,
+                    pubkey_package: bundle.pubkey_package,
+                    min_signers: t,
+                });
+                let orch = FrostSignOrchestrator::from_share_slot(
+                    frost_shares.clone(),
+                    Box::new(SharedAntiNonce(anti_nonce.clone())),
+                    daily_rotation.clone(),
                 );
                 (Arc::new(adapter), Some(Arc::new(orch)))
             } else if matches!(config.dkg_mode, DkgMode::DistributedWire) {
                 // Over-wire ceremony via /v1/dkg/round{1,2,3}; no in-process dealer/sim.
                 (Arc::new(DistributedWireDkgPort), None)
             } else if matches!(config.dkg_mode, DkgMode::Distributed) {
-                wire_distributed_dkg(n, t, &share_store, &data_root, clock.clone())?
+                wire_distributed_dkg(
+                    n,
+                    t,
+                    &share_store,
+                    daily_rotation.clone(),
+                    frost_shares.clone(),
+                    anti_nonce.clone(),
+                )?
             } else {
                 (Arc::new(DistributedDkgAdapter::new()), None)
             }
@@ -304,7 +399,14 @@ impl VaultRuntime {
             if matches!(config.dkg_mode, DkgMode::DistributedWire) {
                 (Arc::new(DistributedWireDkgPort), None)
             } else {
-                wire_distributed_dkg(n, t, &share_store, &data_root, clock.clone())?
+                wire_distributed_dkg(
+                    n,
+                    t,
+                    &share_store,
+                    daily_rotation.clone(),
+                    frost_shares.clone(),
+                    anti_nonce.clone(),
+                )?
             }
         };
 
@@ -346,10 +448,11 @@ impl VaultRuntime {
             "lab-visualize"
         };
         eprintln!(
-            "MODE={mode} auth={} share_store={} dkg={} bitcoin={}",
+            "MODE={mode} auth={} share_store={} dkg={} reshare={} bitcoin={}",
             auth.mode_name(),
             share_store.store_kind(),
             dkg.mode_name(),
+            config.reshare_policy.as_str(),
             config.bitcoin_network.as_str()
         );
 
@@ -383,6 +486,8 @@ impl VaultRuntime {
             share_store,
             dkg,
             daily_rotation,
+            reshare_hook,
+            frost_shares,
             anti_nonce,
             frost,
             wire_dkg,
@@ -394,8 +499,9 @@ fn wire_distributed_dkg(
     n: usize,
     t: usize,
     share_store: &Arc<dyn ShareStorePort>,
-    data_root: &std::path::Path,
-    clock: Arc<dyn crate::application::ClockPort>,
+    rotation: Arc<dyn DailyRotationPort>,
+    shares: Arc<FrostShareSlot>,
+    anti_nonce: Arc<dyn AntiNoncePort>,
 ) -> Result<(Arc<dyn DkgPort>, Option<Arc<FrostSignOrchestrator>>), DomainError> {
     let max = n.min(u16::MAX as usize) as u16;
     let min = t.min(u16::MAX as usize) as u16;
@@ -404,12 +510,15 @@ fn wire_distributed_dkg(
     let bundle = DistributedDkgAdapter::run_in_process(max, min)?;
     // Persist via ShareStorePort only (AEAD lab; TEE refuses in prod until Gate seal).
     DistributedDkgAdapter::persist_shares(&bundle, share_store.as_ref())?;
-    let orch = FrostSignOrchestrator::new(
-        bundle.key_packages,
-        bundle.pubkey_package,
-        min as usize,
-        Box::new(PersistedAntiNonce::open(data_root.join("frost_sessions.log"))?),
-        Box::new(LedgerDayEpochStub::new(clock)),
+    shares.install(FrostShareState {
+        key_packages: bundle.key_packages,
+        pubkey_package: bundle.pubkey_package,
+        min_signers: min as usize,
+    });
+    let orch = FrostSignOrchestrator::from_share_slot(
+        shares,
+        Box::new(SharedAntiNonce(anti_nonce)),
+        rotation,
     );
     Ok((
         Arc::new(DistributedDkgAdapter::new()),

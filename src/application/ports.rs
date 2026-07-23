@@ -2,7 +2,7 @@ use crate::domain::{
     AttestationMode, AttestationQuote, AllowlistEntry, BucketKind, BucketPolicy, Constitution,
     ContentHash, DayEpoch, DomainError, EconomyState, Epoch, EpochAdvanceProposal, LedgerEntry,
     Measurement, MinerOperator, MinerPayoutShare, NodeId, PeerInfo, ReleaseCandidate,
-    ReleasePolicy,
+    ReleasePolicy, ResharePolicy,
 };
 
 pub trait PeerDirectoryPort: Send + Sync {
@@ -92,21 +92,29 @@ pub trait VaultAuthPort: Send + Sync {
 
 /// Anti-nonce session ledger: one signing_session_id → at most one nonce package, survives restart.
 pub trait AntiNoncePort: Send + Sync {
+    /// Claim for signing: durable local burn + quorum peer prepare (fail-closed).
     fn claim_session(&self, session_id: &str) -> Result<(), DomainError>;
     fn is_consumed(&self, session_id: &str) -> Result<bool, DomainError>;
-    /// Best-effort observe a peer-used session_id (idempotent).
+    /// Peer prepare: durable check-and-insert. Returns `true` if already present.
+    fn prepare_remote(&self, session_id: &str) -> Result<bool, DomainError>;
+    /// Legacy alias: durable observe without distinguishing already_seen.
     fn observe_remote(&self, session_id: &str) -> Result<(), DomainError> {
-        match self.claim_session(session_id) {
-            Ok(()) => Ok(()),
-            Err(DomainError::NonceReuse(_)) => Ok(()),
-            Err(e) => Err(e),
-        }
+        self.prepare_remote(session_id).map(|_| ())
     }
 }
 
-/// Hook invoked after a quorum day_epoch advance (reshare policy sketch).
+/// Hook invoked after a quorum day_epoch advance (reshare policy).
 pub trait ReshareHookPort: Send + Sync {
+    fn policy(&self) -> ResharePolicy {
+        ResharePolicy::Manual
+    }
+    /// Called after governance quorum advances the day_epoch.
     fn on_day_advance(&self, from: &DayEpoch, to: &DayEpoch) -> Result<(), DomainError>;
+    /// Explicit FROST reshare (`VAULT_RESHARE_POLICY=manual` or ops trigger).
+    fn trigger_manual(&self, reason: &str) -> Result<(), DomainError> {
+        let _ = reason;
+        Ok(())
+    }
 }
 
 /// Daily rotation: advance/bind day_epoch; Gate path uses quorum + reshare hook.
@@ -114,7 +122,7 @@ pub trait DailyRotationPort: Send + Sync {
     fn current_day_epoch(&self) -> Result<DayEpoch, DomainError>;
     fn advance(&self) -> Result<DayEpoch, DomainError>;
     fn require_epoch(&self, bound: &DayEpoch) -> Result<(), DomainError>;
-    /// Record a peer vote to advance toward `target` (quorum stub).
+    /// Record a peer vote to advance toward `target` (governance quorum).
     fn record_vote(&self, _voter: &str, _target: &DayEpoch) -> Result<(), DomainError> {
         Ok(())
     }

@@ -1,4 +1,4 @@
-use crate::domain::{AttestationMode, BitcoinNetwork, DomainError, NodeId};
+use crate::domain::{AttestationMode, BitcoinNetwork, DomainError, NodeId, ResharePolicy};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CeremonyMode {
@@ -142,11 +142,16 @@ pub struct VaultConfig {
     pub tls_key_path: Option<String>,
     /// PEM client CA bundle (`VAULT_TLS_CLIENT_CA_PATH`) — required when `auth_mode=mtls`.
     pub tls_client_ca_path: Option<String>,
+    /// PEM client certificate for outbound peer calls (`VAULT_TLS_CLIENT_CERT_PATH`) — mTLS peer DKG.
+    pub tls_client_cert_path: Option<String>,
+    /// PEM client private key for outbound peer calls (`VAULT_TLS_CLIENT_KEY_PATH`) — mTLS peer DKG.
+    pub tls_client_key_path: Option<String>,
     pub share_store_mode: ShareStoreMode,
     pub share_passphrase: Option<String>,
     /// Share / anti-nonce disk root (`VAULT_DATA_DIR`); lab default under `lab_root`.
     pub data_dir: Option<String>,
-    /// Shared lab volume for best-effort anti-nonce replication (`VAULT_ANTI_NONCE_SHARED_DIR`).
+    /// Deprecated/ignored: anti-nonce uses quorum HTTP prepare among `VAULT_SEED_PEERS`
+    /// (`VAULT_ANTI_NONCE_SHARED_DIR` kept for env back-compat only).
     pub anti_nonce_shared_dir: Option<String>,
     /// Optional hex measurement pin (`VAULT_MEASUREMENT_PIN`); else constitution hash pin.
     pub measurement_pin_hex: Option<String>,
@@ -154,6 +159,8 @@ pub struct VaultConfig {
     pub dealer_requested: bool,
     /// Explicit DKG mode (`VAULT_DKG_MODE`).
     pub dkg_mode: DkgMode,
+    /// FROST reshare cadence (`VAULT_RESHARE_POLICY=daily|manual`).
+    pub reshare_policy: ResharePolicy,
 }
 
 impl VaultConfig {
@@ -242,6 +249,8 @@ impl VaultConfig {
         let tls_cert_path = env_nonempty_first(&["VAULT_TLS_CERT_PATH"]);
         let tls_key_path = env_nonempty_first(&["VAULT_TLS_KEY_PATH"]);
         let tls_client_ca_path = env_nonempty_first(&["VAULT_TLS_CLIENT_CA_PATH"]);
+        let tls_client_cert_path = env_nonempty_first(&["VAULT_TLS_CLIENT_CERT_PATH"]);
+        let tls_client_key_path = env_nonempty_first(&["VAULT_TLS_CLIENT_KEY_PATH"]);
 
         let store_raw = std::env::var("VAULT_SHARE_STORE").unwrap_or_else(|_| {
             if hardened {
@@ -274,6 +283,7 @@ impl VaultConfig {
             None => DkgMode::Distributed,
         };
         let dealer_requested = matches!(dkg_mode, DkgMode::DealerLab);
+        let reshare_policy = ResharePolicy::from_env_or_default()?;
 
         let cfg = Self {
             node_id,
@@ -298,6 +308,8 @@ impl VaultConfig {
             tls_cert_path,
             tls_key_path,
             tls_client_ca_path,
+            tls_client_cert_path,
+            tls_client_key_path,
             share_store_mode,
             share_passphrase,
             data_dir,
@@ -305,6 +317,7 @@ impl VaultConfig {
             measurement_pin_hex,
             dealer_requested,
             dkg_mode,
+            reshare_policy,
         };
         cfg.validate_hygiene()?;
         Ok(cfg)
@@ -335,6 +348,11 @@ impl VaultConfig {
         if self.ceremony_mode == CeremonyMode::Production && self.attestation_staging_stub {
             return Err(DomainError::LabFlagForbidden(
                 "ATTESTATION_STAGING_STUB in production ceremony".into(),
+            ));
+        }
+        if cfg!(feature = "production") && self.attestation_staging_stub {
+            return Err(DomainError::LabFlagForbidden(
+                "ATTESTATION_STAGING_STUB refused under production feature".into(),
             ));
         }
         if matches!(
@@ -368,6 +386,7 @@ impl VaultConfig {
         }
         if self.auth_mode == AuthMode::MutualTls {
             self.require_mtls_paths()?;
+            self.require_mtls_client_identity()?;
         }
         Ok(())
     }
@@ -381,6 +400,23 @@ impl VaultConfig {
             (Some(c), Some(k), Some(a)) => Ok((c, k, a)),
             _ => Err(DomainError::AuthRejected(
                 "mTLS requires VAULT_TLS_CERT_PATH, VAULT_TLS_KEY_PATH, and VAULT_TLS_CLIENT_CA_PATH"
+                    .into(),
+            )),
+        }
+    }
+
+    /// Outbound peer client identity (`VAULT_TLS_CLIENT_CERT_PATH` / `VAULT_TLS_CLIENT_KEY_PATH`).
+    pub fn require_mtls_client_identity(&self) -> Result<(&str, &str, &str), DomainError> {
+        let cert = self
+            .tls_client_cert_path
+            .as_deref()
+            .filter(|s| !s.is_empty());
+        let key = self.tls_client_key_path.as_deref().filter(|s| !s.is_empty());
+        let ca = self.tls_client_ca_path.as_deref().filter(|s| !s.is_empty());
+        match (cert, key, ca) {
+            (Some(c), Some(k), Some(a)) => Ok((c, k, a)),
+            _ => Err(DomainError::AuthRejected(
+                "mTLS peer auth requires VAULT_TLS_CLIENT_CERT_PATH, VAULT_TLS_CLIENT_KEY_PATH, and VAULT_TLS_CLIENT_CA_PATH"
                     .into(),
             )),
         }
@@ -468,6 +504,8 @@ mod tests {
             tls_cert_path: None,
             tls_key_path: None,
             tls_client_ca_path: None,
+            tls_client_cert_path: None,
+            tls_client_key_path: None,
             share_store_mode: ShareStoreMode::AeadDisk,
             share_passphrase: Some("pass".into()),
             data_dir: None,
@@ -475,6 +513,7 @@ mod tests {
             measurement_pin_hex: None,
             dealer_requested: true,
             dkg_mode: DkgMode::DealerLab,
+            reshare_policy: ResharePolicy::Manual,
         }
     }
 
@@ -482,6 +521,8 @@ mod tests {
         cfg.tls_cert_path = Some("/lab/certs/vault-server.crt".into());
         cfg.tls_key_path = Some("/lab/certs/vault-server.key".into());
         cfg.tls_client_ca_path = Some("/lab/certs/ca.crt".into());
+        cfg.tls_client_cert_path = Some("/lab/certs/vault-client.crt".into());
+        cfg.tls_client_key_path = Some("/lab/certs/vault-client.key".into());
         cfg
     }
 

@@ -208,6 +208,21 @@ Em Schnorr/FROST, **reusar o mesmo nonce** em duas assinaturas (ou duas sessões
    - crash entre commit e reveal ⇒ restart **não** reusa nonce; nova sessão.  
 9. **Detecção operacional:** métrica/alerta `nonce_commitment_reuse_attempt`; tratar como incidente (possível eject/slash do nó se for comportamento repetido suspeito).
 
+#### Anti-nonce replicado (quorum) — Gate
+
+Substitui gossip best-effort / volume compartilhado. Log append-only de `session_id` com ACK de quorum entre peers da mesh:
+
+1. **Persistência local:** `used_sessions.log` (append + `fsync`) — sobrevive restart; segundo claim local ⇒ `NonceReuse`.
+2. **Prepare remoto:** `POST /v1/anti-nonce/prepare` (auth: `X-Vault-Token` em lab; sem token header quando `VAULT_AUTH_MODE=mtls`). Peer faz check-and-insert durável e responde `{already_seen: bool}`.
+3. **Claim / sign:**
+   - burn local primeiro;
+   - collect prepares nos `VAULT_SEED_PEERS`;
+   - **recusa** se **qualquer** peer honesto reportar `already_seen` (≥1);
+   - **recusa** se `have < ceil(2n/3)` (`QuorumNotMet`) — não assina antes do commit de quorum;
+   - só então libera a sessão de signing.
+4. **Fail-closed:** peer offline não conta no quorum; sessão queimada localmente sem quorum não é reutilizável neste nó.
+5. Implementação: `QuorumAntiNonce` + `HttpAntiNonceTransport` (`kerosene-vault`); testes multi-nó em memória em `session_persist`.
+
 #### O que isso NÃO resolve sozinho
 
 - Bug na lib FROST ou host que force o enclave a assinar fora do state machine.  
@@ -734,9 +749,9 @@ Itens **não fechados** na conversa — precisam de decisão explícita:
 | Fatia | Status | Notas |
 | --- | --- | --- |
 | **Distributed DKG (in-process)** | **landed** | `VAULT_DKG_MODE=distributed`: FROST `part1/2/3` multi-party sim (n=3,t=2), **sem** `generate_with_dealer`; ToB check `min_signers` == constituição; shares só via `ShareStorePort` |
-| **Over-wire DKG HTTP** | **landed (lab)** | `/v1/dkg/round{1,2,3}` + `VAULT_DKG_MODE=distributed_wire`; peer exchange com `X-Vault-Token`; cada vault só com seu share; compose notes + `scripts/lab_dkg_wire.sh`; in-process permanece fallback |
-| TEE seal shares | **started** (staging stub) | `TeeSealAdapter` envelope `KVSEAL01`; lab/staging + `ATTESTATION_STAGING_STUB` sela measurement-bound; production ceremonial **fail-closed** sem TEE real |
+| **Over-wire DKG HTTP** | **landed (lab+Gate checks)** | `/v1/dkg/round{1,2,3}` + `VAULT_DKG_MODE=distributed_wire`; peer auth `static_token` **or** `mtls` (HTTPS client cert, no token); roster+threshold frozen at round1; transcript binding; reject threshold bump / late join; compose notes + `scripts/lab_dkg_wire.sh`; in-process permanece fallback |
+| TEE seal shares | **advanced** (HW fail-closed) | `TeeSealAdapter` `KVSEAL01` versionado; unseal só após attestation OK; lab stub só com `ATTESTATION_STAGING_STUB` (recusado sob `--features production` / cerimônia prod); feature `tee_hw` compila SEV SNP derived-key (+ SGX fail-closed até SDK enclave); CI sem HW **fail-closed** sem stub — não é go-live |
 | mTLS auth | refuse stub | `MutualTlsAuthAdapter` |
 | HW attestation | **started** (staging stub) | `TeeAttestationAdapter` + `constitution.measurement_pin` (default = hash); sim forbidden when hardened; HW real ainda fail-closed |
 | Daily rotation + reshare hook | **started** | `QuorumDailyRotation`: advance com quorum stub, rejeita day sessions stale; `ReshareHookPort` + teste |
-| Anti-nonce replicated | **started** (best-effort) | `ReplicatedAntiNonce`: volume lab compartilhado + gossip `/v1/anti-nonce/ingest` |
+| Anti-nonce replicated | **landed** (quorum) | `QuorumAntiNonce`: append-only `session_id` log + HTTP `/v1/anti-nonce/prepare` ACKs (`ceil(2n/3)`); refuse if seen on ≥1 peer or before quorum; persists across restart; multi-node sim tests |

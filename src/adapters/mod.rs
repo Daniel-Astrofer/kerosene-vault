@@ -12,6 +12,7 @@ mod dkg_wire;
 mod economy_memory;
 #[cfg(feature = "dealer_lab")]
 mod frost_dealer;
+mod frost_reshare;
 mod frost_sign;
 mod http;
 mod ledger_memory;
@@ -33,18 +34,24 @@ pub use daily_rotation::{
 };
 pub use dkg_distributed::{DistributedDkgAdapter, FrostDistributedBundle};
 pub use dkg_wire::{
-    DkgStartRequest, DistributedWireDkgPort, Round1WireMessage, Round2WireMessage,
-    Round3WireRequest, WireDkgHub, WireDkgStatus,
+    session_transcript, DkgStartRequest, DistributedWireDkgPort, Round1WireMessage,
+    Round2WireMessage, Round3WireRequest, WireDkgHub, WireDkgPeerAuth, WireDkgStatus,
 };
 pub use economy_memory::InMemoryEconomy;
 #[cfg(feature = "dealer_lab")]
 pub use frost_dealer::{dealer_fatal_banner, DealerLabAdapter, FrostDealerBundle};
+pub use frost_reshare::{
+    refresh_shares_in_process, FrostShareSlot, FrostShareState, PolicyReshareHook,
+};
 pub use frost_sign::{FrostAggregateResult, FrostSignOrchestrator};
 pub use http::{build_router, AppState};
 pub use ledger_memory::InMemoryLedger;
 pub use peer_memory::InMemoryPeerDirectory;
 pub use release_memory::InMemoryReleaseMesh;
-pub use session_persist::{PersistedAntiNonce, ReplicatedAntiNonce};
+pub use session_persist::{
+    HttpAntiNonceTransport, MemoryAntiNonceTransport, PersistedAntiNonce, QuorumAntiNonce,
+    SharedAntiNonce,
+};
 pub use share_aead::AeadDiskShareStore;
 pub use share_tee::{TeeSealAdapter, TeeSealShareStore};
 pub use threshold_state::ThresholdVaultState;

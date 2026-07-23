@@ -1,4 +1,6 @@
-//! Axum HTTP surface: `/v1/health` public; `/v1/sign`, `/v1/intent`, and legacy routes require `X-Vault-Token`.
+//! Axum HTTP surface: `/v1/health` public; protected routes require auth —
+//! `X-Vault-Token` when `VAULT_AUTH_MODE=static_token`, or verified client cert
+//! when `VAULT_AUTH_MODE=mtls` (static token header refused).
 
 use std::sync::Arc;
 
@@ -28,12 +30,14 @@ pub fn build_router(runtime: Arc<VaultRuntime>) -> Router {
     let protected = Router::new()
         .route("/v1/sign", post(v1_sign))
         .route("/v1/intent", post(v1_intent))
-        // Over-wire FROST DKG round exchange (HTTP JSON + X-Vault-Token). No dealer.
+        // Over-wire FROST DKG round exchange (auth via token or mTLS). No dealer.
         .route("/v1/dkg/round1", post(v1_dkg_round1))
         .route("/v1/dkg/round2", post(v1_dkg_round2))
         .route("/v1/dkg/round3", post(v1_dkg_round3))
         .route("/v1/dkg/status", get(v1_dkg_status))
-        .route("/v1/anti-nonce/ingest", post(v1_anti_nonce_ingest))
+        .route("/v1/anti-nonce/prepare", post(v1_anti_nonce_prepare))
+        // Legacy alias — same durable prepare semantics as `/prepare`.
+        .route("/v1/anti-nonce/ingest", post(v1_anti_nonce_prepare))
         .route("/v1/day/advance", post(v1_day_advance))
         .route("/v1/day/vote", post(v1_day_vote))
         .route("/v1/day/current", get(v1_day_current))
@@ -108,12 +112,12 @@ async fn v1_sign(State(state): State<AppState>, body: Bytes) -> impl IntoRespons
     }
 }
 
-async fn v1_anti_nonce_ingest(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+async fn v1_anti_nonce_prepare(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
     #[derive(serde::Deserialize)]
-    struct IngestBody {
+    struct PrepareBody {
         session_id: String,
     }
-    let req: IngestBody = match serde_json::from_slice(&body) {
+    let req: PrepareBody = match serde_json::from_slice(&body) {
         Ok(r) => r,
         Err(e) => {
             return (
@@ -122,8 +126,11 @@ async fn v1_anti_nonce_ingest(State(state): State<AppState>, body: Bytes) -> imp
             )
         }
     };
-    match state.runtime.anti_nonce.observe_remote(&req.session_id) {
-        Ok(()) => (StatusCode::OK, r#"{"ok":true}"#.to_string()),
+    match state.runtime.anti_nonce.prepare_remote(&req.session_id) {
+        Ok(already_seen) => (
+            StatusCode::OK,
+            format!(r#"{{"ok":true,"already_seen":{already_seen}}}"#),
+        ),
         Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
     }
 }
@@ -198,6 +205,8 @@ async fn v1_dkg_round1(State(state): State<AppState>, body: Bytes) -> impl IntoR
         #[serde(default)]
         sender_identifier: Option<u16>,
         #[serde(default)]
+        transcript_hex: Option<String>,
+        #[serde(default)]
         package_hex: Option<String>,
     }
     let req: Round1Body = match serde_json::from_slice(&body) {
@@ -256,6 +265,7 @@ async fn v1_dkg_round1(State(state): State<AppState>, body: Bytes) -> impl IntoR
             sender_identifier: req.sender_identifier.unwrap_or(0),
             max_signers: req.max_signers.unwrap_or(0),
             min_signers: req.min_signers.unwrap_or(0),
+            transcript_hex: req.transcript_hex.unwrap_or_default(),
             package_hex,
         };
         match state.runtime.wire_dkg.ingest_round1(msg) {
@@ -285,6 +295,8 @@ async fn v1_dkg_round2(State(state): State<AppState>, body: Bytes) -> impl IntoR
         recipient_node_id: Option<String>,
         #[serde(default)]
         recipient_identifier: Option<u16>,
+        #[serde(default)]
+        transcript_hex: Option<String>,
         #[serde(default)]
         package_hex: Option<String>,
     }
@@ -326,6 +338,7 @@ async fn v1_dkg_round2(State(state): State<AppState>, body: Bytes) -> impl IntoR
             sender_identifier: req.sender_identifier.unwrap_or(0),
             recipient_node_id: req.recipient_node_id.unwrap_or_default(),
             recipient_identifier: req.recipient_identifier.unwrap_or(0),
+            transcript_hex: req.transcript_hex.unwrap_or_default(),
             package_hex,
         };
         match state.runtime.wire_dkg.ingest_round2(msg) {
