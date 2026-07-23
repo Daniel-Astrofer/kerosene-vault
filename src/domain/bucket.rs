@@ -156,23 +156,27 @@ impl BucketPolicy {
     }
 
     pub fn allows_destination(&self, dest: &str) -> bool {
-        if self.destination_allowlist.contains(dest) {
-            return true;
-        }
-        // USERS on-chain withdraw: admit parseable Bitcoin addresses (network check
-        // + PSBT Intent bind happen at the HTTP/sign boundary). Opaque lab tags stay
-        // on the explicit allowlist for Intent-only paths.
-        if self.kind == BucketKind::Users {
-            return looks_like_bitcoin_address(dest);
-        }
-        false
+        self.destination_allowlist.contains(dest)
     }
-}
 
-fn looks_like_bitcoin_address(dest: &str) -> bool {
-    use bitcoin::address::NetworkUnchecked;
-    use bitcoin::Address;
-    dest.trim().parse::<Address<NetworkUnchecked>>().is_ok()
+    /// Admit an explicit destination into this bucket's allowlist (config / Intent registry).
+    pub fn admit_destination(&mut self, dest: impl Into<String>) {
+        let d = dest.into();
+        if !d.trim().is_empty() {
+            self.destination_allowlist.insert(d);
+        }
+    }
+
+    /// Merge config / Intent-registered destinations into the policy allowlist.
+    pub fn extend_destinations<I, S>(&mut self, dests: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        for d in dests {
+            self.admit_destination(d);
+        }
+    }
 }
 
 /// Settlement intent as seen by the vault enclave (mirrors contracts Intent fields).
@@ -319,12 +323,29 @@ mod tests {
     }
 
     #[test]
-    fn users_allows_parseable_address() {
-        let policy = BucketPolicy::lab_defaults(BucketKind::Users, 100, 1_000);
+    fn users_requires_explicit_allowlist_not_any_parseable_address() {
+        let mut policy = BucketPolicy::lab_defaults(BucketKind::Users, 100, 1_000);
         assert!(policy.allows_destination("tb1q-users-withdraw"));
+        // Soft allowlist removed: parseable ≠ allowlisted.
+        assert!(!policy.allows_destination("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"));
+        policy.admit_destination("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx");
         assert!(policy.allows_destination("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"));
         let channels = BucketPolicy::lab_defaults(BucketKind::Channels, 100, 1_000);
         assert!(!channels.allows_destination("tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx"));
     }
 
+    #[test]
+    fn evaluate_rejects_users_destination_off_allowlist() {
+        let policy = BucketPolicy::lab_defaults(BucketKind::Users, 100, 1_000);
+        let intent = SettlementIntent::new(
+            "i-off",
+            BucketKind::Users,
+            "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",
+            50,
+            "ph",
+        )
+        .unwrap();
+        let err = evaluate_intent(&intent, &policy, 0, "ph").unwrap_err();
+        assert!(matches!(err, DomainError::DestinationNotAllowed(_)));
+    }
 }
