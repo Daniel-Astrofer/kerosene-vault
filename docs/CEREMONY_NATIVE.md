@@ -3,6 +3,19 @@
 Same binary and FROST over-wire rounds as lab (`VAULT_DKG_MODE=distributed_wire`).
 Only config / attestation / auth differ. Dealer and `ATTESTATION_MODE=sim` are refused.
 
+## Attestation honesty (software ≠ TEE)
+
+`ATTESTATION_MODE=software` is a **software measurement MAC** (shared pin / lab root),
+**not** a hardware TEE quote. Health must report `tee_available=false` for domestic
+nodes. Do **not** advertise software as SEV/SGX.
+
+Optional stronger pin: set `VAULT_MEASUREMENT_PIN=<64-hex SHA-256>` on every node so
+quotes bind to a known binary/constitution measurement (still not HW attestation).
+
+Elevated `VAULT_PEER_TIERS=…=sev|sgx` require `VAULT_PEER_TIER_QUOTES=id=<hex>`
+outside lab (`VAULT_PEER_TIER_REQUIRE_QUOTE` defaults on for staging/production);
+without a quote, seating treats the peer as `domestic`.
+
 ## All-domestic (Ryzen-class / home PC)
 
 1. On each of N hosts (example N=3):
@@ -25,6 +38,8 @@ Only config / attestation / auth differ. Dealer and `ATTESTATION_MODE=sim` are r
 
 1. Same as above for domestic members; SEV hosts set `VAULT_NODE_TIER=sev`, `ATTESTATION_MODE=sev`, `VAULT_SHARE_STORE=tee_seal`, and real `/dev/sev-guest` (no stub).
 2. Publish peer tiers on every node: `VAULT_PEER_TIERS=vault-epyc=sev,...`
+   and quote proofs: `VAULT_PEER_TIER_QUOTES=vault-epyc=<attestation-hex>`
+   (required outside lab; otherwise SEV/SGX claims seat as domestic).
 3. Boot seating fills `VAULT_GENESIS_N` preferring SEV > SGX > domestic; authenticated `/health` `genesis_roster` shows the seated set.
 4. Run the **same** `genesis_dkg_wire.sh` — roster must match seating (enforced in production).
 

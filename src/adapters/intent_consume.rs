@@ -264,6 +264,11 @@ impl QuorumBucketLedger {
         self.local.prepare_soft(intent_id)
     }
 
+    /// Durable peer prepare (commit / claim fan-out).
+    pub fn prepare_remote_durable(&self, intent_id: &str) -> Result<bool, DomainError> {
+        self.local.prepare_consume(intent_id)
+    }
+
     /// Soft-reserve locally + soft peer prepare. Fail-closed on unmet quorum.
     fn claim_reserve(&self, intent_id: &str) -> Result<(), DomainError> {
         if self.local.prepare_soft(intent_id)? {

@@ -121,6 +121,10 @@ impl AntiNoncePort for PersistedAntiNonce {
     fn prepare_remote(&self, session_id: &str) -> Result<bool, DomainError> {
         self.prepare_soft(session_id)
     }
+
+    fn prepare_remote_durable(&self, session_id: &str) -> Result<bool, DomainError> {
+        self.prepare(session_id)
+    }
 }
 
 /// Result of a peer durable prepare.
@@ -209,7 +213,12 @@ impl AntiNonceQuorumTransport for HttpAntiNonceTransport {
             return Ok(out);
         }
         let client = self.build_blocking_client()?;
-        let body = serde_json::json!({ "session_id": session_id, "durable": true }).to_string();
+        let body = serde_json::json!({
+            "session_id": session_id,
+            "intent_id": session_id,
+            "durable": true
+        })
+        .to_string();
         for url in &self.peer_prepare_urls {
             let attempts = self.peer_http.max_retries.max(1);
             let mut ack = None;
@@ -378,6 +387,10 @@ impl AntiNoncePort for QuorumAntiNonce {
     }
 
     fn prepare_remote(&self, session_id: &str) -> Result<bool, DomainError> {
+        self.local.prepare_soft(session_id)
+    }
+
+    fn prepare_remote_durable(&self, session_id: &str) -> Result<bool, DomainError> {
         self.local.prepare(session_id)
     }
 }
@@ -396,6 +409,10 @@ impl AntiNoncePort for SharedAntiNonce {
 
     fn prepare_remote(&self, session_id: &str) -> Result<bool, DomainError> {
         self.0.prepare_remote(session_id)
+    }
+
+    fn prepare_remote_durable(&self, session_id: &str) -> Result<bool, DomainError> {
+        self.0.prepare_remote_durable(session_id)
     }
 }
 

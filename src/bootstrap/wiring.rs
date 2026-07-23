@@ -21,7 +21,7 @@ use crate::application::{
     AccrueGovernanceWork, AccrueMinerRewards, AllocateProfit, AntiNoncePort, CosignRelease,
     DailyRotationPort, DkgPort, GateIntent, GetAllowlist, GetEconomyStatus, GetHealth,
     GetLedgerSnapshot, PingPeer, ProposeEpochAdvance, ProposeMinerPayouts, ProposeRelease,
-    RebuildRelease, ReshareHookPort, ShareStorePort, SignMessage, StaticOnlineCount, UpsertMiner,
+    OnlineStatusPort, ProbedOnlineCount, RebuildRelease, ReshareHookPort, ShareStorePort, SignMessage, StaticOnlineCount, UpsertMiner,
     VaultAuthPort, VoteEpochAdvance, ActivateRelease,
 };
 use crate::bootstrap::{AuthMode, CeremonyMode, DkgMode, ShareStoreMode, VaultConfig};
@@ -54,7 +54,7 @@ pub struct VaultRuntime {
     pub peers: Arc<InMemoryPeerDirectory>,
     pub ledger: Arc<InMemoryLedger>,
     pub threshold: Arc<ThresholdVaultState>,
-    pub online: Arc<StaticOnlineCount>,
+    pub online: Arc<dyn OnlineStatusPort>,
     pub release_mesh: Arc<InMemoryReleaseMesh>,
     pub buckets: Arc<QuorumBucketLedger>,
     pub economy: Arc<InMemoryEconomy>,
@@ -163,11 +163,11 @@ impl VaultRuntime {
             .find(|s| s.node_id == config.node_id)
             .cloned()
             .ok_or_else(|| DomainError::ThresholdError("local share missing after DKG".into()))?;
-        let online = Arc::new(StaticOnlineCount {
+        let mut online: Arc<dyn OnlineStatusPort> = Arc::new(StaticOnlineCount {
             count: config.online_count.unwrap_or(n),
         });
         let threshold = Arc::new(ThresholdVaultState::new(group, local_share, shares));
-        let sign_message = SignMessage::new(threshold.clone(), online.clone());
+        let mut sign_message = SignMessage::new(threshold.clone(), online.clone());
 
         let attestation: Arc<dyn crate::application::AttestationPort> =
             match config.attestation_mode {
@@ -397,6 +397,23 @@ impl VaultRuntime {
             AuthMode::MutualTls => None,
         };
         let peer_count = peer_bases.len();
+        // High #7: probe peer /v1/health; unreachable peers do not count as online.
+        if !(config.online_static
+            || (matches!(config.ceremony_mode, CeremonyMode::Lab) && peer_count == 0))
+        {
+            let peer_health: Vec<String> = peer_bases
+                .iter()
+                .map(|(_, b)| format!("{b}/v1/health"))
+                .collect();
+            online = Arc::new(ProbedOnlineCount::new(
+                peers.clone(),
+                peer_health,
+                config.peer_http.clone(),
+                peer_auth_token.clone(),
+                config.online_count,
+            ));
+            sign_message = SignMessage::new(threshold.clone(), online.clone());
+        }
         let peer_prepare: Vec<String> = peer_bases
             .iter()
             .map(|(_, b)| format!("{b}/v1/anti-nonce/prepare"))
@@ -620,7 +637,8 @@ impl VaultRuntime {
                     daily_rotation.clone(),
                     config.bitcoin_network,
                 )
-                .with_wire_cosign(
+                .with_psbt_policy(config.psbt_policy)
+                            .with_wire_cosign(
                     config.node_id.as_str(),
                     true, // dealer_lab: in-process N-share OK
                     tr_cosign_transport.clone(),
@@ -648,6 +666,7 @@ impl VaultRuntime {
                                 daily_rotation.clone(),
                                 config.bitcoin_network,
                             )
+                            .with_psbt_policy(config.psbt_policy)
                             .with_wire_cosign(
                                 config.node_id.as_str(),
                                 false,
@@ -700,6 +719,7 @@ impl VaultRuntime {
                                 daily_rotation.clone(),
                                 config.bitcoin_network,
                             )
+                            .with_psbt_policy(config.psbt_policy)
                             .with_wire_cosign(
                                 config.node_id.as_str(),
                                 false,
@@ -728,12 +748,14 @@ impl VaultRuntime {
             peers_port.clone(),
             attestation.clone(),
             config.node_tier,
-            config.tee_available,
+            // High #14: software measurement is never TEE.
+            config.tee_available && config.attestation_mode.is_tee(),
             dkg_set
                 .iter()
                 .map(|n| n.as_str().to_string())
                 .collect(),
-        );
+        )
+        .with_peer_probe(!config.online_static && peer_count > 0);
         let ping_peer = PingPeer::new(peers_port, attestation, clock.clone(), measurement);
         let get_ledger = GetLedgerSnapshot::new(ledger_port.clone());
         let propose_epoch = ProposeEpochAdvance::new(ledger_port.clone(), config.node_id.clone());

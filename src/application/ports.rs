@@ -164,6 +164,10 @@ pub trait AntiNoncePort: Send + Sync {
     fn is_consumed(&self, session_id: &str) -> Result<bool, DomainError>;
     /// Peer / HTTP prepare: soft TTL reservation (High #8). Returns `true` if already present.
     fn prepare_remote(&self, session_id: &str) -> Result<bool, DomainError>;
+    /// Durable peer prepare (claim fan-out). Default: same as soft.
+    fn prepare_remote_durable(&self, session_id: &str) -> Result<bool, DomainError> {
+        self.prepare_remote(session_id)
+    }
     /// Soft prepare bound to an Intent id (session must equal intent or `intent:…`).
     fn prepare_remote_bound(
         &self,

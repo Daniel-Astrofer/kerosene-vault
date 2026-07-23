@@ -86,7 +86,14 @@ Do **not** POST `voter=vault-2` to vault-1 under a shared lab token without `X-V
 
 ## Intent consume mesh prepare
 
-`POST /v1/intent/consume/prepare` — durable peer prepare for Intent ids (same pattern as `/v1/anti-nonce/prepare`). Gate/sign authorize requires local fsync + `⌈2n/3⌉` peer ACKs (fail-closed if peers unreachable when configured). Cross-node double-spend → `already_seen` / Intent replay.
+`POST /v1/intent/consume/prepare` — soft TTL peer prepare for Intent ids (rate-limited).
+Gate/sign uses **two-phase** Intent: `reserve` → sign → `commit` (durable mesh burn).
+Failed sign releases the reservation (does not burn caps). Commit requires local soft
+reservation + `⌈2n/3⌉` durable peer ACKs (`durable=true`). Cross-node double-spend →
+`already_seen` / Intent replay.
+
+Anti-nonce `POST /v1/anti-nonce/prepare` requires `intent_id` binding (`session_id` ==
+intent or `intent:…`), soft TTL by default, and per-principal rate limits.
 
 ## `POST /v1/reshare/trigger`
 

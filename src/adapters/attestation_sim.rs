@@ -5,6 +5,13 @@ use crate::domain::{AttestationMode, AttestationQuote, DomainError, Measurement}
 ///
 /// - [`AttestationMode::Sim`]: lab-only visualization.
 /// - [`AttestationMode::Software`]: domestic prod-capable software measurement (not SEV).
+///
+/// **Honesty (High #14):** this adapter issues a MAC over `lab_root` + measurement.
+/// It is **not** a hardware root of trust and must never be advertised as TEE
+/// (`tee_available=false`, `attestation_mode=software`). Peers only learn that
+/// the caller shares the same measurement pin / lab root — not binary integrity
+/// against a remote verifier. Prefer `VAULT_MEASUREMENT_PIN` in production
+/// ceremony; SEV/SGX quotes are required for TEE seating (#15).
 pub struct SimAttestationAdapter {
     mode: AttestationMode,
     lab_root: Vec<u8>,

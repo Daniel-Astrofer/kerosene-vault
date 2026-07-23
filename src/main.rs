@@ -38,7 +38,7 @@ async fn main() {
         runtime.config.attestation_staging_stub,
         group.n,
         group.t,
-        runtime.online.count,
+        runtime.online.online_count(),
         runtime.config.effective_lab_timelock_scale(),
         runtime.config.hardened,
         runtime.config.open_economy,

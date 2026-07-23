@@ -17,7 +17,7 @@ use axum::Router;
 
 use crate::adapters::SlidingWindowLimiter;
 use crate::application::{
-    bind_session_to_intent, BlobStorePort, LedgerPort, OnlineStatusPort, ReleaseStorePort,
+    bind_session_to_intent, BlobStorePort, LedgerPort, ReleaseStorePort,
 };
 use crate::bootstrap::{AuthMode, CeremonyMode, VaultRuntime};
 use crate::domain::{
@@ -333,7 +333,7 @@ async fn v1_bitcoin_sign_psbt(State(state): State<AppState>, body: Bytes) -> imp
         .unwrap_or(req.session_id.as_str());
     let destination = req.destination.as_deref().unwrap_or("");
     let amount = req.amount_sats.unwrap_or(0);
-    if let Err(e) = maybe_gate_intent(
+    let receipt = match maybe_reserve_intent(
         &state,
         Some(intent_id),
         req.bucket.as_deref(),
@@ -341,37 +341,60 @@ async fn v1_bitcoin_sign_psbt(State(state): State<AppState>, body: Bytes) -> imp
         req.amount_sats,
         true,
     ) {
-        return (StatusCode::BAD_REQUEST, json_err(e));
-    }
+        Ok(r) => r,
+        Err(e) => return (StatusCode::BAD_REQUEST, json_err(e)),
+    };
     let Some(tr) = state.runtime.frost_tr.as_ref() else {
+        let _ = state.runtime.gate_intent.release(
+            &receipt.intent_id,
+            receipt.bucket,
+            receipt.amount_sats,
+        );
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             r#"{"error":"taproot FROST not installed"}"#.into(),
         );
     };
-    // Fail-stop if online < t (same policy as message signing).
-    let online = state.runtime.online.count;
+    // Fail-stop if online < t (probed liveness — High #7).
+    let online = state.runtime.online.online_count();
     let need = state.runtime.threshold.group().t;
     if online < need {
+        let _ = state.runtime.gate_intent.release(
+            &receipt.intent_id,
+            receipt.bucket,
+            receipt.amount_sats,
+        );
         return (
             StatusCode::BAD_REQUEST,
             json_err(format!("fail-stop: online {online} < t {need}")),
         );
     }
     match tr.sign_psbt(&req.session_id, &req.psbt, destination, amount) {
-        Ok(signed) => (StatusCode::OK, signed.to_json()),
-        Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
+        Ok(signed) => {
+            if let Err(e) = state.runtime.gate_intent.commit(&receipt.intent_id) {
+                return (StatusCode::BAD_REQUEST, json_err(e));
+            }
+            (StatusCode::OK, signed.to_json())
+        }
+        Err(e) => {
+            let _ = state.runtime.gate_intent.release(
+                &receipt.intent_id,
+                receipt.bucket,
+                receipt.amount_sats,
+            );
+            (StatusCode::BAD_REQUEST, json_err(e))
+        }
     }
 }
 
-fn maybe_gate_intent(
+fn build_settlement_intent(
     state: &AppState,
     intent_id: Option<&str>,
     bucket: Option<&str>,
     destination: Option<&str>,
     amount_sats: Option<u64>,
     require_shared_tr: bool,
-) -> Result<(), crate::domain::DomainError> {
+) -> Result<SettlementIntent, crate::domain::DomainError> {
     let Some(id) = intent_id.filter(|s| !s.is_empty()) else {
         return Err(crate::domain::DomainError::InvalidIntent(
             "intent_id required before bitcoin sign".into(),
@@ -391,7 +414,45 @@ fn maybe_gate_intent(
         assert_shared_taproot_bucket(bucket)?;
     }
     let constitution = state.runtime.ledger.constitution()?;
-    let intent = SettlementIntent::new(id, bucket, destination, amount, constitution.hash)?;
+    SettlementIntent::new(id, bucket, destination, amount, constitution.hash)
+}
+
+/// Two-phase reserve (High #9) — do not durable-burn before successful sign.
+fn maybe_reserve_intent(
+    state: &AppState,
+    intent_id: Option<&str>,
+    bucket: Option<&str>,
+    destination: Option<&str>,
+    amount_sats: Option<u64>,
+    require_shared_tr: bool,
+) -> Result<crate::application::GateReceipt, crate::domain::DomainError> {
+    let intent = build_settlement_intent(
+        state,
+        intent_id,
+        bucket,
+        destination,
+        amount_sats,
+        require_shared_tr,
+    )?;
+    state.runtime.gate_intent.reserve(intent)
+}
+
+fn maybe_gate_intent(
+    state: &AppState,
+    intent_id: Option<&str>,
+    bucket: Option<&str>,
+    destination: Option<&str>,
+    amount_sats: Option<u64>,
+    require_shared_tr: bool,
+) -> Result<(), crate::domain::DomainError> {
+    let intent = build_settlement_intent(
+        state,
+        intent_id,
+        bucket,
+        destination,
+        amount_sats,
+        require_shared_tr,
+    )?;
     let _ = state.runtime.gate_intent.execute(intent)?;
     Ok(())
 }
@@ -400,6 +461,10 @@ async fn v1_anti_nonce_prepare(State(state): State<AppState>, body: Bytes) -> im
     #[derive(serde::Deserialize)]
     struct PrepareBody {
         session_id: String,
+        /// Required: bind prepare to Intent (High #8).
+        intent_id: String,
+        #[serde(default)]
+        durable: bool,
     }
     let req: PrepareBody = match serde_json::from_slice(&body) {
         Ok(r) => r,
@@ -410,7 +475,22 @@ async fn v1_anti_nonce_prepare(State(state): State<AppState>, body: Bytes) -> im
             )
         }
     };
-    match state.runtime.anti_nonce.prepare_remote(&req.session_id) {
+    let principal = state.runtime.config.node_id.as_str();
+    if let Err(e) = state.prepare_limiter.check(principal) {
+        return (StatusCode::TOO_MANY_REQUESTS, json_err(e));
+    }
+    if let Err(e) = bind_session_to_intent(&req.session_id, &req.intent_id) {
+        return (StatusCode::BAD_REQUEST, json_err(e));
+    }
+    let result = if req.durable {
+        state.runtime.anti_nonce.prepare_remote_durable(&req.session_id)
+    } else {
+        state
+            .runtime
+            .anti_nonce
+            .prepare_remote_bound(&req.session_id, &req.intent_id)
+    };
+    match result {
         Ok(already_seen) => (
             StatusCode::OK,
             format!(r#"{{"ok":true,"already_seen":{already_seen}}}"#),
@@ -423,6 +503,8 @@ async fn v1_intent_consume_prepare(State(state): State<AppState>, body: Bytes) -
     #[derive(serde::Deserialize)]
     struct PrepareBody {
         intent_id: String,
+        #[serde(default)]
+        durable: bool,
     }
     let req: PrepareBody = match serde_json::from_slice(&body) {
         Ok(r) => r,
@@ -433,7 +515,16 @@ async fn v1_intent_consume_prepare(State(state): State<AppState>, body: Bytes) -
             )
         }
     };
-    match state.runtime.buckets.prepare_remote(&req.intent_id) {
+    let principal = state.runtime.config.node_id.as_str();
+    if let Err(e) = state.prepare_limiter.check(principal) {
+        return (StatusCode::TOO_MANY_REQUESTS, json_err(e));
+    }
+    let result = if req.durable {
+        state.runtime.buckets.prepare_remote_durable(&req.intent_id)
+    } else {
+        state.runtime.buckets.prepare_remote(&req.intent_id)
+    };
+    match result {
         Ok(already_seen) => (
             StatusCode::OK,
             format!(r#"{{"ok":true,"already_seen":{already_seen}}}"#),
@@ -991,7 +1082,7 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
                 "200 OK",
                 format!(
                     r#"{{"n":{},"t":{},"commitment":"{}","scheme":"lab-shamir-threshold-v1","online":{}}}"#,
-                    g.n, g.t, g.commitment, runtime.online.count
+                    g.n, g.t, g.commitment, runtime.online.online_count()
                 ),
             )
         }

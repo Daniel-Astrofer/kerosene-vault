@@ -615,6 +615,17 @@ impl VaultConfig {
         // Honest tier / mode: refuse advertising SEV/SGX without HW (stub is staging-only).
         self.validate_tee_claims()?;
 
+        // High #14: production software ceremony should pin measurement (honest, stronger).
+        if self.ceremony_mode == CeremonyMode::Production
+            && self.attestation_mode == AttestationMode::Software
+            && self.measurement_pin_hex.is_none()
+        {
+            return Err(DomainError::AttestationRejected(
+                "production ATTESTATION_MODE=software requires VAULT_MEASUREMENT_PIN (software ≠ TEE; pin binds measurement)"
+                    .into(),
+            ));
+        }
+
         if matches!(
             self.ceremony_mode,
             CeremonyMode::Staging | CeremonyMode::Production
@@ -1244,6 +1255,29 @@ mod tests {
         cfg.share_store_mode = ShareStoreMode::AeadDisk;
         cfg.dealer_requested = false;
         cfg.dkg_mode = DkgMode::DistributedWire;
+        cfg.measurement_pin_hex = Some("aa".repeat(32));
+        assert!(cfg.validate_hygiene().is_ok());
+    }
+
+    #[test]
+    fn production_software_requires_measurement_pin() {
+        let mut cfg = base();
+        cfg.node_tier = VaultNodeTier::Domestic;
+        cfg.attestation_mode = AttestationMode::Software;
+        cfg.ceremony_mode = CeremonyMode::Production;
+        cfg.refuse_sim = true;
+        cfg.hardened = true;
+        cfg.auth_mode = AuthMode::MutualTls;
+        cfg = with_mtls_paths(cfg);
+        cfg = with_tor_mesh(cfg);
+        cfg.share_store_mode = ShareStoreMode::AeadDisk;
+        cfg.dealer_requested = false;
+        cfg.dkg_mode = DkgMode::DistributedWire;
+        assert!(matches!(
+            cfg.validate_hygiene(),
+            Err(DomainError::AttestationRejected(_))
+        ));
+        cfg.measurement_pin_hex = Some("bb".repeat(32));
         assert!(cfg.validate_hygiene().is_ok());
     }
 
@@ -1263,6 +1297,7 @@ mod tests {
         cfg.transport = VaultTransport::Clearnet;
         cfg.peer_http = PeerHttpSettings::clearnet_defaults();
         cfg.seed_peers = vec![("vault-2".into(), "vault-2:7701".into())];
+        cfg.measurement_pin_hex = Some("cc".repeat(32));
         assert!(matches!(
             cfg.validate_hygiene(),
             Err(DomainError::LabFlagForbidden(_))
@@ -1284,6 +1319,7 @@ mod tests {
         cfg.share_store_mode = ShareStoreMode::AeadDisk;
         cfg.dealer_requested = false;
         cfg.dkg_mode = DkgMode::DistributedWire;
+        cfg.measurement_pin_hex = Some("dd".repeat(32));
         assert!(matches!(
             cfg.validate_hygiene(),
             Err(DomainError::LabFlagForbidden(_))
@@ -1315,6 +1351,7 @@ mod tests {
         cfg.share_store_mode = ShareStoreMode::AeadDisk;
         cfg.dealer_requested = false;
         cfg.dkg_mode = DkgMode::Distributed;
+        cfg.measurement_pin_hex = Some("ee".repeat(32));
         assert!(matches!(
             cfg.validate_hygiene(),
             Err(DomainError::DealerForbidden(_))
@@ -1382,6 +1419,16 @@ mod tests {
     }
 
     #[test]
+    fn peer_tee_tier_without_quote_seats_as_domestic() {
+        let mut cfg = base();
+        cfg.peer_tiers.insert("vault-epyc".into(), VaultNodeTier::Sev);
+        cfg.peer_tier_require_quote = true;
+        assert_eq!(cfg.peer_tier("vault-epyc"), VaultNodeTier::Domestic);
+        cfg.peer_tier_quotes.insert("vault-epyc".into(), "deadbeef".into());
+        assert_eq!(cfg.peer_tier("vault-epyc"), VaultNodeTier::Sev);
+    }
+
+    #[test]
     fn domestic_cannot_advertise_sev_mode() {
         let mut cfg = base();
         cfg.node_tier = VaultNodeTier::Domestic;
@@ -1418,6 +1465,8 @@ mod tests {
             cfg.share_store_mode = ShareStoreMode::AeadDisk;
             cfg.dealer_requested = false;
             cfg.dkg_mode = DkgMode::DistributedWire;
+            cfg.measurement_pin_hex = Some("ff".repeat(32));
+            cfg.share_passphrase = Some("explicit-prod-pass".into());
             assert!(
                 matches!(cfg.validate_hygiene(), Err(DomainError::AuthRejected(_))),
                 "static_token must be refused in {:?}",
@@ -1460,3 +1509,4 @@ mod tests {
         ));
     }
 }
+
