@@ -14,6 +14,7 @@ mod economy_memory;
 mod frost_dealer;
 mod frost_reshare;
 mod frost_sign;
+mod frost_tr_bitcoin;
 mod http;
 mod ledger_memory;
 mod peer_memory;
@@ -44,6 +45,11 @@ pub use frost_reshare::{
     refresh_shares_in_process, FrostShareSlot, FrostShareState, PolicyReshareHook,
 };
 pub use frost_sign::{FrostAggregateResult, FrostSignOrchestrator};
+pub use frost_tr_bitcoin::{
+    FrostTrBitcoinOrchestrator, FrostTrShareSlot, FrostTrShareState, SignedPsbtResult,
+};
+#[cfg(feature = "dealer_lab")]
+pub use frost_tr_bitcoin::generate_tr_dealer;
 pub use http::{build_router, AppState};
 pub use ledger_memory::InMemoryLedger;
 pub use peer_memory::InMemoryPeerDirectory;

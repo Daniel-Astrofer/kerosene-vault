@@ -30,6 +30,9 @@ pub fn build_router(runtime: Arc<VaultRuntime>) -> Router {
     let protected = Router::new()
         .route("/v1/sign", post(v1_sign))
         .route("/v1/intent", post(v1_intent))
+        .route("/v1/bitcoin/deposit", get(v1_bitcoin_deposit))
+        .route("/v1/bitcoin/sign-sighash", post(v1_bitcoin_sign_sighash))
+        .route("/v1/bitcoin/sign-psbt", post(v1_bitcoin_sign_psbt))
         // Over-wire FROST DKG round exchange (auth via token or mTLS). No dealer.
         .route("/v1/dkg/round1", post(v1_dkg_round1))
         .route("/v1/dkg/round2", post(v1_dkg_round2))
@@ -111,6 +114,155 @@ async fn v1_sign(State(state): State<AppState>, body: Bytes) -> impl IntoRespons
         Ok(sig) => (StatusCode::OK, sig.to_json()),
         Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
     }
+}
+
+async fn v1_bitcoin_deposit(State(state): State<AppState>) -> impl IntoResponse {
+    let Some(tr) = state.runtime.frost_tr.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"error":"taproot FROST not installed (dealer_lab / DKG required)"}"#.into(),
+        );
+    };
+    match tr.deposit_info() {
+        Ok(info) => (StatusCode::OK, info.to_json()),
+        Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct BitcoinSighashBody {
+    session_id: String,
+    /// Hex-encoded 32-byte Taproot sighash.
+    sighash_hex: String,
+    /// When set, Intent gate runs before signing (caps / replay / allowlist).
+    intent_id: Option<String>,
+    bucket: Option<String>,
+    destination: Option<String>,
+    amount_sats: Option<u64>,
+}
+
+async fn v1_bitcoin_sign_sighash(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    let req: BitcoinSighashBody = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!(r#"{{"error":"invalid json: {e}"}}"#),
+            )
+        }
+    };
+    if let Err(e) = maybe_gate_intent(
+        &state,
+        req.intent_id.as_deref(),
+        req.bucket.as_deref(),
+        req.destination.as_deref(),
+        req.amount_sats,
+    ) {
+        return (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#));
+    }
+    let Some(tr) = state.runtime.frost_tr.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"error":"taproot FROST not installed"}"#.into(),
+        );
+    };
+    let sighash = match hex::decode(req.sighash_hex.trim()) {
+        Ok(b) => b,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!(r#"{{"error":"sighash_hex: {e}"}}"#),
+            )
+        }
+    };
+    match tr.sign_sighash(&req.session_id, &sighash) {
+        Ok(sig) => (StatusCode::OK, sig.to_json()),
+        Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct BitcoinPsbtBody {
+    /// Unique signing session (also used as Intent id when intent_id omitted).
+    session_id: String,
+    psbt: String,
+    intent_id: Option<String>,
+    bucket: Option<String>,
+    destination: Option<String>,
+    amount_sats: Option<u64>,
+}
+
+async fn v1_bitcoin_sign_psbt(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
+    let req: BitcoinPsbtBody = match serde_json::from_slice(&body) {
+        Ok(r) => r,
+        Err(e) => {
+            return (
+                StatusCode::BAD_REQUEST,
+                format!(r#"{{"error":"invalid json: {e}"}}"#),
+            )
+        }
+    };
+    let intent_id = req
+        .intent_id
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .unwrap_or(req.session_id.as_str());
+    if let Err(e) = maybe_gate_intent(
+        &state,
+        Some(intent_id),
+        req.bucket.as_deref(),
+        req.destination.as_deref(),
+        req.amount_sats,
+    ) {
+        return (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#));
+    }
+    let Some(tr) = state.runtime.frost_tr.as_ref() else {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"error":"taproot FROST not installed"}"#.into(),
+        );
+    };
+    // Fail-stop if online < t (same policy as message signing).
+    let online = state.runtime.online.count;
+    let need = state.runtime.threshold.group().t;
+    if online < need {
+        return (
+            StatusCode::BAD_REQUEST,
+            format!(r#"{{"error":"fail-stop: online {online} < t {need}"}}"#),
+        );
+    }
+    match tr.sign_psbt(&req.session_id, &req.psbt) {
+        Ok(signed) => (StatusCode::OK, signed.to_json()),
+        Err(e) => (StatusCode::BAD_REQUEST, format!(r#"{{"error":"{e}"}}"#)),
+    }
+}
+
+fn maybe_gate_intent(
+    state: &AppState,
+    intent_id: Option<&str>,
+    bucket: Option<&str>,
+    destination: Option<&str>,
+    amount_sats: Option<u64>,
+) -> Result<(), crate::domain::DomainError> {
+    let Some(id) = intent_id.filter(|s| !s.is_empty()) else {
+        return Err(crate::domain::DomainError::InvalidIntent(
+            "intent_id required before bitcoin sign".into(),
+        ));
+    };
+    let bucket_raw = bucket.unwrap_or("USERS");
+    let destination = destination.unwrap_or("");
+    let amount = amount_sats.unwrap_or(0);
+    if destination.is_empty() || amount == 0 {
+        return Err(crate::domain::DomainError::InvalidIntent(
+            "destination and amount_sats required for Intent gate".into(),
+        ));
+    }
+    validate_destination(state.runtime.config.bitcoin_network, destination)?;
+    let bucket = BucketKind::parse(bucket_raw)?;
+    let constitution = state.runtime.ledger.constitution()?;
+    let intent = SettlementIntent::new(id, bucket, destination, amount, constitution.hash)?;
+    let _ = state.runtime.gate_intent.execute(intent)?;
+    Ok(())
 }
 
 async fn v1_anti_nonce_prepare(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {

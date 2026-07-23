@@ -345,6 +345,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bb0ce8bd5baaa0d303a19915a6d93afed161f528654e42da2a7a97d05c59499a"
 dependencies = [
  "base58ck",
+ "base64 0.21.7",
  "bech32",
  "bitcoin-io",
  "bitcoin-units",
@@ -998,6 +999,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "frost-secp256k1-tr"
+version = "3.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "c6fca4ca9f057cf22066f3eb5bbda59d2af51f429f2aac5982a11a8a841c0993"
+dependencies = [
+ "document-features",
+ "frost-core",
+ "frost-rerandomized",
+ "k256",
+ "rand_core 0.6.4",
+ "sha2",
+]
+
+[[package]]
 name = "fs-err"
 version = "3.3.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1635,6 +1650,7 @@ dependencies = [
  "bitcoin",
  "chacha20poly1305",
  "frost-secp256k1",
+ "frost-secp256k1-tr",
  "hex",
  "rand 0.8.7",
  "reqwest 0.12.28",

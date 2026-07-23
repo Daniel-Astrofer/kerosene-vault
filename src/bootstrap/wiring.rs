@@ -3,14 +3,15 @@ use std::sync::Arc;
 
 use crate::adapters::{
     AeadDiskShareStore, DistributedDkgAdapter, DistributedWireDkgPort, FrostShareSlot,
-    FrostShareState, FrostSignOrchestrator, HttpAntiNonceTransport, InMemoryBucketLedger,
-    InMemoryEconomy, InMemoryLedger, InMemoryPeerDirectory, InMemoryReleaseMesh,
-    MutualTlsAuthAdapter, PolicyReshareHook, QuorumAntiNonce, QuorumDailyRotation,
-    SharedAntiNonce, SimAttestationAdapter, StaticTokenAuthAdapter, SystemClock,
-    TeeAttestationAdapter, TeeSealAdapter, ThresholdVaultState, WireDkgHub, WireDkgPeerAuth,
+    FrostShareState, FrostSignOrchestrator, FrostTrBitcoinOrchestrator, FrostTrShareSlot,
+    HttpAntiNonceTransport, InMemoryBucketLedger, InMemoryEconomy, InMemoryLedger,
+    InMemoryPeerDirectory, InMemoryReleaseMesh, MutualTlsAuthAdapter, PolicyReshareHook,
+    QuorumAntiNonce, QuorumDailyRotation, SharedAntiNonce, SimAttestationAdapter,
+    StaticTokenAuthAdapter, SystemClock, TeeAttestationAdapter, TeeSealAdapter,
+    ThresholdVaultState, WireDkgHub, WireDkgPeerAuth,
 };
 #[cfg(feature = "dealer_lab")]
-use crate::adapters::{dealer_fatal_banner, DealerLabAdapter};
+use crate::adapters::{dealer_fatal_banner, generate_tr_dealer, DealerLabAdapter};
 use crate::application::{
     AccrueMinerRewards, AllocateProfit, AntiNoncePort, CosignRelease, DailyRotationPort, DkgPort,
     GateIntent, GetAllowlist, GetEconomyStatus, GetHealth, GetLedgerSnapshot, PingPeer,
@@ -59,6 +60,9 @@ pub struct VaultRuntime {
     pub anti_nonce: Arc<dyn AntiNoncePort>,
     /// Present after dealer_lab or distributed FROST DKG keygen.
     pub frost: Option<Arc<FrostSignOrchestrator>>,
+    /// Taproot BIP-340 FROST keyset for on-chain PSBT / sighash signing.
+    pub frost_tr: Option<Arc<FrostTrBitcoinOrchestrator>>,
+    pub frost_tr_shares: Arc<FrostTrShareSlot>,
     /// Over-wire DKG hub (HTTP round exchange between peers).
     pub wire_dkg: Arc<WireDkgHub>,
 }
@@ -310,6 +314,7 @@ impl VaultRuntime {
             peer_count,
         )?);
         let frost_shares = Arc::new(FrostShareSlot::new());
+        let frost_tr_shares = Arc::new(FrostTrShareSlot::new());
         let reshare_hook: Arc<dyn ReshareHookPort> = Arc::new(PolicyReshareHook::new(
             config.reshare_policy,
             ledger_port.clone(),
@@ -345,7 +350,11 @@ impl VaultRuntime {
         )?);
 
         #[cfg(feature = "dealer_lab")]
-        let (dkg, frost): (Arc<dyn DkgPort>, Option<Arc<FrostSignOrchestrator>>) = {
+        let (dkg, frost, frost_tr): (
+            Arc<dyn DkgPort>,
+            Option<Arc<FrostSignOrchestrator>>,
+            Option<Arc<FrostTrBitcoinOrchestrator>>,
+        ) = {
             if config.dealer_requested
                 && matches!(config.ceremony_mode, CeremonyMode::Lab)
                 && !config.hardened
@@ -354,7 +363,9 @@ impl VaultRuntime {
                 let adapter = DealerLabAdapter::new();
                 let max = n.min(u16::MAX as usize) as u16;
                 let min = t.min(u16::MAX as usize) as u16;
-                let bundle = DealerLabAdapter::generate(max.max(2), min.max(2).min(max))?;
+                let max = max.max(2);
+                let min = min.max(2).min(max);
+                let bundle = DealerLabAdapter::generate(max, min)?;
                 // Seal local share bytes (serialized verifying key + identifier index) for lab store smoke.
                 if let Some((id, kp)) = bundle.key_packages.iter().next() {
                     let blob = format!("frost-lab-share:{id:?}");
@@ -371,42 +382,60 @@ impl VaultRuntime {
                     Box::new(SharedAntiNonce(anti_nonce.clone())),
                     daily_rotation.clone(),
                 );
-                (Arc::new(adapter), Some(Arc::new(orch)))
+                let tr_state = generate_tr_dealer(max, min)?;
+                frost_tr_shares.install(tr_state);
+                let tr_orch = FrostTrBitcoinOrchestrator::new(
+                    frost_tr_shares.clone(),
+                    Box::new(SharedAntiNonce(anti_nonce.clone())),
+                    daily_rotation.clone(),
+                    config.bitcoin_network,
+                );
+                (
+                    Arc::new(adapter),
+                    Some(Arc::new(orch)),
+                    Some(Arc::new(tr_orch)),
+                )
             } else if matches!(config.dkg_mode, DkgMode::DistributedWire) {
                 // Over-wire ceremony via /v1/dkg/round{1,2,3}; no in-process dealer/sim.
-                (Arc::new(DistributedWireDkgPort), None)
+                (Arc::new(DistributedWireDkgPort), None, None)
             } else if matches!(config.dkg_mode, DkgMode::Distributed) {
-                wire_distributed_dkg(
+                let (dkg, frost) = wire_distributed_dkg(
                     n,
                     t,
                     &share_store,
                     daily_rotation.clone(),
                     frost_shares.clone(),
                     anti_nonce.clone(),
-                )?
+                )?;
+                (dkg, frost, None)
             } else {
-                (Arc::new(DistributedDkgAdapter::new()), None)
+                (Arc::new(DistributedDkgAdapter::new()), None, None)
             }
         };
 
         #[cfg(not(feature = "dealer_lab"))]
-        let (dkg, frost): (Arc<dyn DkgPort>, Option<Arc<FrostSignOrchestrator>>) = {
+        let (dkg, frost, frost_tr): (
+            Arc<dyn DkgPort>,
+            Option<Arc<FrostSignOrchestrator>>,
+            Option<Arc<FrostTrBitcoinOrchestrator>>,
+        ) = {
             if config.dealer_requested || matches!(config.dkg_mode, DkgMode::DealerLab) {
                 return Err(DomainError::DealerForbidden(
                     "dealer DKG not compiled (build without dealer_lab)".into(),
                 ));
             }
             if matches!(config.dkg_mode, DkgMode::DistributedWire) {
-                (Arc::new(DistributedWireDkgPort), None)
+                (Arc::new(DistributedWireDkgPort), None, None)
             } else {
-                wire_distributed_dkg(
+                let (dkg, frost) = wire_distributed_dkg(
                     n,
                     t,
                     &share_store,
                     daily_rotation.clone(),
                     frost_shares.clone(),
                     anti_nonce.clone(),
-                )?
+                )?;
+                (dkg, frost, None)
             }
         };
 
@@ -490,6 +519,8 @@ impl VaultRuntime {
             frost_shares,
             anti_nonce,
             frost,
+            frost_tr,
+            frost_tr_shares,
             wire_dkg,
         })
     }
