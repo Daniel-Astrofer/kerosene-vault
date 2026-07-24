@@ -3,8 +3,8 @@
 # Same distributed_wire path as production; peers are .onion via SOCKS5h.
 #
 # Usage (repo root):
-#   ./backend/kerosene-vault/scripts/lab_dkg_wire_tor.sh
-#   VAULT_AUTH_MODE=mtls ./backend/kerosene-vault/scripts/lab_dkg_wire_tor.sh
+#   ./scripts/vault/lab_dkg_wire_tor.sh
+#   VAULT_AUTH_MODE=mtls ./scripts/vault/lab_dkg_wire_tor.sh
 #
 # Env:
 #   SKIP_COMPOSE=1          — reuse already-running mesh; needs VAULT{1,2,3}_ONION
@@ -16,7 +16,7 @@
 # See docs/CEREMONY_TOR.md.
 set -euo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../../.." && pwd)"
 COMPOSE_FILE="$ROOT/infra/docker/compose/vault-mesh-tor.compose.yaml"
 AUTH_MODE="${VAULT_AUTH_MODE:-static_token}"
 TOKEN="${VAULT_API_TOKEN:-kerosene-vault-lab-only}"
@@ -70,10 +70,10 @@ ensure_mtls_certs() {
   export VAULT_LAB_MTLS_ONION_SANS="${VAULT1_ONION},${VAULT2_ONION},${VAULT3_ONION}"
   if [[ -f "$CERTS/ca.crt" && -f "$CERTS/vault-server.crt" ]]; then
     echo "== Rotating lab mTLS leaves with onion DNS SANs =="
-    "$ROOT/backend/kerosene-vault/scripts/rotate_lab_mtls_certs.sh"
+    "$ROOT/scripts/vault/rotate_lab_mtls_certs.sh"
   else
     echo "== Generating lab mTLS certs (SPIFFE URI + onion DNS SANs) =="
-    "$ROOT/backend/kerosene-vault/scripts/gen_lab_mtls_certs.sh"
+    "$ROOT/scripts/vault/gen_lab_mtls_certs.sh"
   fi
 }
 

@@ -17,7 +17,7 @@ plane — they are **not** audit signing keys.
 ## Generate
 
 ```bash
-./backend/kerosene-vault/scripts/gen_mesh_audit_keys.sh
+./scripts/vault/gen_mesh_audit_keys.sh
 # → ceremony-certs/audit/operators/*.key|*.pub
 # → ceremony-certs/audit/allowlist.txt
 # → ceremony-certs/audit/env.hint
@@ -34,12 +34,12 @@ set -a && source ceremony-certs/audit/env.hint && set +a
 
 ```bash
 # Sign an audit event payload
-./backend/kerosene-vault/scripts/verify_mesh_audit_sig.sh sign \
+./scripts/vault/verify_mesh_audit_sig.sh sign \
   --key ceremony-certs/audit/operators/audit-ops-1.key \
   --message event.json --sig event.sig
 
 # Verify: refuses keys not on the mesh audit allowlist
-./backend/kerosene-vault/scripts/verify_mesh_audit_sig.sh verify \
+./scripts/vault/verify_mesh_audit_sig.sh verify \
   --allowlist ceremony-certs/audit/allowlist.txt \
   --pub ceremony-certs/audit/operators/audit-ops-1.pub \
   --message event.json --sig event.sig

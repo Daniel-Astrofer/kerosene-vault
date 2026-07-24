@@ -8,15 +8,15 @@
 #
 # Usage (repo root):
 #   VAULT_DKG_MODE=distributed_wire docker compose -f infra/docker/compose/vault-mesh-lab.compose.yaml up --build -d
-#   ./backend/kerosene-vault/scripts/lab_dkg_wire.sh
+#   ./scripts/vault/lab_dkg_wire.sh
 #
-# mTLS lab (after ./backend/kerosene-vault/scripts/gen_lab_mtls_certs.sh):
+# mTLS lab (after ./scripts/vault/gen_lab_mtls_certs.sh):
 #   VAULT_AUTH_MODE=mtls \
 #   VAULT_TLS_CLIENT_CERT=./backend/kerosene-vault/lab-certs/vault-client.crt \
 #   VAULT_TLS_CLIENT_KEY=./backend/kerosene-vault/lab-certs/vault-client.key \
 #   VAULT_TLS_CA=./backend/kerosene-vault/lab-certs/ca.crt \
 #   VAULT1_URL=https://127.0.0.1:7701 VAULT2_URL=https://127.0.0.1:7702 VAULT3_URL=https://127.0.0.1:7703 \
-#   ./backend/kerosene-vault/scripts/lab_dkg_wire.sh
+#   ./scripts/vault/lab_dkg_wire.sh
 #
 # In-process fallback (no compose peers): VAULT_DKG_MODE=distributed inside one process.
 set -euo pipefail

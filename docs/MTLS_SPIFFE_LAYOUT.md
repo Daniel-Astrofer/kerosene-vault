@@ -56,9 +56,9 @@ SPIRE-equivalent Gate profile (short TTL, unique IDs, trust domain
 `kerosene.ceremony` by default):
 
 ```bash
-./backend/kerosene-vault/scripts/gen_ceremony_mtls_certs.sh
+./scripts/vault/gen_ceremony_mtls_certs.sh
 VAULT_CEREMONY_MTLS_TTL_HOURS=24 \
-  ./backend/kerosene-vault/scripts/rotate_ceremony_mtls_certs.sh
+  ./scripts/vault/rotate_ceremony_mtls_certs.sh
 ```
 
 ```text
@@ -92,17 +92,17 @@ Infra wrapper: `infra/scripts/gen-ceremony-mtls.sh`.
 
 ```bash
 # Lab first materialization
-./backend/kerosene-vault/scripts/gen_lab_mtls_certs.sh
-VAULT_LAB_MTLS_TTL_HOURS=24 ./backend/kerosene-vault/scripts/rotate_lab_mtls_certs.sh
+./scripts/vault/gen_lab_mtls_certs.sh
+VAULT_LAB_MTLS_TTL_HOURS=24 ./scripts/vault/rotate_lab_mtls_certs.sh
 
 # Ceremony CA (preferred before genesis)
-./backend/kerosene-vault/scripts/gen_ceremony_mtls_certs.sh
+./scripts/vault/gen_ceremony_mtls_certs.sh
 VAULT_CEREMONY_MTLS_TTL_HOURS=24 \
-  ./backend/kerosene-vault/scripts/rotate_ceremony_mtls_certs.sh
+  ./scripts/vault/rotate_ceremony_mtls_certs.sh
 
 # Optional post-rotate hook
 VAULT_MTLS_ROTATE_HOOK=/path/to/hook.sh \
-  ./backend/kerosene-vault/scripts/rotate_ceremony_mtls_certs.sh
+  ./scripts/vault/rotate_ceremony_mtls_certs.sh
 ```
 
 Hook receives env: `VAULT_LAB_MTLS_OUT` / `VAULT_CEREMONY_MTLS_OUT`,
@@ -134,10 +134,10 @@ Mint onion DNS SANs after HS discovery:
 
 ```bash
 VAULT_LAB_MTLS_ONION_SANS=a.onion,b.onion,c.onion \
-  ./backend/kerosene-vault/scripts/gen_ceremony_mtls_certs.sh
+  ./scripts/vault/gen_ceremony_mtls_certs.sh
 ```
 
-`VAULT_AUTH_MODE=mtls ./backend/kerosene-vault/scripts/lab_dkg_wire_tor.sh` does this automatically.
+`VAULT_AUTH_MODE=mtls ./scripts/vault/lab_dkg_wire_tor.sh` does this automatically.
 See `docs/CEREMONY_TOR.md`. Staging/production ceremony modes refuse `static_token`.
 
 ## kfe TLS properties

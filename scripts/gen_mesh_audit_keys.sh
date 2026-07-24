@@ -11,9 +11,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+VAULT_ROOT="$REPO_ROOT/backend/kerosene-vault"
 
-OUT_DIR="${VAULT_AUDIT_KEYS_OUT:-${VAULT_CEREMONY_MTLS_OUT:-$ROOT_DIR/ceremony-certs}/audit}"
+OUT_DIR="${VAULT_AUDIT_KEYS_OUT:-${VAULT_CEREMONY_MTLS_OUT:-$VAULT_ROOT/ceremony-certs}/audit}"
 OPERATORS_CSV="${VAULT_AUDIT_OPERATORS:-audit-ops-1,audit-ops-2,audit-monitor}"
 PURPOSE="mesh-audit"
 

@@ -32,7 +32,7 @@ without a quote, seating treats the peer as `domestic`.
 2. Gate: `./scripts/genesis_ceremony_checklist.sh`
 3. Bring up peers (compose reference: `infra/docker/compose/vault-mesh-ceremony.compose.yaml`).
 4. Confirm `GET /health` (auth): `node_tier=domestic`, `attestation_mode=software`, `tee_available=false`, `genesis_roster` lists N ids. Public `GET /v1/health` returns status only (no roster).
-5. Run `./backend/kerosene-vault/scripts/genesis_dkg_wire.sh` (mTLS client certs).
+5. Run `./scripts/vault/genesis_dkg_wire.sh` (mTLS client certs).
 6. Cutover kfe: mesh enabled, `kfe.mpc.signing-enabled=false` — do not revive HashiCorp/mpc for treasury.
 
 ## Mixed SEV-priority

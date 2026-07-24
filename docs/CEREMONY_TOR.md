@@ -25,10 +25,10 @@ Tor profile does **not** publish `:7701–7703` on the host, so the local-full k
 
 ```bash
 # Lab variability only (static_token; expects Tor latency/retries)
-./backend/kerosene-vault/scripts/lab_dkg_wire_tor.sh
+./scripts/vault/lab_dkg_wire_tor.sh
 
 # Ceremony-shaped path: mTLS over onions (SPIFFE URI and/or .onion DNS SAN)
-VAULT_AUTH_MODE=mtls ./backend/kerosene-vault/scripts/lab_dkg_wire_tor.sh
+VAULT_AUTH_MODE=mtls ./scripts/vault/lab_dkg_wire_tor.sh
 ```
 
 What the script does:
@@ -58,7 +58,7 @@ Lab cert gen:
 
 ```bash
 VAULT_LAB_MTLS_ONION_SANS=a.onion,b.onion,c.onion \
-  ./backend/kerosene-vault/scripts/gen_lab_mtls_certs.sh
+  ./scripts/vault/gen_lab_mtls_certs.sh
 ```
 
 SPIFFE URI is always on the server leaf — so verify works even if onions change and certs are not immediately rotated (prefer rotating leaves after onion discovery for dual coverage).

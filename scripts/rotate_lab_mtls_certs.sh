@@ -12,11 +12,12 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+VAULT_ROOT="$REPO_ROOT/backend/kerosene-vault"
 # shellcheck source=mtls_cert_lib.sh
 source "$SCRIPT_DIR/mtls_cert_lib.sh"
 
-OUT_DIR="${VAULT_LAB_MTLS_OUT:-$ROOT_DIR/lab-certs}"
+OUT_DIR="${VAULT_LAB_MTLS_OUT:-$VAULT_ROOT/lab-certs}"
 TTL_HOURS="${VAULT_LAB_MTLS_TTL_HOURS:-24}"
 TRUST_DOMAIN="${VAULT_MTLS_TRUST_DOMAIN:-kerosene.lab}"
 CN_SERVER="${VAULT_LAB_MTLS_SERVER_CN:-kerosene-vault-lab}"

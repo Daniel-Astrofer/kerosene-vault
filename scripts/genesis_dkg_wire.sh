@@ -4,13 +4,13 @@
 #
 # Lab visualize:
 #   VAULT_DKG_MODE=distributed_wire docker compose -f infra/docker/compose/vault-mesh-lab.compose.yaml up --build -d
-#   VAULT_AUTH_MODE=static_token ./backend/kerosene-vault/scripts/genesis_dkg_wire.sh
+#   VAULT_AUTH_MODE=static_token ./scripts/vault/genesis_dkg_wire.sh
 #
 # Production / all-domestic (Ryzen):
 #   # after checklist + compose with VAULT_CEREMONY_MODE=production ATTESTATION_MODE=software
 #   VAULT_AUTH_MODE=mtls \
 #   VAULT_TLS_CLIENT_CERT=... VAULT_TLS_CLIENT_KEY=... VAULT_TLS_CA=... \
-#   ./backend/kerosene-vault/scripts/genesis_dkg_wire.sh
+#   ./scripts/vault/genesis_dkg_wire.sh
 #
 # Mixed SEV-priority: set VAULT_PEER_TIERS on each node before boot; omit ROSTER to use
 # seated genesis_roster from GET /v1/health.

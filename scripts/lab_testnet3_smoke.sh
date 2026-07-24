@@ -4,7 +4,7 @@
 #
 # Usage (repo root):
 #   docker compose -f infra/docker/compose/vault-mesh-lab.compose.yaml up --build -d
-#   ./backend/kerosene-vault/scripts/lab_testnet3_smoke.sh
+#   ./scripts/vault/lab_testnet3_smoke.sh
 set -euo pipefail
 
 BASE_URL="${VAULT_SMOKE_BASE_URL:-http://127.0.0.1:7701}"
