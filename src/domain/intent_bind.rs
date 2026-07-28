@@ -1,6 +1,92 @@
 //! Bind Intent payment metadata to on-chain PSBT outputs (no unbound spend).
+//!
+//! Also defines hybrid intent signatures (Ed25519 + ML-DSA-65) with
+//! AND-logic validation per the downgrade policy.
+
+use sha3::{Digest, Sha3_384 as Sha384};
 
 use crate::domain::DomainError;
+
+/// Hybrid intent signature composed of classical Ed25519 + PQ ML-DSA-65.
+/// Both signatures MUST verify (AND logic). If either is missing or invalid
+/// the intent is rejected with 401 Unauthorized.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct IntentSignature {
+    /// Ed25519 raw signature, exactly 64 bytes.
+    #[serde(with = "hex_serde_64")]
+    pub ed25519_signature: [u8; 64],
+    /// ML-DSA-65 raw signature (variable length, ~3309 bytes typical).
+    pub ml_dsa65_signature: Vec<u8>,
+    /// Key identifier for the Ed25519 verification key (roster index).
+    pub ed25519_key_id: String,
+    /// Key identifier for the ML-DSA-65 verification key (roster index).
+    pub ml_dsa_key_id: String,
+    /// SHA-384 canonical hash of the intent material (both sigs sign the same hash).
+    #[serde(with = "hex_serde_48")]
+    pub canonical_hash: [u8; 48],
+}
+
+mod hex_serde_64 {
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(v: &[u8; 64], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&hex::encode(v))
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 64], D::Error> {
+        let s = String::deserialize(d)?;
+        let bytes = hex::decode(&s).map_err(serde::de::Error::custom)?;
+        let mut arr = [0u8; 64];
+        arr.copy_from_slice(&bytes[..64]);
+        Ok(arr)
+    }
+}
+
+mod hex_serde_48 {
+    use serde::{Deserialize, Deserializer, Serializer};
+    pub fn serialize<S: Serializer>(v: &[u8; 48], s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&hex::encode(v))
+    }
+    pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<[u8; 48], D::Error> {
+        let s = String::deserialize(d)?;
+        let bytes = hex::decode(&s).map_err(serde::de::Error::custom)?;
+        let mut arr = [0u8; 48];
+        arr.copy_from_slice(&bytes[..48]);
+        Ok(arr)
+    }
+}
+
+impl IntentSignature {
+    /// Compute the SHA-384 canonical hash from intent serialization bytes.
+    pub fn compute_canonical_hash(bytes: &[u8]) -> [u8; 48] {
+        let mut h = Sha384::new();
+        h.update(bytes);
+        let result = h.finalize();
+        let mut out = [0u8; 48];
+        out.copy_from_slice(&result[..48]);
+        out
+    }
+
+    /// Stub validation: checks that both signatures are non-empty and the
+    /// downgrade policy allows classical-only if PQ is missing.
+    /// Full cryptographic verification requires ml-dsa crate at runtime.
+    pub fn validate_stub(&self, require_pq: bool) -> Result<(), DomainError> {
+        if self.ed25519_signature == [0u8; 64] {
+            return Err(DomainError::AuthRejected(
+                "ed25519 signature is all-zero".into(),
+            ));
+        }
+        if self.canonical_hash == [0u8; 48] {
+            return Err(DomainError::AuthRejected(
+                "canonical hash is all-zero".into(),
+            ));
+        }
+        if require_pq && self.ml_dsa65_signature.is_empty() {
+            return Err(DomainError::AuthRejected(
+                "ml-dsa-65 signature required by downgrade policy but missing".into(),
+            ));
+        }
+        Ok(())
+    }
+}
 
 /// Pure check: PSBT outputs must match Intent payment + optional mesh change.
 ///

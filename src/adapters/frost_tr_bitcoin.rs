@@ -337,6 +337,13 @@ pub struct SignedPsbtResult {
     pub scheme: &'static str,
 }
 
+pub struct FinancialQuorumProof {
+    pub signature_hex: String,
+    pub verifying_key_hex: String,
+    pub participant_node_ids: Vec<String>,
+    pub required_threshold: usize,
+}
+
 #[derive(Debug, Clone)]
 pub struct InputSignature {
     pub input_index: usize,
@@ -367,6 +374,53 @@ pub struct FrostTrBitcoinOrchestrator {
 }
 
 impl FrostTrBitcoinOrchestrator {
+    /// Produce an attributable FROST 2/3 proof for a canonical 32-byte
+    /// financial proposal hash. Production always uses one local share plus
+    /// authenticated peers; dealer-lab multi-share proofs are refused.
+    pub fn sign_financial_quorum_proof(
+        &self,
+        proposal_hash: &[u8; 32],
+    ) -> Result<FinancialQuorumProof, DomainError> {
+        if self.allow_local_multisign {
+            return Err(DomainError::ThresholdError(
+                "financial quorum proof requires distributed_wire; dealer_lab is forbidden".into(),
+            ));
+        }
+        let snap = self.shares.snapshot()?;
+        let transport = self.cosign.as_ref().ok_or_else(|| {
+            DomainError::ThresholdError(
+                "financial quorum proof requires TR wire co-sign transport".into(),
+            )
+        })?;
+        let session_id = format!("financial-quorum-{}", hex::encode(proposal_hash));
+        let attributed = crate::adapters::sign_raw_wire_attributed(
+            &self.shares,
+            transport.as_ref(),
+            &self.local_node_id,
+            &session_id,
+            proposal_hash,
+        )?;
+        let pubkey_tweaked = snap
+            .pubkey_package
+            .clone()
+            .into_even_y(None)
+            .tweak(None::<&[u8]>);
+        let signature = attributed
+            .signature
+            .serialize()
+            .map_err(|e| DomainError::ThresholdError(format!("signature serialize: {e}")))?;
+        let verifying_key = pubkey_tweaked
+            .verifying_key()
+            .serialize()
+            .map_err(|e| DomainError::ThresholdError(format!("verifying key serialize: {e}")))?;
+        Ok(FinancialQuorumProof {
+            signature_hex: hex::encode(signature),
+            verifying_key_hex: hex::encode(verifying_key),
+            participant_node_ids: attributed.participant_node_ids,
+            required_threshold: snap.min_signers,
+        })
+    }
+
     pub fn new(
         shares: Arc<FrostTrShareSlot>,
         anti_nonce: Box<dyn AntiNoncePort>,
@@ -402,6 +456,9 @@ impl FrostTrBitcoinOrchestrator {
         self
     }
 
+    /// Omnibus deposit address (shared mesh key). Same `tb1p` for all USERS.
+    /// TODO(4.4): Add `deposit_address_for(user_id)` for per-user rotating addresses.
+    /// See docs/ops/DEPOSIT_ADDRESS_STRATEGY.md for trade-off analysis.
     pub fn deposit_info(&self) -> Result<DepositInfo, DomainError> {
         let snap = self.shares.snapshot()?;
         let internal = xonly_from_verifying_key(snap.pubkey_package.verifying_key())?;

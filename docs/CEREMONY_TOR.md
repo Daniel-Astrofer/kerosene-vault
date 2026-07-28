@@ -96,11 +96,30 @@ Shipped: SOCKS outbound + onion listeners + wire DKG + Tor timeouts/retries + **
 
 Still open:
 
-1. **Client-auth onion (authorized_clients)** — HS is v3 public onion; optional restricted discovery later.
+1. **Client-auth onion (authorized_clients)** — HS is v3 public onion; optional restricted discovery later. Script `scripts/vault/gen_tor_auth_clients.sh` generates X25519 key pairs. Compose mounts `infra/runtime/tor/authorized_clients/` as read-only. Set `VAULT_TOR_AUTH_CLIENTS=true` in your env to gate-on enable.
 2. **deploy.sh does not switch** to Tor mesh — intentional (local-full still clearnet lab).
 3. **Host Tor instead of sidecar** — supported via env (`VAULT_SOCKS_PROXY=socks5h://127.0.0.1:9050`) but not automated.
 4. **Anti-nonce / day-advance under Tor** — uses same SOCKS + mTLS client settings; long-run soak not automated in CI.
 5. **No HashiCorp / mpc-sidecar** — do not revive; cutover remains mesh-only.
+
+### Authorized Clients (Stealth) Procedure
+
+1. Generate X25519 keys offline on each operator machine:
+   ```bash
+   ./scripts/vault/gen_tor_auth_clients.sh --client-count 3
+   ```
+   This creates `infra/runtime/tor/authorized_clients/kerosene_service/client-N/` with `.auth` + `.x25519.key`.
+
+2. Copy `.auth` files to each Tor daemon's HS `authorized_clients/` directory (already mounted via compose).
+
+3. In `torrc` add (or ensure it's there):
+   ```
+   HiddenServiceAuthorizeClient stealth kerosene_service
+   ```
+
+4. Restart Tor daemons. The HS will only accept connections from authorized clients.
+
+5. Distribute the operator's `.x25519.key` to each operator securely. This private key is used by the operator's Tor client (`ClientOnionAuthDir`).
 
 ## Domestic + SEV seating
 

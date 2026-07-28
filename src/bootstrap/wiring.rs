@@ -5,12 +5,13 @@ use crate::adapters::{
     build_tpm_seal_port, resolve_aead_passphrase, AeadDiskShareStore, DistributedDkgAdapter,
     DistributedWireDkgPort, FrostShareSlot, FrostShareState, FrostSignOrchestrator,
     FrostTrBitcoinOrchestrator, FrostTrShareSlot, HttpAntiNonceTransport, HttpDayVoteTransport,
-    HttpIntentConsumeTransport, HttpTrCosignTransport, InMemoryLedger, InMemoryPeerDirectory,
-    MutualTlsAuthAdapter, NoopDayVoteTransport, NoopTrCosignTransport, PersistedBucketLedger,
-    PersistedEconomy, PersistedReleaseMesh, PolicyReshareHook, QuorumAntiNonce, QuorumBucketLedger,
-    QuorumDailyRotation, SharedAntiNonce, SimAttestationAdapter, StaticTokenAuthAdapter,
-    SystemClock, TeeAttestationAdapter, TeeSealAdapter, ThresholdVaultState, TrCosignPeerState,
-    TrCosignTransport, WireDkgHub, WireDkgPeerAuth,
+    HttpIntentConsumeTransport, HttpTrCosignTransport, HybridIdentity, InMemoryLedger,
+    InMemoryPeerDirectory, MutualTlsAuthAdapter, NoopDayVoteTransport, NoopTrCosignTransport,
+    PersistedBucketLedger, PersistedEconomy, PersistedReleaseMesh, PolicyReshareHook,
+    QuorumAntiNonce, QuorumBucketLedger, QuorumDailyRotation, SharedAntiNonce,
+    SimAttestationAdapter, StaticTokenAuthAdapter, SystemClock, TeeAttestationAdapter,
+    TeeSealAdapter, ThresholdVaultState, TrCosignPeerState, TrCosignTransport, WireDkgHub,
+    TrWireDkgHub, WireDkgPeerAuth,
 };
 #[cfg(feature = "dealer_lab")]
 use crate::adapters::{
@@ -21,7 +22,7 @@ use crate::adapters::{load_tr_channels_shares, load_tr_shares};
 use crate::application::{
     AccrueGovernanceWork, AccrueMinerRewards, AllocateProfit, AntiNoncePort, CosignRelease,
     DailyRotationPort, DkgPort, GateIntent, GetAllowlist, GetEconomyStatus, GetHealth,
-    GetLedgerSnapshot, PingPeer, ProposeEpochAdvance, ProposeMinerPayouts, ProposeRelease,
+    GetLedgerSnapshot, GetMetrics, PingPeer, ProposeEpochAdvance, ProposeMinerPayouts, ProposeRelease,
     OnlineStatusPort, ProbedOnlineCount, RebuildRelease, ReshareHookPort, ShareStorePort, SignMessage, StaticOnlineCount, UpsertMiner,
     VaultAuthPort, VoteEpochAdvance, ActivateRelease,
 };
@@ -35,7 +36,10 @@ pub struct VaultRuntime {
     pub config: VaultConfig,
     /// Genesis / wire-DKG roster after SEV-priority seating (§3.1).
     pub genesis_roster: Vec<NodeId>,
+    /// Hybrid cryptographic identity (Ed25519 + ML-DSA-65 + X25519 + ML-KEM-768).
+    pub hybrid_identity: Option<HybridIdentity>,
     pub get_health: GetHealth,
+    pub get_metrics: GetMetrics,
     pub ping_peer: PingPeer,
     pub get_ledger: GetLedgerSnapshot,
     pub propose_epoch: ProposeEpochAdvance,
@@ -78,6 +82,7 @@ pub struct VaultRuntime {
     pub tr_cosign_peer: Arc<TrCosignPeerState>,
     /// Over-wire DKG hub (HTTP round exchange between peers).
     pub wire_dkg: Arc<WireDkgHub>,
+    pub tr_wire_dkg: Arc<TrWireDkgHub>,
 }
 
 impl VaultRuntime {
@@ -126,6 +131,7 @@ impl VaultRuntime {
         } else {
             constitution.ensure_measurement_pin();
         }
+        constitution = constitution.with_payout_frequency(config.miner_payout_frequency);
         let measurement = constitution.measurement_pin_or_hash();
         let max_tx = constitution.max_withdraw_per_tx_sats;
         let max_day = constitution.max_withdraw_per_day_sats;
@@ -223,6 +229,9 @@ impl VaultRuntime {
             governance_reward,
         ));
 
+        // --- Hybrid identity: generate or load ---
+        let hybrid_identity = HybridIdentity::genesis(config.node_id.clone()).ok();
+
         let auth: Arc<dyn VaultAuthPort> = match config.auth_mode {
             AuthMode::StaticToken => {
                 let token = config
@@ -240,9 +249,17 @@ impl VaultRuntime {
                     lab || config.allow_manual_reshare,
                 ))
             }
-            AuthMode::MutualTls => Arc::new(MutualTlsAuthAdapter::with_reshare_trigger(
-                matches!(config.ceremony_mode, CeremonyMode::Lab) || config.allow_manual_reshare,
-            )),
+            AuthMode::MutualTls => {
+                let mut mtls = MutualTlsAuthAdapter::with_reshare_trigger(
+                    matches!(config.ceremony_mode, CeremonyMode::Lab)
+                        || config.allow_manual_reshare,
+                );
+                // Bind hybrid identity to mTLS adapter if identity exists.
+                if let Some(ref id) = hybrid_identity {
+                    mtls = mtls.with_identity(id.ed25519_public);
+                }
+                Arc::new(mtls)
+            }
         };
 
         let data_root = config.effective_data_dir();
@@ -563,6 +580,12 @@ impl VaultRuntime {
         };
         let wire_dkg = Arc::new(WireDkgHub::with_peer_http(
             config.node_id.as_str().to_string(),
+            peer_addrs.clone(),
+            peer_auth.clone(),
+            config.peer_http.clone(),
+        )?);
+        let tr_wire_dkg = Arc::new(TrWireDkgHub::with_peer_http(
+            config.node_id.as_str().to_string(),
             peer_addrs,
             peer_auth,
             config.peer_http.clone(),
@@ -843,6 +866,8 @@ impl VaultRuntime {
                 .collect(),
         )
         .with_peer_probe(!config.online_static && peer_count > 0);
+        let get_metrics =
+            GetMetrics::new(config.node_id.clone(), ledger_port.clone(), Some(bucket_port.clone()));
         let ping_peer = PingPeer::new(peers_port, attestation, clock.clone(), measurement);
         let get_ledger = GetLedgerSnapshot::new(ledger_port.clone());
         let propose_epoch = ProposeEpochAdvance::new(ledger_port.clone(), config.node_id.clone());
@@ -908,7 +933,9 @@ impl VaultRuntime {
         Ok(Self {
             config,
             genesis_roster: dkg_set,
+            hybrid_identity,
             get_health,
+            get_metrics,
             ping_peer,
             get_ledger,
             propose_epoch,
@@ -946,6 +973,7 @@ impl VaultRuntime {
             frost_tr_channels_shares,
             tr_cosign_peer,
             wire_dkg,
+            tr_wire_dkg,
         })
     }
 }

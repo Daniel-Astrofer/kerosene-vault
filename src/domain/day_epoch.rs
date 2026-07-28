@@ -3,7 +3,7 @@
 use crate::domain::DomainError;
 
 /// Calendar day in UTC as `YYYY-MM-DD` — binds signing sessions to the day epoch.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub struct DayEpoch(String);
 
 impl DayEpoch {

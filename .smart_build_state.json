@@ -1,0 +1,6 @@
+{
+  "attempts": 2,
+  "last_command_hash": "8f220ea57efc064664a76d3aa9914961",
+  "last_command": "cargo check 2>&1",
+  "last_failure_at": "2026-07-27T22:22:28.604092+00:00"
+}

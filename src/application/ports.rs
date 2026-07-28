@@ -1,9 +1,9 @@
 use crate::domain::{
     AttestationMode, AttestationQuote, AllowlistEntry, BucketKind, BucketPolicy, Constitution,
     ContentHash, DayEpoch, DomainError, EconomyState, Epoch, EpochAdvanceProposal,
-    GovernanceAccrual, GovernanceJobKind, GovernanceRewardConfig, LedgerEntry, Measurement,
-    MinerOperator, MinerPayoutShare, NodeId, PeerInfo, ProfitSplitAccrual, ProfitSplits,
-    ReleaseCandidate, ReleasePolicy, ResharePolicy,
+    GovernanceAccrual, GovernanceJobKind, GovernanceRewardConfig, HybridContext, HybridEnvelope,
+    LedgerEntry, Measurement, MinerOperator, MinerPayoutShare, NodeId, PeerInfo,
+    ProfitSplitAccrual, ProfitSplits, ReleaseCandidate, ReleasePolicy, ResharePolicy,
 };
 
 pub trait PeerDirectoryPort: Send + Sync {
@@ -95,6 +95,10 @@ pub trait BucketLedgerPort: Send + Sync {
     fn has_reservation(&self, intent_id: &str) -> Result<bool, DomainError> {
         let _ = intent_id;
         Ok(false)
+    }
+    /// Returns count of currently consumed intents.
+    fn count_pending_intents(&self) -> Result<u64, DomainError> {
+        Ok(0)
     }
     /// Validate + record spend + consume under one critical section (TOCTOU-safe).
     /// Prefer [`reserve_spend`] + [`commit_consume`] on sign paths (High #9).
@@ -240,4 +244,43 @@ pub trait DailyRotationPort: Send + Sync {
     fn record_vote(&self, _voter: &str, _target: &DayEpoch) -> Result<(), DomainError> {
         Ok(())
     }
+}
+
+/// CHANNELS → LND lightning channel management (Item 4.7).
+///
+/// Real implementation will call LND REST API for channel lifecycle operations.
+/// Fail-closed: if the mesh cannot produce a valid funding txid, the Intent is rejected.
+pub trait ChannelInjectPort: Send + Sync {
+    /// Open a Lightning channel to `lnd_peer_pubkey` with `funding_amount_sats`.
+    /// Returns the channel point (txid:vout) on success.
+    fn open_channel(
+        &self,
+        lnd_peer_pubkey: &str,
+        funding_amount_sats: u64,
+        push_sats: u64,
+    ) -> Result<String, DomainError>;
+
+    /// Close a channel specified by `channel_point` (txid:vout).
+    /// If `force` is true, force-close the channel.
+    /// Returns the closing txid.
+    fn close_channel(
+        &self,
+        channel_point: &str,
+        force: bool,
+    ) -> Result<String, DomainError>;
+}
+
+/// Hybrid envelope: X25519 + ML-KEM-768 + AES-256-GCM with HKDF-SHA-384 combiner.
+pub trait HybridEnvelopePort: Send + Sync {
+    fn seal(&self, plaintext: &[u8], context: &HybridContext) -> Result<HybridEnvelope, DomainError>;
+    fn open(&self, envelope: &HybridEnvelope, context: &HybridContext) -> Result<Vec<u8>, DomainError>;
+}
+
+/// Key lifecycle state machine for identity, transport, and audit keys.
+pub trait KeyLifecyclePort: Send + Sync {
+    fn genesis(&self, node_id: &NodeId) -> Result<(), DomainError>;
+    fn rotate_identity(&self, node_id: &NodeId) -> Result<(), DomainError>;
+    fn rotate_transport(&self, node_id: &NodeId) -> Result<(), DomainError>;
+    fn revoke(&self, node_id: &NodeId, key_id: &str) -> Result<(), DomainError>;
+    fn is_expired(&self, node_id: &NodeId, key_id: &str) -> Result<bool, DomainError>;
 }

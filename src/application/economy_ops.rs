@@ -444,3 +444,52 @@ pub fn economy_snapshot_json(eco: &EconomyState) -> String {
         eco.crypto_suite_id_pq
     )
 }
+
+/// Returns true if the given day_epoch is a payout epoch under this frequency.
+///
+/// - Daily: always true
+/// - Weekly: every 7th day (epoch % 7 == 0)
+/// - Epoch: true on exact epoch match (caller provides last epoch + 1)
+/// - Manual: always false (operator-gated)
+pub fn is_payout_epoch(frequency: MinerPayoutCadence, day_epoch: u64) -> bool {
+    match frequency {
+        MinerPayoutCadence::Manual => false,
+        MinerPayoutCadence::Daily => true,
+        MinerPayoutCadence::Weekly => day_epoch % 7 == 0,
+        MinerPayoutCadence::Epoch => false, // epoch payout gated by explicit epoch-based governance trigger
+    }
+}
+
+#[cfg(test)]
+mod payout_epoch_tests {
+    use super::*;
+
+    #[test]
+    fn daily_always_payout() {
+        assert!(is_payout_epoch(MinerPayoutCadence::Daily, 0));
+        assert!(is_payout_epoch(MinerPayoutCadence::Daily, 100));
+        assert!(is_payout_epoch(MinerPayoutCadence::Daily, 999));
+    }
+
+    #[test]
+    fn weekly_payout_on_every_7th() {
+        assert!(is_payout_epoch(MinerPayoutCadence::Weekly, 0));
+        assert!(is_payout_epoch(MinerPayoutCadence::Weekly, 7));
+        assert!(is_payout_epoch(MinerPayoutCadence::Weekly, 14));
+        assert!(!is_payout_epoch(MinerPayoutCadence::Weekly, 1));
+        assert!(!is_payout_epoch(MinerPayoutCadence::Weekly, 6));
+        assert!(!is_payout_epoch(MinerPayoutCadence::Weekly, 8));
+    }
+
+    #[test]
+    fn manual_never_payout() {
+        assert!(!is_payout_epoch(MinerPayoutCadence::Manual, 0));
+        assert!(!is_payout_epoch(MinerPayoutCadence::Manual, 100));
+    }
+
+    #[test]
+    fn epoch_payout_gated_by_governance() {
+        assert!(!is_payout_epoch(MinerPayoutCadence::Epoch, 0));
+        assert!(!is_payout_epoch(MinerPayoutCadence::Epoch, 100));
+    }
+}

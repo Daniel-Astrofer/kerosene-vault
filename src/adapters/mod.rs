@@ -7,9 +7,11 @@ mod auth_identity;
 mod auth_mtls;
 mod auth_static;
 mod bucket_memory;
+mod channel_inject;
 mod clock;
 mod daily_rotation;
 mod dkg_distributed;
+mod dkg_tr_wire;
 mod dkg_wire;
 mod durable_fs;
 mod economy_memory;
@@ -21,16 +23,20 @@ mod frost_tr_bitcoin;
 mod frost_wire_cosign;
 mod http;
 mod http_peer;
+mod hybrid_envelope;
+mod identity_hybrid;
 mod intent_consume;
 mod ledger_memory;
 mod peer_memory;
 mod rate_limit;
 mod release_memory;
 mod release_persist;
+mod reshare_wire;
 mod session_persist;
 mod share_aead;
 mod share_tee;
 mod share_tpm;
+mod share_tpm_tss;
 mod sync_util;
 mod threshold_state;
 mod tls_mtls_acceptor;
@@ -48,12 +54,14 @@ pub use auth_identity::{
 pub use auth_mtls::{build_mtls_server_config, MutualTlsAuthAdapter};
 pub use auth_static::StaticTokenAuthAdapter;
 pub use bucket_memory::{InMemoryBucketLedger, PersistedBucketLedger};
+pub use channel_inject::StubChannelInject;
 pub use clock::SystemClock;
 pub use daily_rotation::{
     DayVoteTransport, HttpDayVoteTransport, LedgerDayEpochStub, MemoryDayVoteTransport,
     NoopDayVoteTransport, NoopReshareHook, PeerDayVote, QuorumDailyRotation, RecordingReshareHook,
 };
 pub use dkg_distributed::{DistributedDkgAdapter, FrostDistributedBundle};
+pub use dkg_tr_wire::{session_transcript_tr, TrWireDkgHub};
 pub use dkg_wire::{
     session_transcript, DkgStartRequest, DistributedWireDkgPort, Round1WireMessage,
     Round2WireMessage, Round3WireRequest, WireDkgHub, WireDkgPeerAuth, WireDkgStatus,
@@ -73,11 +81,14 @@ pub use frost_tr_bitcoin::{
 #[cfg(feature = "dealer_lab")]
 pub use frost_tr_bitcoin::generate_tr_dealer;
 pub use frost_wire_cosign::{
-    sign_raw_wire, tr_state_local_only, HttpTrCosignTransport, NoopTrCosignTransport,
+    sign_raw_wire, sign_raw_wire_attributed, tr_state_local_only, AttributedWireSignature,
+    HttpTrCosignTransport, NoopTrCosignTransport,
     TrCommitRequest, TrCommitResponse, TrCosignPeerState, TrCosignTransport, TrSignShareRequest,
     TrSignShareResponse,
 };
 pub use http::{build_router, AppState};
+pub use hybrid_envelope::HybridEnvelopeAdapter;
+pub use identity_hybrid::HybridIdentity;
 pub use http_peer::{
     peer_addr_is_onion, post_json_with_retry, PeerHttpSettings, VaultTransport,
 };
@@ -90,15 +101,22 @@ pub use peer_memory::InMemoryPeerDirectory;
 pub use rate_limit::SlidingWindowLimiter;
 pub use release_memory::InMemoryReleaseMesh;
 pub use release_persist::PersistedReleaseMesh;
+pub use reshare_wire::{
+    ReshareRound1WireMessage, ReshareRound2WireMessage, ReshareStartRequest,
+    WireReshareHub, WireResharePeerAuth, WireResharePhase, WireReshareStatus,
+};
 pub use session_persist::{
     HttpAntiNonceTransport, MemoryAntiNonceTransport, PersistedAntiNonce, QuorumAntiNonce,
     SharedAntiNonce,
 };
-pub use share_aead::AeadDiskShareStore;
+pub use share_aead::{build_seed_aad, build_seed_share_id, AeadDiskShareStore, SeedKind};
 pub use share_tee::{TeeSealAdapter, TeeSealShareStore};
 pub use share_tpm::{
     build_tpm_seal_port, resolve_aead_passphrase, sealed_passphrase_path, tpm_device_present,
-    ResolvedPassphrase, TpmSealAdapter, TpmSealPort,
+    validate_tpm_counter, CounterSealedBlob, ResolvedPassphrase, TpmSealAdapter, TpmSealPort,
+};
+pub use share_tpm_tss::{
+    build_seal_aad, pcr_composite_digest, TpmTssSealAdapter, VAULT_PCR_BASE, TSS_MAGIC, TSS_MODE_HW,
 };
 pub use threshold_state::ThresholdVaultState;
 pub use tls_mtls_acceptor::{PeerCertAcceptor, PeerClientCert};

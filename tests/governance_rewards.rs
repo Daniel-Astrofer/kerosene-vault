@@ -51,6 +51,7 @@ fn gov_cfg() -> GovernanceRewardConfig {
     }
 }
 
+#[cfg(feature = "dealer_lab")]
 #[test]
 fn day_rotation_and_reshare_accrue_governance_rewards() {
     let ids = three_ids();

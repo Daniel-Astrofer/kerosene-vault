@@ -20,7 +20,13 @@ use zeroize::Zeroize;
 use super::http_peer::PeerHttpSettings;
 use super::tls_peer_verify::{build_mtls_rustls_client_config, TlsPeerVerifyPolicy};
 use super::{FrostTrShareSlot, FrostTrShareState};
+use crate::application::AntiNoncePort;
 use crate::domain::DomainError;
+
+pub struct AttributedWireSignature {
+    pub signature: Signature,
+    pub participant_node_ids: Vec<String>,
+}
 
 struct SigningNoncesGuard {
     nonces: SigningNonces,
@@ -78,6 +84,7 @@ pub struct TrCosignPeerState {
     local_node_id: String,
     shares: Arc<FrostTrShareSlot>,
     pending: Mutex<BTreeMap<String, PendingTrRound>>,
+    anti_nonce: Option<Box<dyn AntiNoncePort>>,
 }
 
 impl TrCosignPeerState {
@@ -86,7 +93,13 @@ impl TrCosignPeerState {
             local_node_id: local_node_id.into(),
             shares,
             pending: Mutex::new(BTreeMap::new()),
+            anti_nonce: None,
         }
+    }
+
+    pub fn with_anti_nonce(mut self, anti: Box<dyn AntiNoncePort>) -> Self {
+        self.anti_nonce = Some(anti);
+        self
     }
 
     fn local_key_package(snap: &FrostTrShareState) -> Result<(Identifier, KeyPackage), DomainError> {
@@ -174,6 +187,13 @@ impl TrCosignPeerState {
             return Err(DomainError::ThresholdError(
                 "co-sign signing package message mismatch".into(),
             ));
+        }
+        // Anti-nonce: refuse sign_share if session already consumed at this vault.
+        if let Some(ref anti) = self.anti_nonce {
+            if anti.is_consumed(&req.session_id)? {
+                return Err(DomainError::SessionConsumed(req.session_id.clone()));
+            }
+            anti.observe_remote(&req.session_id)?;
         }
         let snap = self.shares.snapshot()?;
         let (id, kp) = Self::local_key_package(&snap)?;
@@ -387,6 +407,23 @@ pub fn sign_raw_wire(
     session_id: &str,
     message: &[u8],
 ) -> Result<Signature, DomainError> {
+    Ok(sign_raw_wire_attributed(
+        shares,
+        transport,
+        local_node_id,
+        session_id,
+        message,
+    )?
+    .signature)
+}
+
+pub fn sign_raw_wire_attributed(
+    shares: &FrostTrShareSlot,
+    transport: &dyn TrCosignTransport,
+    local_node_id: &str,
+    session_id: &str,
+    message: &[u8],
+) -> Result<AttributedWireSignature, DomainError> {
     let snap = shares.snapshot()?;
     if snap.key_packages.len() != 1 {
         return Err(DomainError::ThresholdError(format!(
@@ -486,11 +523,12 @@ pub fn sign_raw_wire(
     let share_req = TrSignShareRequest {
         session_id: session_id.to_string(),
         signing_package_hex: pkg_hex,
-        participant_node_ids: selected_peer_nodes.into_iter().collect(),
+        participant_node_ids: selected_peer_nodes.iter().cloned().collect(),
     };
     let peer_shares = transport.collect_signature_shares(&share_req)?;
 
     let mut signature_shares: BTreeMap<Identifier, SignatureShare> = BTreeMap::new();
+    let mut participant_node_ids = vec![local_node_id.to_string()];
     signature_shares.insert(local_id, local_share);
     for peer in &peer_shares {
         let id_bytes = hex::decode(peer.identifier_hex.trim()).map_err(|e| {
@@ -509,6 +547,9 @@ pub fn sign_raw_wire(
             DomainError::ThresholdError(format!("peer sig share: {e}"))
         })?;
         signature_shares.insert(id, s);
+        if let Some(node_id) = peer_id_by_identifier.get(&id) {
+            participant_node_ids.push(node_id.clone());
+        }
     }
 
     if signature_shares.len() < min_signers {
@@ -530,7 +571,12 @@ pub fn sign_raw_wire(
         .verify(&message_buf, &signature)
         .map_err(|e| DomainError::ThresholdError(format!("frost-tr wire verify: {e}")))?;
     message_buf.zeroize();
-    Ok(signature)
+    participant_node_ids.sort();
+    participant_node_ids.dedup();
+    Ok(AttributedWireSignature {
+        signature,
+        participant_node_ids,
+    })
 }
 
 /// Keep only the local identifier's key package (distributed_wire hygiene).

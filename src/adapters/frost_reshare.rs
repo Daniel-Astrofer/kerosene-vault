@@ -544,6 +544,7 @@ mod tests {
         assert!(changed, "expected refreshed signing shares to differ");
     }
 
+    #[cfg(feature = "dealer_lab")]
     #[test]
     fn policy_daily_writes_day_and_reshare_ledger_events() {
         let constitution = Constitution::v1_lab(3).unwrap();
@@ -593,6 +594,7 @@ mod tests {
         assert!(kinds.contains(&LedgerEventKind::ReshareCompleted));
     }
 
+    #[cfg(feature = "dealer_lab")]
     #[test]
     fn policy_manual_skips_crypto_until_trigger() {
         let constitution = Constitution::v1_lab(3).unwrap();

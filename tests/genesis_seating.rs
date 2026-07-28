@@ -42,6 +42,8 @@ fn base_lab() -> VaultConfig {
         ceremony_mode: CeremonyMode::Lab,
         open_economy: false,
         miner_payout_cadence: kerosene_vault::domain::MinerPayoutCadence::Manual,
+        miner_payout_frequency: kerosene_vault::domain::MinerPayoutCadence::Daily,
+        seating_policy_timeout_hours: 24,
         bitcoin_network: BitcoinNetwork::Testnet3,
         auth_mode: AuthMode::StaticToken,
         vault_token: Some("t".into()),
@@ -61,6 +63,7 @@ fn base_lab() -> VaultConfig {
         share_tpm_seal: false,
         share_tpm_stub: false,
         share_tpm_clear_fallback: false,
+        secure_boot_pcr_policy: None,
         // set below from unique test dir
         anti_nonce_shared_dir: None,
         measurement_pin_hex: None,

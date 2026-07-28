@@ -32,11 +32,20 @@ pub trait TpmSealPort: Send + Sync {
 }
 
 /// Available TPM backends. Hardware probing remains fail-closed until TSS is wired.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// Variants:
+/// - `FailClosed`: No TPM available, all operations refused
+/// - `Mock`: Software mock for CI/testing (ChaCha20-Poly1305 envelope with mock key derivation)
+/// - `HwProbe`: TPM device detected but TSS seal support not compiled/linked
+/// - `Tss(Box<TpmTssSealAdapter>)`: Real TSS integration (requires `--features tpm` + libtss2-esys)
+#[derive(Debug, Clone)]
 pub enum TpmSealAdapter {
     FailClosed,
     Mock,
     HwProbe,
+    /// TPM TSS hardware adapter (compiled with `--features tpm`).
+    /// Delegates seal/unseal to TCG TSS Enhanced System API.
+    Tss(Box<super::share_tpm_tss::TpmTssSealAdapter>),
 }
 
 impl TpmSealAdapter {
@@ -108,6 +117,7 @@ impl TpmSealPort for TpmSealAdapter {
             Self::FailClosed => "fail_closed",
             Self::Mock => "mock",
             Self::HwProbe => "hw_probe",
+            Self::Tss(_) => "tss",
         }
     }
 
@@ -122,6 +132,7 @@ impl TpmSealPort for TpmSealAdapter {
             Self::HwProbe => Err(Self::required(
                 "TPM device detected but TSS seal support is not implemented",
             )),
+            Self::Tss(tss) => tss.seal(plaintext, policy),
         }
     }
 
@@ -137,6 +148,7 @@ impl TpmSealPort for TpmSealAdapter {
                 };
                 Err(Self::required(reason))
             }
+            Self::Tss(tss) => tss.unseal(sealed, policy),
         }
     }
 }
@@ -159,6 +171,12 @@ pub fn tpm_device_present() -> bool {
 }
 
 /// Creates the configured TPM port; disabled sealing has no port.
+///
+/// Priority:
+/// 1. If `--features tpm` and device present → `TpmSealAdapter::Tss(TpmTssSealAdapter)`
+/// 2. If lab stub → `TpmSealAdapter::Mock` (ChaCha20 mock, lab only)
+/// 3. If device present but no TSS → `TpmSealAdapter::HwProbe` (fail-closed)
+/// 4. If no device → `TpmSealAdapter::FailClosed`
 pub fn build_tpm_seal_port(
     enabled: bool,
     stub: bool,
@@ -174,7 +192,16 @@ pub fn build_tpm_seal_port(
         return Ok(Some(Box::new(TpmSealAdapter::Mock)));
     }
     Ok(Some(Box::new(if tpm_device_present() {
-        TpmSealAdapter::HwProbe
+        // Try TSS first if compiled; fall back to HwProbe (fail-closed stub)
+        #[cfg(feature = "tpm")]
+        {
+            use super::share_tpm_tss::TpmTssSealAdapter;
+            TpmSealAdapter::Tss(Box::new(TpmTssSealAdapter::new()))
+        }
+        #[cfg(not(feature = "tpm"))]
+        {
+            TpmSealAdapter::HwProbe
+        }
     } else {
         TpmSealAdapter::FailClosed
     })))
@@ -246,6 +273,67 @@ pub fn resolve_aead_passphrase(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Item 2.5: Anti-cloning & rollback protection — TPM NV counter validation
+// ---------------------------------------------------------------------------
+
+/// Stored sealed blob with embedded counter for anti-rollback.
+///
+/// On seal: record current monotonic counter value.
+/// On unseal: verify current counter >= stored counter.
+/// If counter decreased → rollback detected → refuse unseal (fail-closed).
+#[derive(Debug, Clone)]
+pub struct CounterSealedBlob {
+    pub counter: u64,
+    pub sealed_blob: Vec<u8>,
+}
+
+impl CounterSealedBlob {
+    /// Encode counter + sealed blob for persistent storage.
+    /// Format: counter(8 BE) | sealed_blob
+    pub fn encode(&self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(8 + self.sealed_blob.len());
+        out.extend_from_slice(&self.counter.to_be_bytes());
+        out.extend_from_slice(&self.sealed_blob);
+        out
+    }
+
+    /// Decode counter + sealed blob.
+    pub fn decode(bytes: &[u8]) -> Result<Self, DomainError> {
+        if bytes.len() < 8 {
+            return Err(DomainError::TpmRequired(
+                "counter sealed blob too short".into(),
+            ));
+        }
+        let counter = u64::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3],
+                                           bytes[4], bytes[5], bytes[6], bytes[7]]);
+        Ok(Self {
+            counter,
+            sealed_blob: bytes[8..].to_vec(),
+        })
+    }
+}
+
+/// Validate TPM NV counter for anti-rollback.
+///
+/// - `stored_counter`: counter value embedded in sealed blob at seal time
+/// - `current_counter`: current TPM NV counter value
+///
+/// Returns `Ok(())` if current >= stored (monotonic invariant holds).
+/// Returns `Err(CounterRollback)` if current < stored (rollback detected).
+pub fn validate_tpm_counter(
+    stored_counter: u64,
+    current_counter: u64,
+) -> Result<(), DomainError> {
+    if current_counter < stored_counter {
+        return Err(DomainError::TpmRequired(format!(
+            "TPM counter rollback detected: stored={stored_counter} current={current_counter} \
+             (possible TPM state restoration or clone attack)"
+        )));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -309,5 +397,58 @@ mod tests {
     #[test]
     fn build_port_disabled() {
         assert!(build_tpm_seal_port(false, false, false).unwrap().is_none());
+    }
+
+    // --- Item 2.5: Counter anti-rollback tests ---
+
+    #[test]
+    fn counter_encode_decode_roundtrip() {
+        let blob = CounterSealedBlob {
+            counter: 42,
+            sealed_blob: vec![1, 2, 3],
+        };
+        let encoded = blob.encode();
+        let decoded = CounterSealedBlob::decode(&encoded).unwrap();
+        assert_eq!(decoded.counter, 42);
+        assert_eq!(decoded.sealed_blob, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn counter_validation_accepts_equal() {
+        assert!(validate_tpm_counter(5, 5).is_ok());
+    }
+
+    #[test]
+    fn counter_validation_accepts_greater() {
+        assert!(validate_tpm_counter(5, 10).is_ok());
+    }
+
+    #[test]
+    fn counter_validation_rejects_rollback() {
+        assert!(matches!(
+            validate_tpm_counter(10, 5),
+            Err(DomainError::TpmRequired(ref msg)) if msg.contains("rollback")
+        ));
+    }
+
+    #[test]
+    fn counter_decode_rejects_short_blob() {
+        assert!(matches!(
+            CounterSealedBlob::decode(&[1, 2, 3]),
+            Err(DomainError::TpmRequired(_))
+        ));
+    }
+
+    // --- TSS variant test ---
+
+    #[test]
+    fn tss_variant_is_fail_closed_without_feature() {
+        let tss = TpmSealAdapter::Tss(Box::new(
+            super::super::share_tpm_tss::TpmTssSealAdapter::new(),
+        ));
+        assert_eq!(tss.backend_kind(), "tss");
+        // Without --features tpm, TSS seal/unseal fail closed
+        assert!(matches!(tss.seal(b"x", b"p"), Err(DomainError::TpmRequired(_))));
+        assert!(matches!(tss.unseal(b"x", b"p"), Err(DomainError::TpmRequired(_))));
     }
 }

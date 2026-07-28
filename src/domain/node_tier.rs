@@ -243,3 +243,68 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 }
+
+/// Post-genesis admission seating for a new vault node.
+///
+/// Priority: SEV > SGX > domestic (same as `seating_priority`).
+/// Timeout: if TEE node does not complete admission within `timeout_hours`,
+/// a domestic node may be admitted as fallback.
+///
+/// Returns `(target_tier, timeout_secs)` for the admission window.
+pub fn admission_seating(
+    tier: VaultNodeTier,
+    attested_at_secs: Option<u64>,
+    now_secs: u64,
+    timeout_hours: u64,
+) -> Result<VaultNodeTier, DomainError> {
+    match tier {
+        VaultNodeTier::Domestic => Ok(VaultNodeTier::Domestic),
+        VaultNodeTier::Sgx | VaultNodeTier::Sev => {
+            if let Some(attested) = attested_at_secs {
+                let elapsed = now_secs.saturating_sub(attested);
+                let timeout = timeout_hours * 3600;
+                if elapsed > timeout {
+                    return Ok(VaultNodeTier::Domestic);
+                }
+            }
+            Ok(tier)
+        }
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    #[test]
+    fn domestic_admitted_immediately() {
+        assert_eq!(
+            admission_seating(VaultNodeTier::Domestic, None, 1000, 24).unwrap(),
+            VaultNodeTier::Domestic
+        );
+    }
+
+    #[test]
+    fn sev_admitted_within_timeout() {
+        assert_eq!(
+            admission_seating(VaultNodeTier::Sev, Some(100), 500, 24).unwrap(),
+            VaultNodeTier::Sev
+        );
+    }
+
+    #[test]
+    fn sev_falls_back_to_domestic_after_timeout() {
+        assert_eq!(
+            admission_seating(VaultNodeTier::Sev, Some(100), 100 + 25 * 3600, 24).unwrap(),
+            VaultNodeTier::Domestic
+        );
+    }
+
+    #[test]
+    fn sev_no_attestation_yet_admitted() {
+        assert_eq!(
+            admission_seating(VaultNodeTier::Sev, None, 1000, 24).unwrap(),
+            VaultNodeTier::Sev
+        );
+    }
+}

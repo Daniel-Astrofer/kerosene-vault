@@ -160,6 +160,12 @@ pub struct VaultConfig {
     pub open_economy: bool,
     /// `VAULT_MINER_PAYOUT_CADENCE=manual|daily|weekly|epoch` (gate only; no auto scheduler).
     pub miner_payout_cadence: crate::domain::MinerPayoutCadence,
+    /// `VAULT_MINER_PAYOUT_FREQUENCY=daily|weekly|epoch` (constitution-level mesh default).
+    /// Override at genesis; subsequent changes require quorum amendment. Default: daily.
+    pub miner_payout_frequency: crate::domain::MinerPayoutCadence,
+    /// `VAULT_SEATING_POLICY` — TEE admission timeout in hours for post-genesis seating.
+    /// After timeout, domestic nodes may be admitted as fallback. Default: 24h.
+    pub seating_policy_timeout_hours: u64,
     pub bitcoin_network: BitcoinNetwork,
     pub auth_mode: AuthMode,
     pub vault_token: Option<String>,
@@ -195,6 +201,9 @@ pub struct VaultConfig {
     pub share_tpm_stub: bool,
     /// Lab-only clear passphrase if TPM unavailable (`VAULT_SHARE_TPM_CLEAR_FALLBACK=1`).
     pub share_tpm_clear_fallback: bool,
+    /// Path to expected TPM PCR policy file (`VAULT_SECURE_BOOT_PCR_POLICY`).
+    /// Used to verify measured boot chain integrity before unsealing shares.
+    pub secure_boot_pcr_policy: Option<String>,
     /// Share / anti-nonce disk root (`VAULT_DATA_DIR`); lab default under `lab_root`.
     pub data_dir: Option<String>,
     /// Deprecated/ignored: anti-nonce uses quorum HTTP prepare among `VAULT_SEED_PEERS`
@@ -374,6 +383,16 @@ impl VaultConfig {
             .and_then(|s| crate::domain::MinerPayoutCadence::parse(&s))
             .unwrap_or(crate::domain::MinerPayoutCadence::Manual);
 
+        let miner_payout_frequency = std::env::var("VAULT_MINER_PAYOUT_FREQUENCY")
+            .ok()
+            .and_then(|s| crate::domain::MinerPayoutCadence::parse(&s))
+            .unwrap_or(crate::domain::MinerPayoutCadence::Daily);
+
+        let seating_policy_timeout_hours = std::env::var("VAULT_SEATING_POLICY")
+            .ok()
+            .and_then(|s| s.parse::<u64>().ok())
+            .unwrap_or(24);
+
         let btc_raw = std::env::var("BITCOIN_NETWORK").unwrap_or_else(|_| "testnet3".into());
         let bitcoin_network = BitcoinNetwork::parse(&btc_raw).ok_or_else(|| {
             DomainError::BitcoinNetworkMismatch(format!("unknown BITCOIN_NETWORK={btc_raw}"))
@@ -434,6 +453,7 @@ impl VaultConfig {
         let share_tpm_seal = env_flag("VAULT_SHARE_TPM_SEAL");
         let share_tpm_stub = env_flag("VAULT_SHARE_TPM_STUB");
         let share_tpm_clear_fallback = env_flag("VAULT_SHARE_TPM_CLEAR_FALLBACK");
+        let secure_boot_pcr_policy = env_nonempty_first(&["VAULT_SECURE_BOOT_PCR_POLICY"]);
         let data_dir = env_nonempty_first(&["VAULT_DATA_DIR"]);
         let anti_nonce_shared_dir = env_nonempty_first(&["VAULT_ANTI_NONCE_SHARED_DIR"]);
         let measurement_pin_hex = env_nonempty_first(&["VAULT_MEASUREMENT_PIN"]);
@@ -541,6 +561,8 @@ impl VaultConfig {
             ceremony_mode,
             open_economy,
             miner_payout_cadence,
+            miner_payout_frequency,
+            seating_policy_timeout_hours,
             bitcoin_network,
             auth_mode,
             vault_token,
@@ -560,6 +582,7 @@ impl VaultConfig {
             share_tpm_seal,
             share_tpm_stub,
             share_tpm_clear_fallback,
+            secure_boot_pcr_policy,
             data_dir,
             anti_nonce_shared_dir,
             measurement_pin_hex,
@@ -692,15 +715,15 @@ impl VaultConfig {
     pub fn validate_listen_bind(&self) -> Result<(), DomainError> {
         let addr = self.listen_addr.trim();
         let is_all = addr.starts_with("0.0.0.0") || addr.starts_with("[::]");
+        let protected_staging_bind = self.ceremony_mode == CeremonyMode::Staging
+            && self.auth_mode == AuthMode::MutualTls
+            && !self.clearnet_publish;
         if is_all
-            && (self.hardened
-                || matches!(
-                    self.ceremony_mode,
-                    CeremonyMode::Staging | CeremonyMode::Production
-                ))
+            && (self.ceremony_mode == CeremonyMode::Production
+                || (self.hardened && !protected_staging_bind))
         {
             return Err(DomainError::LabFlagForbidden(
-                "VAULT_LISTEN_ADDR must not be 0.0.0.0/[::] outside lab (use loopback or onion-only)"
+                "VAULT_LISTEN_ADDR all-interface bind requires staging mTLS with no clearnet publish; production requires loopback/onion-only"
                     .into(),
             ));
         }
@@ -1115,6 +1138,8 @@ mod tests {
             ceremony_mode: CeremonyMode::Lab,
             open_economy: false,
             miner_payout_cadence: crate::domain::MinerPayoutCadence::Manual,
+            miner_payout_frequency: crate::domain::MinerPayoutCadence::Daily,
+            seating_policy_timeout_hours: 24,
             bitcoin_network: BitcoinNetwork::Testnet3,
             auth_mode: AuthMode::StaticToken,
             vault_token: Some("t".into()),
@@ -1134,6 +1159,7 @@ mod tests {
             share_tpm_seal: false,
             share_tpm_stub: false,
             share_tpm_clear_fallback: false,
+            secure_boot_pcr_policy: None,
             data_dir: None,
             anti_nonce_shared_dir: None,
             measurement_pin_hex: None,
@@ -1266,15 +1292,23 @@ mod tests {
         cfg.share_store_mode = ShareStoreMode::TeeSeal;
         cfg.dealer_requested = false;
         cfg.dkg_mode = DkgMode::DistributedWire;
-        assert!(cfg.validate_hygiene().is_ok());
+        if cfg!(feature = "production") {
+            assert!(matches!(
+                cfg.validate_hygiene(),
+                Err(DomainError::LabFlagForbidden(_))
+            ));
+        } else {
+            assert!(cfg.validate_hygiene().is_ok());
+        }
     }
 
     #[test]
     fn production_refuses_static_token_and_tee_disk_share() {
         let mut cfg = base();
-        cfg.node_tier = VaultNodeTier::Sev;
-        cfg.tee_available = true;
-        cfg.attestation_mode = AttestationMode::Sev;
+        cfg.node_tier = VaultNodeTier::Domestic;
+        cfg.tee_available = false;
+        cfg.attestation_mode = AttestationMode::Software;
+        cfg.measurement_pin_hex = Some("aa".repeat(32));
         cfg.ceremony_mode = CeremonyMode::Production;
         cfg.refuse_sim = true;
         cfg.hardened = true;
@@ -1288,14 +1322,19 @@ mod tests {
         ));
         cfg.auth_mode = AuthMode::MutualTls;
         cfg = with_mtls_paths(cfg);
+        cfg.node_tier = VaultNodeTier::Sev;
+        cfg.tee_available = true;
+        cfg.attestation_mode = AttestationMode::Sev;
         cfg.share_store_mode = ShareStoreMode::AeadDisk;
         // Production hygiene checks audit key allowlist first; ensure it's non-empty
         // so we hit the `TeeRequired` branch asserted below.
         cfg.audit_key_allowlist = MeshAuditKeyAllowlist::from_hex_list(["aa"]);
-        assert!(matches!(
-            cfg.validate_hygiene(),
-            Err(DomainError::TeeRequired(_))
-        ));
+        let result = cfg.validate_hygiene();
+        if cfg!(feature = "production") && !cfg!(feature = "tee_hw") {
+            assert!(matches!(result, Err(DomainError::AttestationRejected(_))));
+        } else {
+            assert!(matches!(result, Err(DomainError::TeeRequired(_))));
+        }
     }
 
     #[test]
@@ -1563,8 +1602,15 @@ mod tests {
         let mut cfg = base();
         cfg.share_tpm_seal = true;
         cfg.share_tpm_stub = true;
-        assert!(cfg.validate_tpm_seal_hygiene().is_ok());
-        assert!(cfg.validate_hygiene().is_ok());
+        if cfg!(feature = "production") {
+            assert!(matches!(
+                cfg.validate_tpm_seal_hygiene(),
+                Err(DomainError::LabFlagForbidden(_))
+            ));
+        } else {
+            assert!(cfg.validate_tpm_seal_hygiene().is_ok());
+            assert!(cfg.validate_hygiene().is_ok());
+        }
     }
 
     #[test]
@@ -1592,4 +1638,3 @@ mod tests {
         ));
     }
 }
-

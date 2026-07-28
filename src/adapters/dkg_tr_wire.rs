@@ -295,6 +295,7 @@ impl TrWireDkgHub {
                     min_signers: existing.min_signers,
                     transcript_hex: existing.transcript_hex.clone(),
                     package_hex,
+                    envelope: None,
                 };
                 return Ok((existing.status(), wire));
             }
@@ -348,6 +349,7 @@ impl TrWireDkgHub {
             min_signers: req.min_signers,
             transcript_hex,
             package_hex,
+            envelope: None,
         };
         let status = inner.status();
         self.sessions
@@ -473,6 +475,7 @@ impl TrWireDkgHub {
                 recipient_identifier: identifier_to_u16(&session.roster, recipient_id),
                 transcript_hex: session.transcript_hex.clone(),
                 package_hex,
+                envelope: None,
             });
         }
         Ok(out)

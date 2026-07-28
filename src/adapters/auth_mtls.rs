@@ -14,19 +14,37 @@ use crate::domain::DomainError;
 /// Auth port for mTLS mode: transport already verified the client certificate.
 pub struct MutualTlsAuthAdapter {
     reshare_trigger_allowed: bool,
+    /// Expected Ed25519 public key from the vault's hybrid identity.
+    /// Used to verify cert fingerprint binding at the application layer.
+    identity_ed25519_pub: Option<[u8; 32]>,
 }
 
 impl MutualTlsAuthAdapter {
     pub fn new() -> Self {
         Self {
             reshare_trigger_allowed: false,
+            identity_ed25519_pub: None,
         }
     }
 
     pub fn with_reshare_trigger(allowed: bool) -> Self {
         Self {
             reshare_trigger_allowed: allowed,
+            identity_ed25519_pub: None,
         }
+    }
+
+    /// Bind this mTLS adapter to a vault's hybrid identity.
+    /// The Ed25519 public key is used to verify the cert fingerprint
+    /// matches the identity registered in the roster.
+    pub fn with_identity(mut self, ed25519_pub: [u8; 32]) -> Self {
+        self.identity_ed25519_pub = Some(ed25519_pub);
+        self
+    }
+
+    /// Return the bound Ed25519 public key, if set.
+    pub fn identity_ed25519_pub(&self) -> Option<[u8; 32]> {
+        self.identity_ed25519_pub
     }
 }
 

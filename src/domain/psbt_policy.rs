@@ -7,7 +7,7 @@ use bitcoin::absolute::LockTime;
 use bitcoin::psbt::Psbt;
 use bitcoin::Sequence;
 
-use crate::domain::DomainError;
+use crate::domain::{assert_outputs_match_intent, DomainError};
 
 /// How Replace-By-Fee (BIP-125) signalling is treated on inputs we sign.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -145,6 +145,30 @@ impl PsbtPolicy {
             }
         }
         Ok(())
+    }
+
+    /// Independent PSBT validation executed by each vault before releasing
+    /// a FROST sign share. Combines fee/locktime/RBF checks with output
+    /// binding to the intent-to-sign.
+    ///
+    /// Callers must also check anti-nonce (session_id uniqueness) before sign.
+    pub fn validate_independent(
+        &self,
+        psbt: &Psbt,
+        payment_script: &[u8],
+        amount_sats: u64,
+        change_script: Option<&[u8]>,
+    ) -> Result<(), DomainError> {
+        // 1. Fee cap, locktime, RBF checks
+        self.validate(psbt)?;
+        // 2. Output bind: PSBT outputs must match intent outputs
+        let outputs: Vec<(Vec<u8>, u64)> = psbt
+            .unsigned_tx
+            .output
+            .iter()
+            .map(|o| (o.script_pubkey.as_bytes().to_vec(), o.value.to_sat()))
+            .collect();
+        assert_outputs_match_intent(&outputs, payment_script, amount_sats, change_script)
     }
 }
 

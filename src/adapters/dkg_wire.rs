@@ -80,6 +80,10 @@ pub struct Round1WireMessage {
     /// SHA-256 hex binding of frozen session constitution (see `session_transcript`).
     pub transcript_hex: String,
     pub package_hex: String,
+    /// Optional hybrid envelope (X25519 + ML-KEM-768). When present the
+    /// envelope must validate before the plain payload is accepted.
+    #[serde(default)]
+    pub envelope: Option<crate::domain::HybridEnvelope>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -92,6 +96,10 @@ pub struct Round2WireMessage {
     /// Must match the frozen round1 transcript.
     pub transcript_hex: String,
     pub package_hex: String,
+    /// Optional hybrid envelope. When present, must validate before
+    /// the round2 package is processed.
+    #[serde(default)]
+    pub envelope: Option<crate::domain::HybridEnvelope>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -282,7 +290,7 @@ fn build_http_client(
     }
 }
 
-fn peer_base_url(addr: &str, mtls: bool) -> String {
+pub(super) fn peer_base_url(addr: &str, mtls: bool) -> String {
     if addr.starts_with("http://") || addr.starts_with("https://") {
         if mtls && addr.starts_with("http://") {
             format!("https://{}", addr.trim_start_matches("http://"))
@@ -429,6 +437,7 @@ impl WireDkgHub {
                     min_signers: existing.min_signers,
                     transcript_hex: existing.transcript_hex.clone(),
                     package_hex,
+                    envelope: None,
                 };
                 return Ok((existing.status(), wire));
             }
@@ -482,6 +491,7 @@ impl WireDkgHub {
             min_signers: req.min_signers,
             transcript_hex,
             package_hex,
+            envelope: None,
         };
         let status = inner.status();
         self.sessions
@@ -493,6 +503,14 @@ impl WireDkgHub {
 
     /// Ingest a peer's round1 package. Auto-advances to part2 when all packages present.
     pub fn ingest_round1(&self, msg: Round1WireMessage) -> Result<WireDkgStatus, DomainError> {
+        // Validate hybrid envelope if present (fail-closed on invalid envelope).
+        if let Some(ref env) = msg.envelope {
+            env.validate_header().map_err(|e| {
+                DomainError::ThresholdError(format!(
+                    "round1 hybrid envelope validation failed: {e}"
+                ))
+            })?;
+        }
         let mut g = self.sessions.lock().expect("dkg sessions");
         let session = g.get_mut(&msg.session_id).ok_or_else(|| {
             DomainError::ThresholdError(format!(
@@ -606,12 +624,21 @@ impl WireDkgHub {
                 recipient_identifier: identifier_to_u16(&session.roster, recipient_id),
                 transcript_hex: session.transcript_hex.clone(),
                 package_hex,
+                envelope: None,
             });
         }
         Ok(out)
     }
 
     pub fn ingest_round2(&self, msg: Round2WireMessage) -> Result<WireDkgStatus, DomainError> {
+        // Validate hybrid envelope if present (fail-closed).
+        if let Some(ref env) = msg.envelope {
+            env.validate_header().map_err(|e| {
+                DomainError::ThresholdError(format!(
+                    "round2 hybrid envelope validation failed: {e}"
+                ))
+            })?;
+        }
         let mut g = self.sessions.lock().expect("dkg sessions");
         let session = g.get_mut(&msg.session_id).ok_or_else(|| {
             DomainError::ThresholdError(format!("unknown DKG session: {}", msg.session_id))
@@ -1010,7 +1037,7 @@ mod tests {
                 verify: TlsPeerVerifyPolicy::Hostname,
             },
         ) else {
-            panic!("expected AuthRejected when mTLS files missing");
+            unreachable!("expected AuthRejected when mTLS files missing");
         };
         assert!(matches!(err, DomainError::AuthRejected(_)));
     }

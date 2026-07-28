@@ -93,6 +93,16 @@ case "$MODE" in
     check "$AUDIT_OK" \
       "mesh audit pubkey allowlist present (F8: audit ≠ release ≠ settlement; docs/AUDIT_KEYS.md)"
 
+    # PQ checks: hybrid identity + envelope readiness
+    check "$([[ -n "${VAULT_ML_DSA_SEED_PATH:-}" || -n "${VAULT_IDENTITY_SEED_PATH:-}" ]] && echo 1 || echo 0)" \
+      "PQ identity seed path set (ML-DSA-65 for hybrid auth)"
+    check "$([[ -n "${VAULT_ML_KEM_SEED_PATH:-}" || -n "${VAULT_KEM_SEED_PATH:-}" ]] && echo 1 || echo 0)" \
+      "PQ KEM seed path set (ML-KEM-768 for hybrid envelope)"
+    check "$([[ "${VAULT_PQ_SUITE:-hybrid-v2}" == "hybrid-v2" || "${VAULT_PQ_SUITE:-}" == "hybrid-v3" ]] && echo 1 || echo 0)" \
+      "PQ suite_id is hybrid-v2 or later (got ${VAULT_PQ_SUITE:-hybrid-v2})"
+    check "$([[ "${VAULT_PQ_DOWNGRADE_ALLOWED:-0}" != "1" ]] && echo 1 || echo 0)" \
+      "PQ downgrade disabled (VAULT_PQ_DOWNGRADE_ALLOWED != 1)"
+
     if [[ -n "${VAULT_SEED_PEERS:-}" ]]; then
       if echo "${VAULT_SEED_PEERS}" | grep -q '\.onion'; then
         check 1 "VAULT_SEED_PEERS contain .onion addresses"

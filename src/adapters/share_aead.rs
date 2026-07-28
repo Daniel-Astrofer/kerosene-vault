@@ -29,6 +29,129 @@ use super::durable_fs::atomic_write_fsync;
 use crate::application::ShareStorePort;
 use crate::domain::DomainError;
 
+// ---------------------------------------------------------------------------
+// Item 2.2: SeedKind — enumeration of key material types for ShareStorePort
+// ---------------------------------------------------------------------------
+
+/// Type of key material stored via [`ShareStorePort`].
+///
+/// Each seed gets a unique `share_id` (e.g. `identity/ed25519/vault-1`)
+/// and AAD binding: `seed_id + node_id + key_epoch`.
+///
+/// # PQ seeds at the same protection level as FROST shares
+/// - AEAD disk (Argon2id + ChaCha20-Poly1305) in lab
+/// - TPM seal in domestic production
+/// - TEE seal in SEV/SGX production
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum SeedKind {
+    /// FROST secp256k1 Taproot spending share
+    FrostTr,
+    /// FROST secp256k1 Intent authorization share
+    FrostIntent,
+    /// Ed25519 signing key (classical identity)
+    Ed25519,
+    /// ML-DSA-65 signing key (PQ identity, FIPS 204)
+    MlDsa65,
+    /// X25519 transport key (classical)
+    X25519,
+    /// ML-KEM-768 transport key (PQ, FIPS 203)
+    MlKem768,
+}
+
+impl SeedKind {
+    /// Human-readable label for share_id construction.
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::FrostTr => "frost-tr",
+            Self::FrostIntent => "frost-intent",
+            Self::Ed25519 => "ed25519",
+            Self::MlDsa65 => "ml-dsa65",
+            Self::X25519 => "x25519",
+            Self::MlKem768 => "ml-kem768",
+        }
+    }
+
+    /// Whether this seed is a secret (should only be stored, never exposed).
+    pub fn is_secret(&self) -> bool {
+        true // all are secrets
+    }
+
+    /// Visibility suffix for share_id: "pub" or "sec".
+    pub fn visibility(&self) -> &'static str {
+        "sec"
+    }
+}
+
+/// Build a standard share_id for a seed.
+///
+/// Format: `identity/{kind_label}/{node_id}`
+pub fn build_seed_share_id(kind: SeedKind, node_id: &str) -> String {
+    format!("identity/{}/{}", kind.label(), node_id)
+}
+
+/// Build AAD for seed binding: `seed_id + node_id + key_epoch`.
+pub fn build_seed_aad(share_id: &str, node_id: &str, key_epoch: u64) -> Vec<u8> {
+    let mut aad = Vec::with_capacity(share_id.len() + node_id.len() + 24);
+    aad.extend_from_slice(b"kerosene-vault-seed-aad-v1|");
+    aad.extend_from_slice(share_id.as_bytes());
+    aad.push(b'|');
+    aad.extend_from_slice(node_id.as_bytes());
+    aad.push(b'|');
+    aad.extend_from_slice(key_epoch.to_le_bytes().as_ref());
+    aad
+}
+
+/// Versioned envelope for persisted FROST shares.
+///
+/// Each share on disk carries a `format_version` and `suite_id` so that
+/// migration (e.g., classical → hybrid suite) can detect stale shares and
+/// re-encrypt atomically.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct ShareEnvelope {
+    pub format_version: u16,
+    pub suite_id: String,
+    pub share_id: String,
+    pub node_id: String,
+    pub key_epoch: String,
+    pub share_kind: String,
+    pub nonce_hex: String,
+    pub ciphertext_hex: String,
+    pub aad_hash_hex: String,
+}
+
+impl ShareEnvelope {
+    pub const CURRENT_FORMAT: u16 = 1;
+
+    pub fn new(
+        suite_id: &str,
+        share_id: &str,
+        node_id: &str,
+        key_epoch: &str,
+        share_kind: &str,
+    ) -> Self {
+        Self {
+            format_version: Self::CURRENT_FORMAT,
+            suite_id: suite_id.to_string(),
+            share_id: share_id.to_string(),
+            node_id: node_id.to_string(),
+            key_epoch: key_epoch.to_string(),
+            share_kind: share_kind.to_string(),
+            nonce_hex: String::new(),
+            ciphertext_hex: String::new(),
+            aad_hash_hex: String::new(),
+        }
+    }
+
+    pub fn to_bytes(&self) -> Vec<u8> {
+        serde_json::to_vec(self).unwrap_or_default()
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, DomainError> {
+        serde_json::from_slice(bytes)
+            .map_err(|e| DomainError::ShareStoreForbidden(format!("share envelope: {e}")))
+    }
+}
+
 pub struct AeadDiskShareStore {
     root: PathBuf,
     passphrase: SecretString,
@@ -179,5 +302,52 @@ mod tests {
         fs::write(&path_b, &blob).unwrap();
         assert!(store.get_share("share-b").is_err());
         assert_eq!(store.get_share("share-a").unwrap(), b"secret-a");
+    }
+
+    // Item 2.2: SeedKind tests
+
+    #[test]
+    fn seed_kind_labels_are_unique() {
+        let kinds = [
+            SeedKind::FrostTr,
+            SeedKind::FrostIntent,
+            SeedKind::Ed25519,
+            SeedKind::MlDsa65,
+            SeedKind::X25519,
+            SeedKind::MlKem768,
+        ];
+        let mut labels: Vec<&str> = kinds.iter().map(|k| k.label()).collect();
+        labels.sort();
+        labels.dedup();
+        assert_eq!(labels.len(), kinds.len(), "all SeedKind labels must be unique");
+    }
+
+    #[test]
+    fn seed_share_id_format() {
+        let sid = build_seed_share_id(SeedKind::Ed25519, "vault-1");
+        assert!(sid.starts_with("identity/"));
+        assert!(sid.contains("ed25519"));
+        assert!(sid.contains("vault-1"));
+    }
+
+    #[test]
+    fn seed_aad_is_deterministic() {
+        let aad1 = build_seed_aad("identity/ed25519/vault-1", "vault-1", 0);
+        let aad2 = build_seed_aad("identity/ed25519/vault-1", "vault-1", 0);
+        assert_eq!(aad1, aad2);
+    }
+
+    #[test]
+    fn seed_aad_differs_by_epoch() {
+        let aad1 = build_seed_aad("id", "n1", 0);
+        let aad2 = build_seed_aad("id", "n1", 1);
+        assert_ne!(aad1, aad2);
+    }
+
+    #[test]
+    fn seed_kind_all_are_secrets() {
+        assert!(SeedKind::Ed25519.is_secret());
+        assert!(SeedKind::MlKem768.is_secret());
+        assert!(SeedKind::MlDsa65.is_secret());
     }
 }

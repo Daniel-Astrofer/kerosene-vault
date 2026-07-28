@@ -75,6 +75,9 @@ pub fn assert_channels_taproot_bucket(bucket: BucketKind) -> Result<(), DomainEr
 }
 
 /// How PROFIT is split across child buckets (basis points, sum = 10_000).
+///
+/// TODO(4.1): Add `treasury_bps` field when treasury allocation is decided.
+/// Current placeholders: miners=0 (lab) or p_reward (open), channels/infra = rest.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProfitSplits {
     pub miners_bps: u32,
@@ -225,6 +228,9 @@ pub struct SettlementIntent {
     pub destination: String,
     pub amount_sats: u64,
     pub policy_hash: String,
+    /// Hybrid signature (Ed25519 + ML-DSA-65) over canonical intent hash.
+    /// None = pre-hybrid intent (allowed if downgrade policy permits).
+    pub signature: Option<crate::domain::IntentSignature>,
 }
 
 impl SettlementIntent {
@@ -272,7 +278,15 @@ impl SettlementIntent {
             destination,
             amount_sats,
             policy_hash,
+            signature: None,
         })
+    }
+
+    /// Attach a hybrid intent signature. Consumers validate it via
+    /// `IntentSignature::validate_stub` before executing the intent.
+    pub fn with_signature(mut self, sig: crate::domain::IntentSignature) -> Self {
+        self.signature = Some(sig);
+        self
     }
 }
 

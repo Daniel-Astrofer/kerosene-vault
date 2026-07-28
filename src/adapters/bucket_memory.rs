@@ -497,7 +497,7 @@ mod tests {
             match h.join().unwrap() {
                 Ok(()) => wins += 1,
                 Err(DomainError::IntentReplay(_)) => replays += 1,
-                Err(e) => panic!("unexpected: {e}"),
+                Err(e) => unreachable!("unexpected bucket error in test: {e}"),
             }
         }
         assert_eq!(wins, 1);

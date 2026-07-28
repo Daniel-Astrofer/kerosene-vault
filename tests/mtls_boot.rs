@@ -1,5 +1,6 @@
 //! mTLS boot path: rustls server config + optional Axum listen with client cert.
 //! Lab static_token remains the default; this exercises the Gate visualize path.
+#![cfg(not(feature = "production"))]
 
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
@@ -17,7 +18,7 @@ fn gen_lab_certs(dir: &Path) {
         .env("VAULT_LAB_MTLS_OUT", dir)
         .arg(
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("scripts/gen_lab_mtls_certs.sh"),
+                .join("../../scripts/vault/gen_lab_mtls_certs.sh"),
         )
         .status()
         .expect("run gen_lab_mtls_certs.sh");
@@ -50,6 +51,8 @@ fn lab_mtls_cfg(listen: &str, certs: &Path, data_dir: &Path) -> VaultConfig {
         ceremony_mode: CeremonyMode::Lab,
         open_economy: false,
         miner_payout_cadence: kerosene_vault::domain::MinerPayoutCadence::Manual,
+        miner_payout_frequency: kerosene_vault::domain::MinerPayoutCadence::Daily,
+        seating_policy_timeout_hours: 24,
         bitcoin_network: BitcoinNetwork::Testnet3,
         auth_mode: AuthMode::MutualTls,
         vault_token: None,
@@ -69,6 +72,7 @@ fn lab_mtls_cfg(listen: &str, certs: &Path, data_dir: &Path) -> VaultConfig {
         share_tpm_seal: false,
         share_tpm_stub: false,
         share_tpm_clear_fallback: false,
+        secure_boot_pcr_policy: None,
         data_dir: Some(data_dir.display().to_string()),
         anti_nonce_shared_dir: None,
         measurement_pin_hex: None,
@@ -218,7 +222,7 @@ fn rotate_lab_mtls_refreshes_spiffe_tree_and_java_materials() {
         .env("VAULT_LAB_MTLS_TTL_HOURS", "24")
         .arg(
             PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("scripts/rotate_lab_mtls_certs.sh"),
+                .join("../../scripts/vault/rotate_lab_mtls_certs.sh"),
         )
         .status()
         .expect("run rotate_lab_mtls_certs.sh");
@@ -233,7 +237,7 @@ fn rotate_lab_mtls_refreshes_spiffe_tree_and_java_materials() {
     // used during trust-bundle regeneration (not necessarily `VAULT_LAB_MTLS_OUT`).
     assert!(meta.contains("\"trust_bundle\": \""));
     assert!(meta.contains("/spiffe/trust-bundle.pem"));
-    assert!(certs.join("spiffe/vault/server/svid.pem").is_file());
+    assert!(certs.join("spiffe/vault/vault-1/svid.pem").is_file());
     assert!(certs.join("spiffe/trust-bundle.pem").is_file());
 }
 
