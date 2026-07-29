@@ -870,9 +870,13 @@ impl VaultConfig {
                         .into(),
                 ));
             }
-            if self.seed_peers.is_empty() {
+            if self.seed_peers.is_empty()
+                && self.genesis_n.is_none_or(|configured| configured < 2)
+            {
                 return Err(DomainError::AttestationRejected(
-                    "production ceremony requires VAULT_SEED_PEERS (onion addresses)".into(),
+                    "isolated production bootstrap requires explicit VAULT_GENESIS_N>=2; "
+                        .to_string()
+                        + "otherwise configure onion VAULT_SEED_PEERS",
                 ));
             }
         }
@@ -1400,6 +1404,35 @@ mod tests {
         ));
         cfg = with_audit_keys(cfg);
         assert!(cfg.validate_hygiene().is_ok());
+    }
+
+    #[test]
+    fn production_allows_isolated_tor_bootstrap_with_explicit_future_roster() {
+        let mut cfg = base();
+        cfg.node_tier = VaultNodeTier::Domestic;
+        cfg.attestation_mode = AttestationMode::Software;
+        cfg.ceremony_mode = CeremonyMode::Production;
+        cfg.refuse_sim = true;
+        cfg.hardened = true;
+        cfg.auth_mode = AuthMode::MutualTls;
+        cfg = with_mtls_paths(cfg);
+        cfg = with_tor_mesh(cfg);
+        cfg = with_audit_keys(cfg);
+        cfg.seed_peers.clear();
+        cfg.genesis_n = Some(3);
+        cfg.share_store_mode = ShareStoreMode::AeadDisk;
+        cfg.dealer_requested = false;
+        cfg.dkg_mode = DkgMode::DistributedWire;
+        cfg.measurement_pin_hex = Some("dd".repeat(32));
+
+        assert!(cfg.validate_hygiene().is_ok());
+
+        cfg.genesis_n = None;
+        assert!(matches!(
+            cfg.validate_hygiene(),
+            Err(DomainError::AttestationRejected(msg))
+                if msg.contains("VAULT_GENESIS_N")
+        ));
     }
 
     #[test]
