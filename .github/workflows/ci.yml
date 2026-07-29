@@ -1,0 +1,19 @@
+name: Vault CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  rust:
+    uses: Daniel-Astrofer/.github/.github/workflows/rust-ci.yml@7b1da98fbf1159e80b7ea3d055a137d749226d2f
+    with:
+      production-features: production
+      enforce-format: false
+
+  security:
+    uses: Daniel-Astrofer/.github/.github/workflows/security-scan.yml@7b1da98fbf1159e80b7ea3d055a137d749226d2f

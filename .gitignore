@@ -3,3 +3,4 @@
 Cargo.lock
 /lab-certs/
 /ceremony-certs/
+.smart_build_state.json
