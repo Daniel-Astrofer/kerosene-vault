@@ -10,8 +10,13 @@ permissions:
   pull-requests: read
 
 jobs:
+  compatibility:
+    uses: Daniel-Astrofer/.github/.github/workflows/compatibility-ci.yml@13ca0b7eb3992aab286019e398f1fc7dbaee8f8a
+    with:
+      component: vault
+
   rust:
-    uses: Daniel-Astrofer/.github/.github/workflows/rust-ci.yml@7b1da98fbf1159e80b7ea3d055a137d749226d2f
+    uses: Daniel-Astrofer/.github/.github/workflows/rust-ci.yml@13ca0b7eb3992aab286019e398f1fc7dbaee8f8a
     with:
       production-features: production
       enforce-format: false
