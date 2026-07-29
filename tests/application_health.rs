@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use kerosene_vault::adapters::{InMemoryPeerDirectory, SimAttestationAdapter, SystemClock};
-use kerosene_vault::application::{GetHealth, PingPeer};
+use kerosene_vault::application::{GetHealth, PingPeer, StaticOnlineCount};
 use kerosene_vault::domain::{AttestationMode, HealthStatus, Measurement, NodeId, PeerEndpoint, PeerInfo};
 
 #[test]
@@ -33,6 +33,42 @@ fn health_ready_when_peers_present() {
         kerosene_vault::domain::PeerReachability::DirectoryOnly
     );
     assert!(health.peers_reachable.is_none());
+    assert!(health.local_ready);
+    assert!(!health.financial_ready);
+}
+
+#[test]
+fn financial_readiness_requires_live_constitution_threshold() {
+    let peers = Arc::new(InMemoryPeerDirectory::new());
+    let attestation = Arc::new(SimAttestationAdapter::new(b"lab"));
+    let isolated = GetHealth::new(
+        NodeId::new("vault-1").unwrap(),
+        peers,
+        attestation,
+        kerosene_vault::domain::VaultNodeTier::Domestic,
+        false,
+    )
+    .with_constitution(3, 2)
+    .with_online_status(Arc::new(StaticOnlineCount { count: 1 }))
+    .execute()
+    .unwrap();
+    assert!(isolated.local_ready);
+    assert!(!isolated.financial_ready);
+
+    let peers = Arc::new(InMemoryPeerDirectory::new());
+    let attestation = Arc::new(SimAttestationAdapter::new(b"lab"));
+    let quorum = GetHealth::new(
+        NodeId::new("vault-1").unwrap(),
+        peers,
+        attestation,
+        kerosene_vault::domain::VaultNodeTier::Domestic,
+        false,
+    )
+    .with_constitution(3, 2)
+    .with_online_status(Arc::new(StaticOnlineCount { count: 2 }))
+    .execute()
+    .unwrap();
+    assert!(quorum.financial_ready);
 }
 
 #[test]

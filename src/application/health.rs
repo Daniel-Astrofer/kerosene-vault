@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use crate::application::ports::{AttestationPort, PeerDirectoryPort};
+use crate::application::OnlineStatusPort;
 use crate::domain::{
     DomainError, HealthStatus, NodeHealth, NodeId, PeerReachability, VaultNodeTier,
 };
@@ -16,6 +17,9 @@ pub struct GetHealth {
     genesis_roster: Vec<String>,
     /// When true, attempt cheap clearnet TCP connects (not Tor-complete).
     probe_peers: bool,
+    configured_members: usize,
+    required_threshold: usize,
+    online: Option<Arc<dyn OnlineStatusPort>>,
 }
 
 impl GetHealth {
@@ -45,11 +49,25 @@ impl GetHealth {
             tee_available,
             genesis_roster,
             probe_peers: false,
+            configured_members: 1,
+            required_threshold: 1,
+            online: None,
         }
     }
 
     pub fn with_peer_probe(mut self, enabled: bool) -> Self {
         self.probe_peers = enabled;
+        self
+    }
+
+    pub fn with_constitution(mut self, configured_members: usize, required_threshold: usize) -> Self {
+        self.configured_members = configured_members.max(1);
+        self.required_threshold = required_threshold.clamp(1, self.configured_members);
+        self
+    }
+
+    pub fn with_online_status(mut self, online: Arc<dyn OnlineStatusPort>) -> Self {
+        self.online = Some(online);
         self
     }
 
@@ -90,6 +108,13 @@ impl GetHealth {
             genesis_roster: self.genesis_roster.clone(),
             peer_reachability,
             peers_reachable,
+            configured_members: self.configured_members,
+            required_threshold: self.required_threshold,
+            local_ready: true,
+            financial_ready: self
+                .online
+                .as_ref()
+                .is_some_and(|online| online.online_count() >= self.required_threshold),
         })
     }
 }

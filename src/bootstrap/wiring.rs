@@ -133,6 +133,8 @@ impl VaultRuntime {
         }
         constitution = constitution.with_payout_frequency(config.miner_payout_frequency);
         let measurement = constitution.measurement_pin_or_hash();
+        let configured_members = constitution.signing_n;
+        let required_threshold = constitution.signing_t;
         let max_tx = constitution.max_withdraw_per_tx_sats;
         let max_day = constitution.max_withdraw_per_day_sats;
         let t = constitution.signing_t;
@@ -865,7 +867,9 @@ impl VaultRuntime {
                 .map(|n| n.as_str().to_string())
                 .collect(),
         )
-        .with_peer_probe(!config.online_static && peer_count > 0);
+        .with_peer_probe(!config.online_static && peer_count > 0)
+        .with_constitution(configured_members, required_threshold)
+        .with_online_status(online.clone());
         let get_metrics =
             GetMetrics::new(config.node_id.clone(), ledger_port.clone(), Some(bucket_port.clone()));
         let ping_peer = PingPeer::new(peers_port, attestation, clock.clone(), measurement);
