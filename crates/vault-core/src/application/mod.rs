@@ -1,5 +1,6 @@
 //! Application layer: use cases depend on ports (DIP).
 
+mod admin;
 mod economy_ops;
 mod health;
 mod intent_ops;
@@ -14,6 +15,7 @@ mod release_ops;
 mod share_migration;
 mod sign;
 
+pub use admin::{admin_error, resolve_request_id, AdminService};
 pub use economy_ops::{
     economy_snapshot_json, is_payout_epoch, AccrueGovernanceWork, AccrueMinerRewards, AccrueReceipt, EconomyStatusView,
     GetEconomyStatus, PayoutProposal, ProposeMinerPayouts, UpsertMiner,

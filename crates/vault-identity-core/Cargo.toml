@@ -1,0 +1,22 @@
+[package]
+name = "vault-identity-core"
+version = "0.1.0"
+edition = "2021"
+description = "Kerosene vault identity core — shared identity traits and types"
+license = "UNLICENSED"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+ed25519-dalek = { version = "2", features = ["rand_core"] }
+ml-dsa = "0.1"
+serde = { version = "1", features = ["derive"] }
+sha2 = "0.10"
+x25519-dalek = "2"
+zeroize = { version = "1", features = ["zeroize_derive"] }
+secrecy = "0.10"
+
+[dev-dependencies]
+rand = "0.8"

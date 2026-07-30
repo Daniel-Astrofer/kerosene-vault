@@ -72,6 +72,7 @@ fn base_lab() -> VaultConfig {
         transport: kerosene_vault::adapters::VaultTransport::Clearnet,
         peer_http: kerosene_vault::adapters::PeerHttpSettings::clearnet_defaults(),
         clearnet_publish: false,
+        admin_unix_socket_path: None,
         data_dir: Some(data_dir.display().to_string()),
     }
 }

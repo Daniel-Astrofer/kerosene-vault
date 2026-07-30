@@ -152,6 +152,7 @@ fn sim_forbidden_when_refuse_sim() {
         transport: kerosene_vault::adapters::VaultTransport::Clearnet,
         peer_http: kerosene_vault::adapters::PeerHttpSettings::clearnet_defaults(),
         clearnet_publish: false,
+        admin_unix_socket_path: None,
     };
     assert_eq!(cfg.validate_attestation_policy(), Err(DomainError::SimAttestationForbidden));
     cfg.refuse_sim = false;

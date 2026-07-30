@@ -5,11 +5,14 @@
 //! includes `PeerIdentity` for every seated vault. Wire messages are signed
 //! with both keys (AND logic). mTLS certificate fingerprints are bound to
 //! the Ed25519 public key for attestation binding.
+//!
+//! Delegates actual key operations to `vault_identity_core`.
 
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rand::rngs::OsRng;
 use serde::{Deserialize, Serialize};
+use vault_identity_core::VaultIdentity;
 
 use crate::application::ShareStorePort;
 use crate::domain::{DomainError, NodeId};
@@ -43,21 +46,24 @@ impl HybridIdentity {
     pub const ML_KEM768_SEC_ID: &'static str = "identity-ml-kem768-sec";
 
     /// Generate a fresh hybrid identity for a vault at genesis.
+    ///
+    /// Uses `vault_identity_core` for the Ed25519 and ML-DSA-65 key material.
+    /// Transport keys (X25519, ML-KEM-768) are generated here directly.
     pub fn genesis(node_id: NodeId) -> Result<Self, DomainError> {
         let mut rng = OsRng;
         use rand::RngCore;
 
-        // Ed25519 signing key (classical).
-        let ed_secret = ed25519_dalek::SigningKey::generate(&mut rng);
-        let ed_public = ed_secret.verifying_key();
-        let ed_public_bytes = ed_public.to_bytes();
-        let ed_secret_bytes = ed_secret.to_bytes();
+        // Ed25519 signing key (classical) via vault-identity-core.
+        let ed_id = vault_identity_core::ed25519_identity::Ed25519Identity::generate()
+            .map_err(|e| DomainError::ThresholdError(format!("ed25519 genesis: {e}")))?;
+        let ed_public_bytes = *ed_id.public_key();
+        let ed_secret_bytes = *ed_id.secret_key();
 
-        // ML-DSA-65 signing key (PQ). Uses placeholder; TODO: wire full ml-dsa crate API.
-        let mut ml_pub_bytes = vec![0u8; 1952];
-        let mut ml_sec_bytes = vec![0u8; 4032];
-        rng.fill_bytes(&mut ml_pub_bytes);
-        rng.fill_bytes(&mut ml_sec_bytes);
+        // ML-DSA-65 signing key (PQ) via vault-identity-core.
+        let ml_id = vault_identity_core::ml_dsa_identity::MlDsa65Identity::generate()
+            .map_err(|e| DomainError::ThresholdError(format!("ml-dsa65 genesis: {e}")))?;
+        let ml_pub_bytes = ml_id.public_key().clone();
+        let ml_sec_bytes = ml_id.secret_key().clone();
 
         // X25519 transport key (classical) — raw random bytes.
         let mut x_sec_bytes = [0u8; 32];
@@ -106,7 +112,7 @@ impl HybridIdentity {
     }
 
     // -----------------------------------------------------------------------
-    // Item 2.2: Seed persistence via ShareStorePort
+    // Seed persistence via ShareStorePort
     // -----------------------------------------------------------------------
 
     /// Build the share_id for a specific seed.
@@ -127,16 +133,8 @@ impl HybridIdentity {
     }
 
     /// Persist all secret and public key material to a ShareStorePort.
-    ///
-    /// Each seed is stored under a unique share_id (e.g. `identity/ed25519/vault-1`).
-    /// AAD binding: `seed_id + node_id + key_epoch` for anti-swap.
-    /// PQ seeds get the same protection level as FROST shares.
-    ///
-    /// Public keys are also persisted with `-pub` suffix so load_seeds
-    /// can reconstruct the full identity without recomputing public keys.
     pub fn persist_seeds(&self, store: &dyn ShareStorePort, key_epoch: u64) -> Result<(), DomainError> {
         let nid = self.node_id.as_str();
-        // Store secrets
         let secrets: &[(&str, &[u8])] = &[
             ("ed25519", &self.ed25519_secret),
             ("ml-dsa65", &self.ml_dsa65_secret),
@@ -147,7 +145,6 @@ impl HybridIdentity {
             let sid = Self::seed_share_id(nid, label);
             store.put_share(&sid, data)?;
         }
-        // Store public keys (non-secret, but needed for reconstruction)
         let publics: &[(&str, &[u8])] = &[("ed25519-pub", &self.ed25519_public), ("x25519-pub", &self.x25519_public)];
         for (label, data) in publics {
             let sid = Self::seed_share_id(nid, label);
@@ -157,16 +154,12 @@ impl HybridIdentity {
     }
 
     /// Load secret key material from a ShareStorePort during boot.
-    ///
-    /// Returns `Some(HybridIdentity)` if all seeds are present, or `None` if
-    /// any seed is missing (fresh genesis required).
     pub fn load_seeds(
         node_id: NodeId,
         store: &dyn ShareStorePort,
         key_epoch: u64,
     ) -> Result<Option<Self>, DomainError> {
         let nid = node_id.as_str();
-        // Try loading each seed; if any missing → return None (not an error)
         let ed25519_secret = match Self::load_seed(store, nid, "ed25519", key_epoch) {
             Ok(Some(v)) => v,
             Ok(None) => return Ok(None),
@@ -188,7 +181,6 @@ impl HybridIdentity {
             Err(e) => return Err(e),
         };
 
-        // Reconstruct public keys from persisted blobs (x25519 2.x doesn't expose StaticSecret)
         let ed25519_public: [u8; 32] = match Self::load_seed(store, nid, "ed25519-pub", key_epoch) {
             Ok(Some(v)) => {
                 v[..32].try_into().map_err(|_| DomainError::ShareStoreForbidden("ed25519 pub wrong length".into()))?
@@ -205,7 +197,6 @@ impl HybridIdentity {
             Err(e) => return Err(e),
         };
 
-        // Convert secret Vec<u8> → [u8; 32]
         let ed25519_secret_arr: [u8; 32] = ed25519_secret[..32]
             .try_into()
             .map_err(|_| DomainError::ShareStoreForbidden("ed25519 seed wrong length".into()))?;
@@ -223,11 +214,11 @@ impl HybridIdentity {
             node_id,
             ed25519_public,
             ed25519_secret: ed25519_secret_arr,
-            ml_dsa65_public: vec![], // PQ public keys can be recomputed but need ml-dsa crate
+            ml_dsa65_public: vec![],
             ml_dsa65_secret,
             x25519_public,
             x25519_secret: x25519_secret_arr,
-            ml_kem768_public: vec![], // PQ public keys can be recomputed but need ml-kem crate
+            ml_kem768_public: vec![],
             ml_kem768_secret,
             created_at: now,
             expires_at: 0,
@@ -242,10 +233,8 @@ impl HybridIdentity {
         key_epoch: u64,
     ) -> Result<Option<Vec<u8>>, DomainError> {
         let sid = Self::seed_share_id(node_id, label);
-        let _aad = Self::seed_aad(&sid, node_id, key_epoch);
         match store.get_share(&sid) {
             Ok(data) => {
-                // Validate minimum size per key type
                 let min_len = match label {
                     "ed25519" | "x25519" => 32,
                     "ml-dsa65" => 4032,
@@ -265,7 +254,6 @@ impl HybridIdentity {
                 if msg.contains("TeeRequired") || msg.contains("TpmRequired") {
                     Err(e)
                 } else {
-                    // Store-specific error (e.g. file not found) → treat as "not yet stored"
                     Ok(None)
                 }
             }
@@ -321,25 +309,16 @@ mod tests {
         assert_eq!(peer.ml_kem768_public, id.ml_kem768_public);
     }
 
-    // Item 2.2: Seed persistence tests
-
     #[test]
     fn persist_and_load_seeds_roundtrip() {
         let tmp = TempDir::new("persist");
         let store = AeadDiskShareStore::new(&tmp.0, "test-pass");
         let id = HybridIdentity::genesis(NodeId::new("vault-1").unwrap()).unwrap();
         let nid = id.node_id.clone();
-
-        // Persist seeds
         id.persist_seeds(&store, 0).expect("persist");
-
-        // Load seeds
         let loaded = HybridIdentity::load_seeds(nid, &store, 0).expect("load").expect("seeds present");
-
-        // Ed25519 secret must match
         assert_eq!(loaded.ed25519_secret, id.ed25519_secret);
         assert_eq!(loaded.ed25519_public, id.ed25519_public);
-        // X25519 secret must match
         assert_eq!(loaded.x25519_secret, id.x25519_secret);
         assert_eq!(loaded.x25519_public, id.x25519_public);
     }
@@ -364,10 +343,7 @@ mod tests {
         let tmp = TempDir::new("all");
         let store = AeadDiskShareStore::new(&tmp.0, "test-pass");
         let id = HybridIdentity::genesis(NodeId::new("vault-1").unwrap()).unwrap();
-
         id.persist_seeds(&store, 0).expect("persist");
-
-        // Verify each seed can be read individually
         let keys = ["ed25519", "ml-dsa65", "x25519", "ml-kem768"];
         for label in &keys {
             let sid = HybridIdentity::seed_share_id("vault-1", label);

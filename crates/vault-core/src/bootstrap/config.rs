@@ -229,6 +229,9 @@ pub struct VaultConfig {
     pub peer_http: PeerHttpSettings,
     /// Explicit clearnet publish flag — refused for production ceremony over Tor.
     pub clearnet_publish: bool,
+    /// Optional Unix domain socket path for the admin API
+    /// (`VAULT_ADMIN_UNIX_SOCKET`, e.g. `/run/kerosene/vault-admin.sock`).
+    pub admin_unix_socket_path: Option<String>,
 }
 
 impl VaultConfig {
@@ -478,6 +481,7 @@ impl VaultConfig {
             }
         }
         let clearnet_publish = env_flag("VAULT_CLEARNET_PUBLISH");
+        let admin_unix_socket_path = env_nonempty_first(&["VAULT_ADMIN_UNIX_SOCKET"]);
         let tls_verify_policy = resolve_tls_verify_policy(transport, node_id.as_str(), &seed_peers)?;
         let audit_key_allowlist = MeshAuditKeyAllowlist::from_env()?;
 
@@ -539,6 +543,7 @@ impl VaultConfig {
             transport,
             peer_http,
             clearnet_publish,
+            admin_unix_socket_path,
         };
         cfg.validate_hygiene()?;
         Ok(cfg)
@@ -1147,7 +1152,7 @@ mod tests {
             transport: VaultTransport::Clearnet,
             peer_http: PeerHttpSettings::clearnet_defaults(),
             clearnet_publish: false,
-        }
+            admin_unix_socket_path: None,
     }
 
     fn with_mtls_paths(mut cfg: VaultConfig) -> VaultConfig {

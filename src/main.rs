@@ -1,10 +1,16 @@
+//! Thin binary wrapper — delegates all logic to `vault_core`.
+//!
+//! The full vault implementation now lives in `crates/vault-core/`.
+//! This entry point calls `vault_core::bootstrap::VaultRuntime::build()`
+//! and starts the Axum HTTP server.
+
 use std::net::SocketAddr;
 use std::path::Path;
 use std::sync::Arc;
 
 use axum_server::tls_rustls::RustlsAcceptor;
-use kerosene_vault::adapters::{build_mtls_server_config, build_router, PeerCertAcceptor};
-use kerosene_vault::bootstrap::{AuthMode, VaultConfig, VaultRuntime};
+use vault_core::adapters::{build_mtls_server_config, build_router, spawn_admin_unix_socket, PeerCertAcceptor};
+use vault_core::bootstrap::{AuthMode, VaultConfig, VaultRuntime};
 
 #[tokio::main]
 async fn main() {
@@ -28,7 +34,7 @@ async fn main() {
 
     let group = runtime.threshold.group();
     eprintln!(
-        "kerosene-vault lab-p0 node={} listen={} tier={} tee_available={} attestation={} ceremony={} stub={} n={} t={} online={} timelock_scale={} hardened={} open_economy={} bitcoin={} auth={}",
+        "kerosene-vault node={} listen={} tier={} tee_available={} attestation={} ceremony={} stub={} n={} t={} online={} timelock_scale={} hardened={} open_economy={} bitcoin={} auth={}",
         runtime.config.node_id,
         runtime.config.listen_addr,
         runtime.config.node_tier.as_str(),
@@ -45,6 +51,21 @@ async fn main() {
         runtime.config.bitcoin_network.as_str(),
         runtime.config.auth_mode.as_str()
     );
+
+    // --- Admin API socket ---
+    if let Some(ref admin_socket) = runtime.config.admin_unix_socket_path {
+        match spawn_admin_unix_socket(runtime.clone(), admin_socket).await {
+            Ok(()) => {
+                eprintln!("admin_api=unix socket_path={admin_socket}");
+            }
+            Err(e) => {
+                eprintln!("admin_api error: failed to start Unix socket listener: {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        eprintln!("admin_api=disabled (set VAULT_ADMIN_UNIX_SOCKET to enable)");
+    }
 
     let app = build_router(runtime.clone());
 
@@ -65,7 +86,6 @@ async fn main() {
                 }
             };
             let rustls_config = axum_server::tls_rustls::RustlsConfig::from_config(server_config);
-            // Inject verified client leaf into request extensions for SPIFFE→role binding.
             let acceptor = PeerCertAcceptor::new(RustlsAcceptor::new(rustls_config));
             let addr: SocketAddr = match listen_addr.parse() {
                 Ok(a) => a,
