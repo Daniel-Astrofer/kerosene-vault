@@ -12,26 +12,10 @@ use crate::domain::{DayEpoch, DomainError};
 /// Key lifecycle event.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum KeyLifecycleEvent {
-    Created {
-        key_id: String,
-        key_domain: KeyDomain,
-        at_epoch: DayEpoch,
-    },
-    Rotated {
-        old_key_id: String,
-        new_key_id: String,
-        key_domain: KeyDomain,
-        at_epoch: DayEpoch,
-    },
-    Expired {
-        key_id: String,
-        at_epoch: DayEpoch,
-    },
-    Revoked {
-        key_id: String,
-        reason: String,
-        at_epoch: DayEpoch,
-    },
+    Created { key_id: String, key_domain: KeyDomain, at_epoch: DayEpoch },
+    Rotated { old_key_id: String, new_key_id: String, key_domain: KeyDomain, at_epoch: DayEpoch },
+    Expired { key_id: String, at_epoch: DayEpoch },
+    Revoked { key_id: String, reason: String, at_epoch: DayEpoch },
 }
 
 /// Key domain namespace.
@@ -81,9 +65,7 @@ impl KeyMetadata {
     }
 
     pub fn is_expired(&self, current_epoch: &DayEpoch) -> bool {
-        self.expires_at
-            .as_ref()
-            .is_some_and(|exp| current_epoch > exp)
+        self.expires_at.as_ref().is_some_and(|exp| current_epoch > exp)
     }
 }
 
@@ -115,20 +97,14 @@ impl KeyLifecycle {
         match (&self.identity_classical, &self.identity_pq) {
             (Some(c), Some(p)) => {
                 if !c.is_active(epoch) {
-                    return Err(DomainError::InvalidIntent(
-                        "classical identity key expired or revoked".into(),
-                    ));
+                    return Err(DomainError::InvalidIntent("classical identity key expired or revoked".into()));
                 }
                 if !p.is_active(epoch) {
-                    return Err(DomainError::InvalidIntent(
-                        "PQ identity key expired or revoked".into(),
-                    ));
+                    return Err(DomainError::InvalidIntent("PQ identity key expired or revoked".into()));
                 }
                 Ok(())
             }
-            _ => Err(DomainError::InvalidIntent(
-                "identity keys not yet generated (genesis required)".into(),
-            )),
+            _ => Err(DomainError::InvalidIntent("identity keys not yet generated (genesis required)".into())),
         }
     }
 
@@ -137,15 +113,11 @@ impl KeyLifecycle {
         match (&self.transport_classical, &self.transport_pq) {
             (Some(c), Some(p)) => {
                 if !c.is_active(epoch) || !p.is_active(epoch) {
-                    return Err(DomainError::InvalidIntent(
-                        "transport keys expired or revoked".into(),
-                    ));
+                    return Err(DomainError::InvalidIntent("transport keys expired or revoked".into()));
                 }
                 Ok(())
             }
-            _ => Err(DomainError::InvalidIntent(
-                "transport keys not yet generated (genesis required)".into(),
-            )),
+            _ => Err(DomainError::InvalidIntent("transport keys not yet generated (genesis required)".into())),
         }
     }
 }

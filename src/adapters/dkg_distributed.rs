@@ -37,9 +37,7 @@ impl DistributedDkgAdapter {
     }
 
     pub fn refuse_dealer_attempt() -> Result<(), DomainError> {
-        Err(DomainError::DealerForbidden(
-            "distributed DKG only; dealer single-process is lab-only (ToB 2024)".into(),
-        ))
+        Err(DomainError::DealerForbidden("distributed DKG only; dealer single-process is lab-only (ToB 2024)".into()))
     }
 
     /// In-process multi-party FROST DKG simulation across `max_signers` logical
@@ -48,10 +46,7 @@ impl DistributedDkgAdapter {
     /// After part3, verifies every `KeyPackage.min_signers()` and the group
     /// `PublicKeyPackage` threshold equal `min_signers` (ToB threshold inflation
     /// regression: constitution `t` must stick).
-    pub fn run_in_process(
-        max_signers: u16,
-        min_signers: u16,
-    ) -> Result<FrostDistributedBundle, DomainError> {
+    pub fn run_in_process(max_signers: u16, min_signers: u16) -> Result<FrostDistributedBundle, DomainError> {
         if max_signers < 2 || min_signers < 2 || min_signers > max_signers {
             return Err(DomainError::ThresholdError(format!(
                 "bad frost DKG params: max={max_signers} min={min_signers}"
@@ -61,9 +56,7 @@ impl DistributedDkgAdapter {
         let mut rng = OsRng;
         let identifiers: Vec<Identifier> = (1..=max_signers)
             .map(|i| {
-                Identifier::try_from(i).map_err(|e| {
-                    DomainError::ThresholdError(format!("frost identifier {i}: {e}"))
-                })
+                Identifier::try_from(i).map_err(|e| DomainError::ThresholdError(format!("frost identifier {i}: {e}")))
             })
             .collect::<Result<Vec<_>, _>>()?;
 
@@ -71,10 +64,8 @@ impl DistributedDkgAdapter {
         let mut round1_secrets = BTreeMap::new();
         let mut round1_packages = BTreeMap::new();
         for id in &identifiers {
-            let (secret, package) =
-                frost::keys::dkg::part1(*id, max_signers, min_signers, &mut rng).map_err(|e| {
-                    DomainError::ThresholdError(format!("frost dkg part1: {e}"))
-                })?;
+            let (secret, package) = frost::keys::dkg::part1(*id, max_signers, min_signers, &mut rng)
+                .map_err(|e| DomainError::ThresholdError(format!("frost dkg part1: {e}")))?;
             round1_secrets.insert(*id, secret);
             round1_packages.insert(*id, package);
         }
@@ -87,17 +78,13 @@ impl DistributedDkgAdapter {
         for id in &identifiers {
             let mut received = round1_packages.clone();
             received.remove(id);
-            let secret = round1_secrets
-                .remove(id)
-                .ok_or_else(|| DomainError::ThresholdError("missing round1 secret".into()))?;
+            let secret =
+                round1_secrets.remove(id).ok_or_else(|| DomainError::ThresholdError("missing round1 secret".into()))?;
             let (r2_secret, outbound) = frost::keys::dkg::part2(secret, &received)
                 .map_err(|e| DomainError::ThresholdError(format!("frost dkg part2: {e}")))?;
             round2_secrets.insert(*id, r2_secret);
             for (receiver, package) in outbound {
-                round2_inbox
-                    .entry(receiver)
-                    .or_default()
-                    .insert(*id, package);
+                round2_inbox.entry(receiver).or_default().insert(*id, package);
             }
         }
 
@@ -107,12 +94,11 @@ impl DistributedDkgAdapter {
         for id in &identifiers {
             let mut r1_received = round1_packages.clone();
             r1_received.remove(id);
-            let r2_received = round2_inbox.get(id).ok_or_else(|| {
-                DomainError::ThresholdError(format!("missing round2 inbox for {id:?}"))
-            })?;
-            let r2_secret = round2_secrets.get(id).ok_or_else(|| {
-                DomainError::ThresholdError("missing round2 secret".into())
-            })?;
+            let r2_received = round2_inbox
+                .get(id)
+                .ok_or_else(|| DomainError::ThresholdError(format!("missing round2 inbox for {id:?}")))?;
+            let r2_secret =
+                round2_secrets.get(id).ok_or_else(|| DomainError::ThresholdError("missing round2 secret".into()))?;
             let (kp, pk) = frost::keys::dkg::part3(r2_secret, &r1_received, r2_received)
                 .map_err(|e| DomainError::ThresholdError(format!("frost dkg part3: {e}")))?;
 
@@ -139,9 +125,7 @@ impl DistributedDkgAdapter {
 
             if let Some(ref existing) = pubkey_package {
                 if existing.verifying_key() != pk.verifying_key() {
-                    return Err(DomainError::ThresholdError(
-                        "DKG participants disagree on group verifying key".into(),
-                    ));
+                    return Err(DomainError::ThresholdError("DKG participants disagree on group verifying key".into()));
                 }
             } else {
                 pubkey_package = Some(pk);
@@ -151,8 +135,7 @@ impl DistributedDkgAdapter {
 
         Ok(FrostDistributedBundle {
             key_packages,
-            pubkey_package: pubkey_package
-                .ok_or_else(|| DomainError::ThresholdError("empty DKG result".into()))?,
+            pubkey_package: pubkey_package.ok_or_else(|| DomainError::ThresholdError("empty DKG result".into()))?,
             max_signers,
             min_signers,
         })
@@ -165,15 +148,15 @@ impl DistributedDkgAdapter {
         share_store: &dyn ShareStorePort,
     ) -> Result<(), DomainError> {
         for (id, kp) in &bundle.key_packages {
-            let bytes = kp
-                .serialize()
-                .map_err(|e| DomainError::ThresholdError(format!("key package serialize: {e}")))?;
+            let bytes =
+                kp.serialize().map_err(|e| DomainError::ThresholdError(format!("key package serialize: {e}")))?;
             let share_id = format!("frost-dkg-id-{}", hex::encode(id.serialize()));
             share_store.put_share(&share_id, &bytes)?;
         }
-        let pk_bytes = bundle.pubkey_package.serialize().map_err(|e| {
-            DomainError::ThresholdError(format!("pubkey package serialize: {e}"))
-        })?;
+        let pk_bytes = bundle
+            .pubkey_package
+            .serialize()
+            .map_err(|e| DomainError::ThresholdError(format!("pubkey package serialize: {e}")))?;
         share_store.put_share("frost-dkg-pubkey", &pk_bytes)?;
         Ok(())
     }
@@ -199,18 +182,14 @@ impl DkgPort for DistributedDkgAdapter {
 mod tests {
     use super::*;
     use crate::adapters::{
-        AeadDiskShareStore, FrostSignOrchestrator, LedgerDayEpochStub, PersistedAntiNonce,
-        SystemClock,
+        AeadDiskShareStore, FrostSignOrchestrator, LedgerDayEpochStub, PersistedAntiNonce, SystemClock,
     };
     use std::sync::Arc;
 
     struct TempDir(std::path::PathBuf);
     impl TempDir {
         fn new(name: &str) -> Self {
-            let p = std::env::temp_dir().join(format!(
-                "kv-dkg-{name}-{}",
-                std::process::id()
-            ));
+            let p = std::env::temp_dir().join(format!("kv-dkg-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&p);
             std::fs::create_dir_all(&p).unwrap();
             Self(p)

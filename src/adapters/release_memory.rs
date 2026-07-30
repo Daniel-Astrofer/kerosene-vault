@@ -44,10 +44,7 @@ impl BlobStorePort for InMemoryReleaseMesh {
 
     fn get(&self, hash: &ContentHash) -> Result<Vec<u8>, DomainError> {
         let g = lock_mutex(&self.inner, "release")?;
-        g.blobs
-            .get(hash.as_str())
-            .cloned()
-            .ok_or_else(|| DomainError::UnknownBlob(hash.as_str().to_string()))
+        g.blobs.get(hash.as_str()).cloned().ok_or_else(|| DomainError::UnknownBlob(hash.as_str().to_string()))
     }
 }
 
@@ -59,10 +56,7 @@ impl ReleaseStorePort for InMemoryReleaseMesh {
     fn put_candidate(&self, candidate: ReleaseCandidate) -> Result<(), DomainError> {
         let mut g = lock_mutex(&self.inner, "release")?;
         if g.candidates.contains_key(&candidate.id) {
-            return Err(DomainError::InvalidRelease(format!(
-                "release already exists: {}",
-                candidate.id
-            )));
+            return Err(DomainError::InvalidRelease(format!("release already exists: {}", candidate.id)));
         }
         g.candidates.insert(candidate.id.clone(), candidate);
         Ok(())
@@ -70,10 +64,7 @@ impl ReleaseStorePort for InMemoryReleaseMesh {
 
     fn get_candidate(&self, id: &str) -> Result<ReleaseCandidate, DomainError> {
         let g = lock_mutex(&self.inner, "release")?;
-        g.candidates
-            .get(id)
-            .cloned()
-            .ok_or_else(|| DomainError::UnknownRelease(id.to_string()))
+        g.candidates.get(id).cloned().ok_or_else(|| DomainError::UnknownRelease(id.to_string()))
     }
 
     fn save_candidate(&self, candidate: ReleaseCandidate) -> Result<(), DomainError> {

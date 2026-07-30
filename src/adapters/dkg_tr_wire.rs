@@ -29,8 +29,8 @@ use rand::rngs::OsRng;
 use sha2::{Digest, Sha256};
 
 use super::dkg_wire::{
-    peer_base_url, DkgStartRequest, Round1WireMessage, Round2WireMessage, Round3WireRequest,
-    WireDkgPeerAuth, WireDkgPhase, WireDkgStatus,
+    peer_base_url, DkgStartRequest, Round1WireMessage, Round2WireMessage, Round3WireRequest, WireDkgPeerAuth,
+    WireDkgPhase, WireDkgStatus,
 };
 use super::frost_tr_bitcoin::{persist_tr_shares, FrostTrShareState};
 use super::http_peer::{post_json_with_retry, PeerHttpSettings};
@@ -39,8 +39,7 @@ use crate::application::ShareStorePort;
 use crate::domain::DomainError;
 
 fn identifier_from_u16(v: u16) -> Result<Identifier, DomainError> {
-    Identifier::try_from(v)
-        .map_err(|e| DomainError::ThresholdError(format!("tr identifier {v}: {e}")))
+    Identifier::try_from(v).map_err(|e| DomainError::ThresholdError(format!("tr identifier {v}: {e}")))
 }
 
 fn identifier_to_u16(roster: &BTreeMap<String, Identifier>, id: Identifier) -> u16 {
@@ -57,9 +56,7 @@ fn build_roster(roster: &[String]) -> Result<BTreeMap<String, Identifier>, Domai
     sorted.sort();
     sorted.dedup();
     if sorted.len() < 2 {
-        return Err(DomainError::ThresholdError(
-            "TR DKG roster must have >= 2 unique node ids".into(),
-        ));
+        return Err(DomainError::ThresholdError("TR DKG roster must have >= 2 unique node ids".into()));
     }
     let mut map = BTreeMap::new();
     for (i, node) in sorted.into_iter().enumerate() {
@@ -93,12 +90,7 @@ pub fn session_transcript_tr(
     hex::encode(h.finalize())
 }
 
-fn assert_threshold_tr(
-    kp: &KeyPackage,
-    pk: &PublicKeyPackage,
-    min: u16,
-    max: u16,
-) -> Result<(), DomainError> {
+fn assert_threshold_tr(kp: &KeyPackage, pk: &PublicKeyPackage, min: u16, max: u16) -> Result<(), DomainError> {
     if *kp.min_signers() != min {
         return Err(DomainError::ThresholdError(format!(
             "TR DKG threshold mismatch (ToB): key_package.min_signers={} expected={min}",
@@ -142,9 +134,8 @@ struct TrSessionInner {
 
 impl TrSessionInner {
     fn status(&self) -> WireDkgStatus {
-        let verifying_key_hex = self.pubkey_package.as_ref().map(|pk| {
-            hex::encode(pk.verifying_key().serialize().unwrap_or_default())
-        });
+        let verifying_key_hex =
+            self.pubkey_package.as_ref().map(|pk| hex::encode(pk.verifying_key().serialize().unwrap_or_default()));
         WireDkgStatus {
             session_id: self.session_id.clone(),
             phase: self.phase.as_str().to_string(),
@@ -161,27 +152,14 @@ impl TrSessionInner {
     }
 }
 
-fn build_http_client(
-    auth: &WireDkgPeerAuth,
-    peer_http: &PeerHttpSettings,
-) -> Result<reqwest::Client, DomainError> {
+fn build_http_client(auth: &WireDkgPeerAuth, peer_http: &PeerHttpSettings) -> Result<reqwest::Client, DomainError> {
     let builder = peer_http.apply_builder(reqwest::Client::builder())?;
     match auth {
-        WireDkgPeerAuth::StaticToken(_) => builder
-            .build()
-            .map_err(|e| DomainError::ThresholdError(format!("tr dkg http client: {e}"))),
-        WireDkgPeerAuth::MutualTls {
-            client_cert_path,
-            client_key_path,
-            ca_path,
-            verify,
-        } => {
-            let tls = build_mtls_rustls_client_config(
-                client_cert_path,
-                client_key_path,
-                ca_path,
-                verify,
-            )?;
+        WireDkgPeerAuth::StaticToken(_) => {
+            builder.build().map_err(|e| DomainError::ThresholdError(format!("tr dkg http client: {e}")))
+        }
+        WireDkgPeerAuth::MutualTls { client_cert_path, client_key_path, ca_path, verify } => {
+            let tls = build_mtls_rustls_client_config(client_cert_path, client_key_path, ca_path, verify)?;
             builder
                 .use_preconfigured_tls(tls)
                 .build()
@@ -234,17 +212,14 @@ impl TrWireDkgHub {
 
     pub fn status(&self, session_id: &str) -> Result<WireDkgStatus, DomainError> {
         let g = self.sessions.lock().expect("tr dkg sessions");
-        let s = g.get(session_id).ok_or_else(|| {
-            DomainError::ThresholdError(format!("unknown TR DKG session: {session_id}"))
-        })?;
+        let s = g
+            .get(session_id)
+            .ok_or_else(|| DomainError::ThresholdError(format!("unknown TR DKG session: {session_id}")))?;
         Ok(s.status())
     }
 
     /// Start local session: run part1, freeze roster+threshold, return wire message.
-    pub fn start(
-        &self,
-        req: DkgStartRequest,
-    ) -> Result<(WireDkgStatus, Round1WireMessage), DomainError> {
+    pub fn start(&self, req: DkgStartRequest) -> Result<(WireDkgStatus, Round1WireMessage), DomainError> {
         if req.max_signers < 2 || req.min_signers < 2 || req.min_signers > req.max_signers {
             return Err(DomainError::ThresholdError(format!(
                 "bad TR frost DKG params: max={} min={}",
@@ -259,8 +234,7 @@ impl TrWireDkgHub {
                 req.max_signers
             )));
         }
-        let transcript_hex =
-            session_transcript_tr(&req.session_id, req.max_signers, req.min_signers, &roster);
+        let transcript_hex = session_transcript_tr(&req.session_id, req.max_signers, req.min_signers, &roster);
 
         {
             let g = self.sessions.lock().expect("tr dkg sessions");
@@ -271,17 +245,14 @@ impl TrWireDkgHub {
                     || existing.roster != roster
                 {
                     return Err(DomainError::ThresholdError(
-                        "TR DKG participants/threshold frozen at round1; constitution drift rejected"
-                            .into(),
+                        "TR DKG participants/threshold frozen at round1; constitution drift rejected".into(),
                     ));
                 }
                 let local_identifier = existing.local_identifier;
                 let package = existing
                     .round1_packages
                     .get(&local_identifier)
-                    .ok_or_else(|| {
-                        DomainError::ThresholdError("missing local TR round1 package".into())
-                    })?;
+                    .ok_or_else(|| DomainError::ThresholdError("missing local TR round1 package".into()))?;
                 let package_hex = hex::encode(
                     package
                         .serialize()
@@ -302,21 +273,15 @@ impl TrWireDkgHub {
         }
 
         let local_identifier = *roster.get(&self.local_node_id).ok_or_else(|| {
-            DomainError::ThresholdError(format!(
-                "local node {} missing from TR DKG roster",
-                self.local_node_id
-            ))
+            DomainError::ThresholdError(format!("local node {} missing from TR DKG roster", self.local_node_id))
         })?;
 
         let mut rng = OsRng;
-        let (secret, package) =
-            frost::keys::dkg::part1(local_identifier, req.max_signers, req.min_signers, &mut rng)
-                .map_err(|e| DomainError::ThresholdError(format!("frost-tr dkg part1: {e}")))?;
+        let (secret, package) = frost::keys::dkg::part1(local_identifier, req.max_signers, req.min_signers, &mut rng)
+            .map_err(|e| DomainError::ThresholdError(format!("frost-tr dkg part1: {e}")))?;
 
         let package_hex = hex::encode(
-            package
-                .serialize()
-                .map_err(|e| DomainError::ThresholdError(format!("tr round1 serialize: {e}")))?,
+            package.serialize().map_err(|e| DomainError::ThresholdError(format!("tr round1 serialize: {e}")))?,
         );
 
         let mut round1_packages = BTreeMap::new();
@@ -352,10 +317,7 @@ impl TrWireDkgHub {
             envelope: None,
         };
         let status = inner.status();
-        self.sessions
-            .lock()
-            .expect("tr dkg sessions")
-            .insert(req.session_id, inner);
+        self.sessions.lock().expect("tr dkg sessions").insert(req.session_id, inner);
         Ok((status, wire))
     }
 
@@ -363,24 +325,18 @@ impl TrWireDkgHub {
     pub fn ingest_round1(&self, msg: Round1WireMessage) -> Result<WireDkgStatus, DomainError> {
         let mut g = self.sessions.lock().expect("tr dkg sessions");
         let session = g.get_mut(&msg.session_id).ok_or_else(|| {
-            DomainError::ThresholdError(format!(
-                "unknown TR DKG session {} (start locally first)",
-                msg.session_id
-            ))
+            DomainError::ThresholdError(format!("unknown TR DKG session {} (start locally first)", msg.session_id))
         })?;
         if session.phase == WireDkgPhase::Complete {
             return Ok(session.status());
         }
         if msg.max_signers != session.max_signers || msg.min_signers != session.min_signers {
             return Err(DomainError::ThresholdError(
-                "TR round1 threshold/min_signers drift rejected (ToB); constitution frozen at start"
-                    .into(),
+                "TR round1 threshold/min_signers drift rejected (ToB); constitution frozen at start".into(),
             ));
         }
         if msg.transcript_hex != session.transcript_hex {
-            return Err(DomainError::ThresholdError(
-                "TR round1 transcript binding mismatch; abort DKG".into(),
-            ));
+            return Err(DomainError::ThresholdError("TR round1 transcript binding mismatch; abort DKG".into()));
         }
 
         let sender_id = identifier_from_u16(msg.sender_identifier)?;
@@ -392,10 +348,7 @@ impl TrWireDkgHub {
             )));
         }
         if expected != Some(sender_id) {
-            return Err(DomainError::ThresholdError(format!(
-                "TR sender {} identifier mismatch",
-                msg.sender_node_id
-            )));
+            return Err(DomainError::ThresholdError(format!("TR sender {} identifier mismatch", msg.sender_node_id)));
         }
         if sender_id == session.local_identifier {
             return Ok(session.status());
@@ -410,8 +363,8 @@ impl TrWireDkgHub {
             ));
         }
 
-        let bytes = hex::decode(&msg.package_hex)
-            .map_err(|e| DomainError::ThresholdError(format!("tr round1 hex: {e}")))?;
+        let bytes =
+            hex::decode(&msg.package_hex).map_err(|e| DomainError::ThresholdError(format!("tr round1 hex: {e}")))?;
         let package = round1::Package::deserialize(&bytes)
             .map_err(|e| DomainError::ThresholdError(format!("tr round1 deserialize: {e}")))?;
         session.round1_packages.insert(sender_id, package);
@@ -441,14 +394,11 @@ impl TrWireDkgHub {
         Ok(())
     }
 
-    pub fn take_round2_outbound(
-        &self,
-        session_id: &str,
-    ) -> Result<Vec<Round2WireMessage>, DomainError> {
+    pub fn take_round2_outbound(&self, session_id: &str) -> Result<Vec<Round2WireMessage>, DomainError> {
         let mut g = self.sessions.lock().expect("tr dkg sessions");
-        let session = g.get_mut(session_id).ok_or_else(|| {
-            DomainError::ThresholdError(format!("unknown TR DKG session: {session_id}"))
-        })?;
+        let session = g
+            .get_mut(session_id)
+            .ok_or_else(|| DomainError::ThresholdError(format!("unknown TR DKG session: {session_id}")))?;
         let mut out = Vec::new();
         let outbound = std::mem::take(&mut session.round2_outbound);
         for (recipient_id, package) in outbound {
@@ -457,15 +407,9 @@ impl TrWireDkgHub {
                 .iter()
                 .find(|(_, id)| **id == recipient_id)
                 .map(|(n, _)| n.clone())
-                .ok_or_else(|| {
-                    DomainError::ThresholdError(format!(
-                        "unknown TR recipient id {recipient_id:?}"
-                    ))
-                })?;
+                .ok_or_else(|| DomainError::ThresholdError(format!("unknown TR recipient id {recipient_id:?}")))?;
             let package_hex = hex::encode(
-                package
-                    .serialize()
-                    .map_err(|e| DomainError::ThresholdError(format!("tr round2 serialize: {e}")))?,
+                package.serialize().map_err(|e| DomainError::ThresholdError(format!("tr round2 serialize: {e}")))?,
             );
             out.push(Round2WireMessage {
                 session_id: session_id.to_string(),
@@ -483,21 +427,17 @@ impl TrWireDkgHub {
 
     pub fn ingest_round2(&self, msg: Round2WireMessage) -> Result<WireDkgStatus, DomainError> {
         let mut g = self.sessions.lock().expect("tr dkg sessions");
-        let session = g.get_mut(&msg.session_id).ok_or_else(|| {
-            DomainError::ThresholdError(format!("unknown TR DKG session: {}", msg.session_id))
-        })?;
+        let session = g
+            .get_mut(&msg.session_id)
+            .ok_or_else(|| DomainError::ThresholdError(format!("unknown TR DKG session: {}", msg.session_id)))?;
         if session.phase == WireDkgPhase::Complete {
             return Ok(session.status());
         }
         if msg.transcript_hex != session.transcript_hex {
-            return Err(DomainError::ThresholdError(
-                "TR round2 transcript binding mismatch; abort DKG".into(),
-            ));
+            return Err(DomainError::ThresholdError("TR round2 transcript binding mismatch; abort DKG".into()));
         }
         if msg.recipient_node_id != session.local_node_id {
-            return Err(DomainError::ThresholdError(
-                "TR round2 package not addressed to this vault".into(),
-            ));
+            return Err(DomainError::ThresholdError("TR round2 package not addressed to this vault".into()));
         }
         let sender_id = identifier_from_u16(msg.sender_identifier)?;
         let expected = session.roster.get(&msg.sender_node_id).copied();
@@ -513,8 +453,8 @@ impl TrWireDkgHub {
                 msg.sender_node_id
             )));
         }
-        let bytes = hex::decode(&msg.package_hex)
-            .map_err(|e| DomainError::ThresholdError(format!("tr round2 hex: {e}")))?;
+        let bytes =
+            hex::decode(&msg.package_hex).map_err(|e| DomainError::ThresholdError(format!("tr round2 hex: {e}")))?;
         let package = round2::Package::deserialize(&bytes)
             .map_err(|e| DomainError::ThresholdError(format!("tr round2 deserialize: {e}")))?;
         session.round2_inbox.insert(sender_id, package);
@@ -529,9 +469,9 @@ impl TrWireDkgHub {
         share_store: &dyn ShareStorePort,
     ) -> Result<WireDkgStatus, DomainError> {
         let mut g = self.sessions.lock().expect("tr dkg sessions");
-        let session = g.get_mut(session_id).ok_or_else(|| {
-            DomainError::ThresholdError(format!("unknown TR DKG session: {session_id}"))
-        })?;
+        let session = g
+            .get_mut(session_id)
+            .ok_or_else(|| DomainError::ThresholdError(format!("unknown TR DKG session: {session_id}")))?;
         if session.phase == WireDkgPhase::Complete {
             return Ok(session.status());
         }
@@ -548,10 +488,8 @@ impl TrWireDkgHub {
             .ok_or_else(|| DomainError::ThresholdError("missing TR round2 secret".into()))?;
         let mut r1_received = session.round1_packages.clone();
         r1_received.remove(&session.local_identifier);
-        let (kp, pk) =
-            frost::keys::dkg::part3(r2_secret, &r1_received, &session.round2_inbox).map_err(
-                |e| DomainError::ThresholdError(format!("frost-tr dkg part3: {e}")),
-            )?;
+        let (kp, pk) = frost::keys::dkg::part3(r2_secret, &r1_received, &session.round2_inbox)
+            .map_err(|e| DomainError::ThresholdError(format!("frost-tr dkg part3: {e}")))?;
         assert_threshold_tr(&kp, &pk, session.min_signers, session.max_signers)?;
 
         // Taproot: force even-Y on group pubkey and local key package.
@@ -562,11 +500,8 @@ impl TrWireDkgHub {
         // multi-share; load_tr_shares at boot returns exactly this one package.
         let mut key_packages = BTreeMap::new();
         key_packages.insert(session.local_identifier, kp.clone());
-        let tr_state = FrostTrShareState {
-            key_packages,
-            pubkey_package: pk.clone(),
-            min_signers: session.min_signers as usize,
-        };
+        let tr_state =
+            FrostTrShareState { key_packages, pubkey_package: pk.clone(), min_signers: session.min_signers as usize };
         persist_tr_shares(&tr_state, share_store)?;
 
         session.key_package = Some(kp.clone());
@@ -574,8 +509,7 @@ impl TrWireDkgHub {
         session.phase = WireDkgPhase::Complete;
         session.round2_secret = None;
 
-        *self.completed.lock().expect("tr dkg completed") =
-            Some((kp, pk, session.min_signers));
+        *self.completed.lock().expect("tr dkg completed") = Some((kp, pk, session.min_signers));
         Ok(session.status())
     }
 
@@ -593,54 +527,32 @@ impl TrWireDkgHub {
                 continue;
             }
             let url = format!("{}/v1/dkg/tr/round1", peer_base_url(addr, mtls));
-            let res = post_json_with_retry(
-                &self.http,
-                &self.peer_http,
-                &url,
-                |req| self.apply_peer_auth_headers(req),
-                msg,
-            )
-            .await
-            .map_err(|e| {
-                DomainError::ThresholdError(format!("tr round1 fanout to {peer_id}: {e}"))
-            })?;
+            let res =
+                post_json_with_retry(&self.http, &self.peer_http, &url, |req| self.apply_peer_auth_headers(req), msg)
+                    .await
+                    .map_err(|e| DomainError::ThresholdError(format!("tr round1 fanout to {peer_id}: {e}")))?;
             if !res.status().is_success() {
                 let body = res.text().await.unwrap_or_default();
-                return Err(DomainError::ThresholdError(format!(
-                    "tr round1 fanout to {peer_id} failed: {body}"
-                )));
+                return Err(DomainError::ThresholdError(format!("tr round1 fanout to {peer_id} failed: {body}")));
             }
         }
         Ok(())
     }
 
-    pub async fn fanout_round2(
-        &self,
-        messages: &[Round2WireMessage],
-    ) -> Result<(), DomainError> {
+    pub async fn fanout_round2(&self, messages: &[Round2WireMessage]) -> Result<(), DomainError> {
         let mtls = self.peer_auth.is_mtls();
         for msg in messages {
-            let addr = self.peer_addrs.get(&msg.recipient_node_id).ok_or_else(|| {
-                DomainError::ThresholdError(format!(
-                    "no TR peer addr for {}",
-                    msg.recipient_node_id
-                ))
-            })?;
+            let addr = self
+                .peer_addrs
+                .get(&msg.recipient_node_id)
+                .ok_or_else(|| DomainError::ThresholdError(format!("no TR peer addr for {}", msg.recipient_node_id)))?;
             let url = format!("{}/v1/dkg/tr/round2", peer_base_url(addr, mtls));
-            let res = post_json_with_retry(
-                &self.http,
-                &self.peer_http,
-                &url,
-                |req| self.apply_peer_auth_headers(req),
-                msg,
-            )
-            .await
-            .map_err(|e| {
-                DomainError::ThresholdError(format!(
-                    "tr round2 fanout to {}: {e}",
-                    msg.recipient_node_id
-                ))
-            })?;
+            let res =
+                post_json_with_retry(&self.http, &self.peer_http, &url, |req| self.apply_peer_auth_headers(req), msg)
+                    .await
+                    .map_err(|e| {
+                        DomainError::ThresholdError(format!("tr round2 fanout to {}: {e}", msg.recipient_node_id))
+                    })?;
             if !res.status().is_success() {
                 let body = res.text().await.unwrap_or_default();
                 return Err(DomainError::ThresholdError(format!(
@@ -661,10 +573,7 @@ mod tests {
     struct TempDir(std::path::PathBuf);
     impl TempDir {
         fn new(name: &str) -> Self {
-            let p = std::env::temp_dir().join(format!(
-                "kv-tr-wire-dkg-{name}-{}",
-                std::process::id()
-            ));
+            let p = std::env::temp_dir().join(format!("kv-tr-wire-dkg-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&p);
             std::fs::create_dir_all(&p).unwrap();
             Self(p)
@@ -677,11 +586,7 @@ mod tests {
     }
 
     fn three_hubs() -> (Vec<TrWireDkgHub>, DkgStartRequest) {
-        let roster = vec![
-            "vault-1".into(),
-            "vault-2".into(),
-            "vault-3".into(),
-        ];
+        let roster = vec!["vault-1".into(), "vault-2".into(), "vault-3".into()];
         let hubs: Vec<TrWireDkgHub> = (1..=3)
             .map(|i| {
                 TrWireDkgHub::with_peer_http(

@@ -4,9 +4,7 @@ use std::time::Duration;
 
 use crate::application::ports::{AttestationPort, PeerDirectoryPort};
 use crate::application::OnlineStatusPort;
-use crate::domain::{
-    DomainError, HealthStatus, NodeHealth, NodeId, PeerReachability, VaultNodeTier,
-};
+use crate::domain::{DomainError, HealthStatus, NodeHealth, NodeId, PeerReachability, VaultNodeTier};
 
 pub struct GetHealth {
     node_id: NodeId,
@@ -76,27 +74,13 @@ impl GetHealth {
         let (peer_reachability, peers_reachable, status) = if peers.is_empty() {
             (PeerReachability::None, None, HealthStatus::Starting)
         } else if self.probe_peers {
-            let reachable = peers
-                .iter()
-                .filter(|p| cheap_tcp_reachable(&p.endpoint.address))
-                .count();
+            let reachable = peers.iter().filter(|p| cheap_tcp_reachable(&p.endpoint.address)).count();
             let configured = peers.len();
-            let reach = PeerReachability::Probed {
-                reachable,
-                configured,
-            };
-            let status = if reachable == 0 {
-                HealthStatus::Degraded
-            } else {
-                HealthStatus::Ready
-            };
+            let reach = PeerReachability::Probed { reachable, configured };
+            let status = if reachable == 0 { HealthStatus::Degraded } else { HealthStatus::Ready };
             (reach, Some(reachable), status)
         } else {
-            (
-                PeerReachability::DirectoryOnly,
-                None,
-                HealthStatus::Ready,
-            )
+            (PeerReachability::DirectoryOnly, None, HealthStatus::Ready)
         };
         Ok(NodeHealth {
             node_id: self.node_id.clone(),
@@ -126,11 +110,7 @@ fn cheap_tcp_reachable(addr: &str) -> bool {
     if trimmed.is_empty() || trimmed.contains(".onion") {
         return false;
     }
-    let candidate = if trimmed.contains(':') {
-        trimmed.to_string()
-    } else {
-        format!("{trimmed}:7701")
-    };
+    let candidate = if trimmed.contains(':') { trimmed.to_string() } else { format!("{trimmed}:7701") };
     let Ok(mut iter) = candidate.to_socket_addrs() else {
         return false;
     };

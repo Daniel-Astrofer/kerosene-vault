@@ -28,13 +28,8 @@ pub(crate) struct BucketState {
 impl InMemoryBucketLedger {
     pub fn from_constitution_caps(max_tx: u64, max_day: u64) -> Self {
         let mut policies = HashMap::new();
-        for kind in [
-            BucketKind::Users,
-            BucketKind::Profit,
-            BucketKind::Miners,
-            BucketKind::Channels,
-            BucketKind::Infra,
-        ] {
+        for kind in [BucketKind::Users, BucketKind::Profit, BucketKind::Miners, BucketKind::Channels, BucketKind::Infra]
+        {
             let (tx, day) = match kind {
                 BucketKind::Users => (max_tx, max_day),
                 BucketKind::Profit => (max_tx, max_day),
@@ -56,12 +51,8 @@ impl InMemoryBucketLedger {
 
     pub(crate) fn sweep_expired(g: &mut BucketState) {
         let now = Instant::now();
-        let expired: Vec<String> = g
-            .reserved
-            .iter()
-            .filter(|(_, (_, _, exp))| *exp <= now)
-            .map(|(id, _)| id.clone())
-            .collect();
+        let expired: Vec<String> =
+            g.reserved.iter().filter(|(_, (_, _, exp))| *exp <= now).map(|(id, _)| id.clone()).collect();
         for id in expired {
             if let Some((kind, amount, _)) = g.reserved.remove(&id) {
                 if let Some(spent) = g.spent_today.get_mut(&kind) {
@@ -78,10 +69,7 @@ impl InMemoryBucketLedger {
         dests: impl IntoIterator<Item = impl Into<String>>,
     ) -> Result<(), DomainError> {
         let mut g = self.inner.lock().expect("bucket lock");
-        let policy = g
-            .policies
-            .get_mut(&kind)
-            .ok_or_else(|| DomainError::InvalidBucket(kind.as_str().into()))?;
+        let policy = g.policies.get_mut(&kind).ok_or_else(|| DomainError::InvalidBucket(kind.as_str().into()))?;
         policy.extend_destinations(dests);
         Ok(())
     }
@@ -90,10 +78,7 @@ impl InMemoryBucketLedger {
 impl BucketLedgerPort for InMemoryBucketLedger {
     fn policy(&self, kind: BucketKind) -> Result<BucketPolicy, DomainError> {
         let g = self.inner.lock().expect("bucket lock");
-        g.policies
-            .get(&kind)
-            .cloned()
-            .ok_or_else(|| DomainError::InvalidBucket(kind.as_str().into()))
+        g.policies.get(&kind).cloned().ok_or_else(|| DomainError::InvalidBucket(kind.as_str().into()))
     }
 
     fn spent_today(&self, kind: BucketKind) -> Result<u64, DomainError> {
@@ -155,19 +140,12 @@ impl BucketLedgerPort for InMemoryBucketLedger {
             }
             return Err(DomainError::IntentReplay(intent_id.to_string()));
         }
-        let policy = g
-            .policies
-            .get(&kind)
-            .cloned()
-            .ok_or_else(|| DomainError::InvalidBucket(kind.as_str().into()))?;
+        let policy = g.policies.get(&kind).cloned().ok_or_else(|| DomainError::InvalidBucket(kind.as_str().into()))?;
         let spent = *g.spent_today.get(&kind).unwrap_or(&0);
         validate(&policy, spent)?;
         let e = g.spent_today.entry(kind).or_insert(0);
         *e = e.saturating_add(amount_sats);
-        g.reserved.insert(
-            intent_id.to_string(),
-            (kind, amount_sats, Instant::now() + DEFAULT_RESERVE_TTL),
-        );
+        g.reserved.insert(intent_id.to_string(), (kind, amount_sats, Instant::now() + DEFAULT_RESERVE_TTL));
         Ok(())
     }
 
@@ -186,12 +164,7 @@ impl BucketLedgerPort for InMemoryBucketLedger {
         Ok(())
     }
 
-    fn release_reservation(
-        &self,
-        intent_id: &str,
-        kind: BucketKind,
-        amount_sats: u64,
-    ) -> Result<(), DomainError> {
+    fn release_reservation(&self, intent_id: &str, kind: BucketKind, amount_sats: u64) -> Result<(), DomainError> {
         let mut g = self.inner.lock().expect("bucket lock");
         if let Some((k, amt, _)) = g.reserved.remove(intent_id) {
             let roll_kind = k;
@@ -218,11 +191,7 @@ impl BucketLedgerPort for InMemoryBucketLedger {
         if g.consumed.contains(intent_id) || g.reserved.contains_key(intent_id) {
             return Err(DomainError::IntentReplay(intent_id.to_string()));
         }
-        let policy = g
-            .policies
-            .get(&kind)
-            .cloned()
-            .ok_or_else(|| DomainError::InvalidBucket(kind.as_str().into()))?;
+        let policy = g.policies.get(&kind).cloned().ok_or_else(|| DomainError::InvalidBucket(kind.as_str().into()))?;
         let spent = *g.spent_today.get(&kind).unwrap_or(&0);
         validate(&policy, spent)?;
         let e = g.spent_today.entry(kind).or_insert(0);
@@ -242,16 +211,11 @@ pub struct PersistedBucketLedger {
 }
 
 impl PersistedBucketLedger {
-    pub fn open(
-        path: impl Into<PathBuf>,
-        max_tx: u64,
-        max_day: u64,
-    ) -> Result<Self, DomainError> {
+    pub fn open(path: impl Into<PathBuf>, max_tx: u64, max_day: u64) -> Result<Self, DomainError> {
         let path = path.into();
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                DomainError::ThresholdError(format!("intent-consume mkdir: {e}"))
-            })?;
+            fs::create_dir_all(parent)
+                .map_err(|e| DomainError::ThresholdError(format!("intent-consume mkdir: {e}")))?;
         }
         let inner = InMemoryBucketLedger::from_constitution_caps(max_tx, max_day);
         if path.exists() {
@@ -274,10 +238,8 @@ impl PersistedBucketLedger {
             .append(true)
             .open(&self.path)
             .map_err(|e| DomainError::ThresholdError(format!("intent-consume append: {e}")))?;
-        writeln!(file, "{intent_id}")
-            .map_err(|e| DomainError::ThresholdError(format!("intent-consume write: {e}")))?;
-        file.sync_all()
-            .map_err(|e| DomainError::ThresholdError(format!("intent-consume sync: {e}")))?;
+        writeln!(file, "{intent_id}").map_err(|e| DomainError::ThresholdError(format!("intent-consume write: {e}")))?;
+        file.sync_all().map_err(|e| DomainError::ThresholdError(format!("intent-consume sync: {e}")))?;
         Ok(())
     }
 
@@ -305,14 +267,7 @@ impl PersistedBucketLedger {
         if g.consumed.contains(intent_id) || g.reserved.contains_key(intent_id) {
             return Ok(true);
         }
-        g.reserved.insert(
-            intent_id.to_string(),
-            (
-                BucketKind::Users,
-                0,
-                Instant::now() + DEFAULT_RESERVE_TTL,
-            ),
-        );
+        g.reserved.insert(intent_id.to_string(), (BucketKind::Users, 0, Instant::now() + DEFAULT_RESERVE_TTL));
         Ok(false)
     }
 
@@ -324,13 +279,9 @@ impl PersistedBucketLedger {
 }
 
 fn load_consumed_into(path: &Path, ledger: &InMemoryBucketLedger) -> Result<(), DomainError> {
-    let file = fs::File::open(path).map_err(|e| {
-        DomainError::ThresholdError(format!("intent-consume open: {e}"))
-    })?;
+    let file = fs::File::open(path).map_err(|e| DomainError::ThresholdError(format!("intent-consume open: {e}")))?;
     for line in BufReader::new(file).lines() {
-        let line = line.map_err(|e| {
-            DomainError::ThresholdError(format!("intent-consume read: {e}"))
-        })?;
+        let line = line.map_err(|e| DomainError::ThresholdError(format!("intent-consume read: {e}")))?;
         let id = line.trim();
         if id.is_empty() || id.starts_with('#') {
             continue;
@@ -389,8 +340,7 @@ impl BucketLedgerPort for PersistedBucketLedger {
         amount_sats: u64,
         validate: &dyn Fn(&BucketPolicy, u64) -> Result<(), DomainError>,
     ) -> Result<(), DomainError> {
-        self.inner
-            .reserve_spend(intent_id, kind, amount_sats, validate)
+        self.inner.reserve_spend(intent_id, kind, amount_sats, validate)
     }
 
     fn commit_consume(&self, intent_id: &str) -> Result<(), DomainError> {
@@ -408,14 +358,8 @@ impl BucketLedgerPort for PersistedBucketLedger {
         self.try_consume(intent_id)
     }
 
-    fn release_reservation(
-        &self,
-        intent_id: &str,
-        kind: BucketKind,
-        amount_sats: u64,
-    ) -> Result<(), DomainError> {
-        self.inner
-            .release_reservation(intent_id, kind, amount_sats)
+    fn release_reservation(&self, intent_id: &str, kind: BucketKind, amount_sats: u64) -> Result<(), DomainError> {
+        self.inner.release_reservation(intent_id, kind, amount_sats)
     }
 
     fn authorize_spend_and_consume(
@@ -431,11 +375,8 @@ impl BucketLedgerPort for PersistedBucketLedger {
             if g.consumed.contains(intent_id) {
                 return Err(DomainError::IntentReplay(intent_id.to_string()));
             }
-            let policy = g
-                .policies
-                .get(&kind)
-                .cloned()
-                .ok_or_else(|| DomainError::InvalidBucket(kind.as_str().into()))?;
+            let policy =
+                g.policies.get(&kind).cloned().ok_or_else(|| DomainError::InvalidBucket(kind.as_str().into()))?;
             let spent = *g.spent_today.get(&kind).unwrap_or(&0);
             validate(&policy, spent)?;
             let e = g.spent_today.entry(kind).or_insert(0);
@@ -467,10 +408,7 @@ mod tests {
     struct TempProbe(PathBuf);
     impl TempProbe {
         fn new(name: &str) -> Self {
-            let p = std::env::temp_dir().join(format!(
-                "kv-bucket-{name}-{}",
-                std::process::id()
-            ));
+            let p = std::env::temp_dir().join(format!("kv-bucket-{name}-{}", std::process::id()));
             let _ = fs::remove_dir_all(&p);
             fs::create_dir_all(&p).unwrap();
             Self(p)
@@ -521,23 +459,10 @@ mod tests {
     #[test]
     fn authorize_spend_and_consume_rejects_replay() {
         let ledger = InMemoryBucketLedger::from_constitution_caps(100, 1_000);
-        let intent = SettlementIntent::new(
-            "i1",
-            BucketKind::Users,
-            "tb1q-users-withdraw",
-            10,
-            "ph",
-        )
-        .unwrap();
-        let validate = |policy: &BucketPolicy, spent: u64| {
-            crate::domain::evaluate_intent(&intent, policy, spent, "ph")
-        };
-        ledger
-            .authorize_spend_and_consume("i1", BucketKind::Users, 10, &validate)
-            .unwrap();
-        let err = ledger
-            .authorize_spend_and_consume("i1", BucketKind::Users, 10, &validate)
-            .unwrap_err();
+        let intent = SettlementIntent::new("i1", BucketKind::Users, "tb1q-users-withdraw", 10, "ph").unwrap();
+        let validate = |policy: &BucketPolicy, spent: u64| crate::domain::evaluate_intent(&intent, policy, spent, "ph");
+        ledger.authorize_spend_and_consume("i1", BucketKind::Users, 10, &validate).unwrap();
+        let err = ledger.authorize_spend_and_consume("i1", BucketKind::Users, 10, &validate).unwrap_err();
         assert!(matches!(err, DomainError::IntentReplay(_)));
         assert_eq!(ledger.spent_today(BucketKind::Users).unwrap(), 10);
     }

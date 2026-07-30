@@ -30,9 +30,7 @@ impl ResharePolicy {
     pub fn from_env_or_default() -> Result<Self, DomainError> {
         match std::env::var("VAULT_RESHARE_POLICY") {
             Ok(raw) => Self::parse(&raw).ok_or_else(|| {
-                DomainError::InvalidConstitution(format!(
-                    "unknown VAULT_RESHARE_POLICY={raw} (want daily|manual)"
-                ))
+                DomainError::InvalidConstitution(format!("unknown VAULT_RESHARE_POLICY={raw} (want daily|manual)"))
             }),
             Err(_) => Ok(Self::Manual),
         }

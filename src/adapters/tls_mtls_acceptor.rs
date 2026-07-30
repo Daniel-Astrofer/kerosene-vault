@@ -17,7 +17,7 @@ use tokio_rustls::server::TlsStream;
 use tower::Layer;
 
 use super::tls_peer_verify::extract_sans;
-use super::{MeshPrincipal, principal_from_cert_sans};
+use super::{principal_from_cert_sans, MeshPrincipal};
 use crate::domain::DomainError;
 use std::collections::HashSet;
 
@@ -29,9 +29,7 @@ pub struct PeerClientCert {
 
 impl PeerClientCert {
     pub fn from_der(der: CertificateDer<'static>) -> Self {
-        Self {
-            leaf_der: Arc::from(der.as_ref().to_vec().into_boxed_slice()),
-        }
+        Self { leaf_der: Arc::from(der.as_ref().to_vec().into_boxed_slice()) }
     }
 
     pub fn uri_and_dns_sans(&self) -> Result<(Vec<String>, Vec<String>), DomainError> {

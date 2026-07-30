@@ -49,13 +49,10 @@ use sev_snp_utilities::{AttestationReport, Policy, Requester, Verification};
 /// Pack our SHA-256 measurement (32 bytes) into SNP REPORT_DATA (64 bytes).
 #[cfg(feature = "tee_hw")]
 fn measurement_report_data(measurement: &Measurement) -> Result<[u8; 64], DomainError> {
-    let digest = hex::decode(measurement.as_hex()).map_err(|e| {
-        DomainError::AttestationRejected(format!("SEV-SNP measurement hex decode: {e}"))
-    })?;
+    let digest = hex::decode(measurement.as_hex())
+        .map_err(|e| DomainError::AttestationRejected(format!("SEV-SNP measurement hex decode: {e}")))?;
     if digest.len() != 32 {
-        return Err(DomainError::AttestationRejected(
-            "SEV-SNP measurement must be 32-byte SHA-256".into(),
-        ));
+        return Err(DomainError::AttestationRejected("SEV-SNP measurement must be 32-byte SHA-256".into()));
     }
     let mut user_data = [0u8; 64];
     user_data[..32].copy_from_slice(&digest);
@@ -74,17 +71,15 @@ pub fn issue_report(measurement: &Measurement) -> Result<Vec<u8>, DomainError> {
         }
 
         let user_data = measurement_report_data(measurement)?;
-        let report_bytes = AttestationReport::request_raw(&user_data).map_err(|e| {
-            DomainError::AttestationRejected(format!("SEV-SNP request_raw failed: {e}"))
-        })?;
+        let report_bytes = AttestationReport::request_raw(&user_data)
+            .map_err(|e| DomainError::AttestationRejected(format!("SEV-SNP request_raw failed: {e}")))?;
         Ok(report_bytes)
     }
     #[cfg(not(feature = "tee_hw"))]
     {
         let _ = measurement;
         Err(DomainError::AttestationRejected(
-            "SEV-SNP hardware quote unavailable: rebuild with --features tee_hw (CI fail-closed without HW)"
-                .into(),
+            "SEV-SNP hardware quote unavailable: rebuild with --features tee_hw (CI fail-closed without HW)".into(),
         ))
     }
 }
@@ -99,8 +94,7 @@ pub fn verify_report(measurement: &Measurement, report: &[u8]) -> Result<(), Dom
     {
         let _ = (measurement, report);
         Err(DomainError::AttestationRejected(
-            "SEV-SNP hardware verify unavailable: rebuild with --features tee_hw (CI fail-closed without HW)"
-                .into(),
+            "SEV-SNP hardware verify unavailable: rebuild with --features tee_hw (CI fail-closed without HW)".into(),
         ))
     }
 }
@@ -108,20 +102,15 @@ pub fn verify_report(measurement: &Measurement, report: &[u8]) -> Result<(), Dom
 #[cfg(feature = "tee_hw")]
 fn verify_report_structure(measurement: &Measurement, report: &[u8]) -> Result<(), DomainError> {
     if report.is_empty() {
-        return Err(DomainError::AttestationRejected(
-            "SEV-SNP report empty".into(),
-        ));
+        return Err(DomainError::AttestationRejected("SEV-SNP report empty".into()));
     }
 
-    let parsed = AttestationReport::from_reader(Cursor::new(report)).map_err(|e| {
-        DomainError::AttestationRejected(format!("SEV-SNP report parse failed: {e}"))
-    })?;
+    let parsed = AttestationReport::from_reader(Cursor::new(report))
+        .map_err(|e| DomainError::AttestationRejected(format!("SEV-SNP report parse failed: {e}")))?;
 
     let expected = measurement_report_data(measurement)?;
     if parsed.report_data.len() < 32 || parsed.report_data[..32] != expected[..32] {
-        return Err(DomainError::AttestationRejected(
-            "SEV-SNP REPORT_DATA measurement mismatch".into(),
-        ));
+        return Err(DomainError::AttestationRejected("SEV-SNP REPORT_DATA measurement mismatch".into()));
     }
 
     // Verify certificate chain + ECDSA signature.
@@ -139,9 +128,7 @@ fn verify_report_structure(measurement: &Measurement, report: &[u8]) -> Result<(
     .map_err(|e| DomainError::AttestationRejected(format!("SEV-SNP verify failed: {e}")))?;
 
     if !verified {
-        return Err(DomainError::AttestationRejected(
-            "SEV-SNP report verification failed".into(),
-        ));
+        return Err(DomainError::AttestationRejected("SEV-SNP report verification failed".into()));
     }
 
     Ok(())
@@ -196,12 +183,7 @@ pub struct SevTcbVersion {
 impl SevTcbVersion {
     /// Minimum required TCB version for vault go-live.
     /// Must be updated when AMD releases new firmware with security fixes.
-    pub const MINIMUM: Self = Self {
-        boot_loader: 0,
-        tee: 0,
-        snp: 0,
-        microcode: 0,
-    };
+    pub const MINIMUM: Self = Self { boot_loader: 0, tee: 0, snp: 0, microcode: 0 };
 }
 
 /// Validate SEV-SNP TCB version against minimum required.
@@ -211,10 +193,7 @@ impl SevTcbVersion {
 /// outdated firmware — possible rollback attack.
 ///
 /// Returns `Err(AttestationRejected)` with details if validation fails.
-pub fn validate_tcb_version(
-    reported: &SevTcbVersion,
-    minimum: &SevTcbVersion,
-) -> Result<(), DomainError> {
+pub fn validate_tcb_version(reported: &SevTcbVersion, minimum: &SevTcbVersion) -> Result<(), DomainError> {
     let mut violations: Vec<&str> = Vec::new();
 
     if reported.boot_loader < minimum.boot_loader {

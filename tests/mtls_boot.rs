@@ -16,10 +16,7 @@ fn gen_lab_certs(dir: &Path) {
     std::fs::create_dir_all(dir).expect("tmpdir");
     let status = Command::new("bash")
         .env("VAULT_LAB_MTLS_OUT", dir)
-        .arg(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../scripts/vault/gen_lab_mtls_certs.sh"),
-        )
+        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/vault/gen_lab_mtls_certs.sh"))
         .status()
         .expect("run gen_lab_mtls_certs.sh");
     assert!(status.success(), "cert generation failed: {status}");
@@ -123,9 +120,7 @@ async fn mtls_axum_health_requires_client_cert() {
     let data = root.join("data");
     gen_lab_certs(&certs);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind ephemeral");
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind ephemeral");
     let addr = listener.local_addr().expect("local_addr");
     drop(listener);
 
@@ -134,31 +129,21 @@ async fn mtls_axum_health_requires_client_cert() {
     let app = build_router(runtime.clone());
 
     let (cert, key, ca) = runtime.config.require_mtls_paths().unwrap();
-    let server_config =
-        build_mtls_server_config(Path::new(cert), Path::new(key), Path::new(ca)).unwrap();
-            let rustls_config = axum_server::tls_rustls::RustlsConfig::from_config(server_config);
-            let acceptor = kerosene_vault::adapters::PeerCertAcceptor::new(
-                axum_server::tls_rustls::RustlsAcceptor::new(rustls_config),
-            );
+    let server_config = build_mtls_server_config(Path::new(cert), Path::new(key), Path::new(ca)).unwrap();
+    let rustls_config = axum_server::tls_rustls::RustlsConfig::from_config(server_config);
+    let acceptor =
+        kerosene_vault::adapters::PeerCertAcceptor::new(axum_server::tls_rustls::RustlsAcceptor::new(rustls_config));
 
-            let serve = tokio::spawn(async move {
-                axum_server::bind(addr)
-                    .acceptor(acceptor)
-                    .serve(app.into_make_service())
-                    .await
-                    .expect("serve");
-            });
+    let serve = tokio::spawn(async move {
+        axum_server::bind(addr).acceptor(acceptor).serve(app.into_make_service()).await.expect("serve");
+    });
 
     // Wait briefly for bind.
     tokio::time::sleep(Duration::from_millis(150)).await;
 
-    let client_pem = concat_pem(
-        &certs.join("vault-client.crt"),
-        &certs.join("vault-client.key"),
-    );
+    let client_pem = concat_pem(&certs.join("vault-client.crt"), &certs.join("vault-client.key"));
     let identity = reqwest::Identity::from_pem(&client_pem).expect("client identity");
-    let ca_cert =
-        reqwest::Certificate::from_pem(&std::fs::read(certs.join("ca.crt")).unwrap()).unwrap();
+    let ca_cert = reqwest::Certificate::from_pem(&std::fs::read(certs.join("ca.crt")).unwrap()).unwrap();
     let client = reqwest::Client::builder()
         .add_root_certificate(ca_cert)
         .identity(identity)
@@ -174,17 +159,12 @@ async fn mtls_axum_health_requires_client_cert() {
 
     // No client cert → handshake / request must fail.
     let plain = reqwest::Client::builder()
-        .add_root_certificate(
-            reqwest::Certificate::from_pem(&std::fs::read(certs.join("ca.crt")).unwrap()).unwrap(),
-        )
+        .add_root_certificate(reqwest::Certificate::from_pem(&std::fs::read(certs.join("ca.crt")).unwrap()).unwrap())
         .timeout(Duration::from_secs(3))
         .build()
         .unwrap();
     let no_cert = plain.get(&url).send().await;
-    assert!(
-        no_cert.is_err(),
-        "expected TLS failure without client cert, got {no_cert:?}"
-    );
+    assert!(no_cert.is_err(), "expected TLS failure without client cert, got {no_cert:?}");
 
     serve.abort();
 }
@@ -197,10 +177,7 @@ fn concat_pem(cert: &Path, key: &Path) -> Vec<u8> {
 }
 
 fn tempfile_dir(label: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!(
-        "kerosene-vault-{label}-{}",
-        std::process::id()
-    ));
+    let dir = std::env::temp_dir().join(format!("kerosene-vault-{label}-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
@@ -220,10 +197,7 @@ fn rotate_lab_mtls_refreshes_spiffe_tree_and_java_materials() {
     let status = Command::new("bash")
         .env("VAULT_LAB_MTLS_OUT", &certs)
         .env("VAULT_LAB_MTLS_TTL_HOURS", "24")
-        .arg(
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../../scripts/vault/rotate_lab_mtls_certs.sh"),
-        )
+        .arg(PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../scripts/vault/rotate_lab_mtls_certs.sh"))
         .status()
         .expect("run rotate_lab_mtls_certs.sh");
     assert!(status.success(), "rotation failed: {status}");

@@ -123,21 +123,11 @@ pub struct DrillReport {
 
 impl DrillReport {
     pub fn success(utxos: u64, fees: u64, duration_ms: u64) -> Self {
-        Self {
-            duration_ms,
-            utxos_swept: utxos,
-            fees_spent_sat: fees,
-            errors: vec![],
-        }
+        Self { duration_ms, utxos_swept: utxos, fees_spent_sat: fees, errors: vec![] }
     }
 
     pub fn failed(errors: Vec<String>) -> Self {
-        Self {
-            duration_ms: 0,
-            utxos_swept: 0,
-            fees_spent_sat: 0,
-            errors,
-        }
+        Self { duration_ms: 0, utxos_swept: 0, fees_spent_sat: 0, errors }
     }
 
     pub fn is_success(&self) -> bool {
@@ -217,9 +207,7 @@ impl QuantumMigrationConfig {
         let current_level = self.current_state.level();
         let new_level = new_state.level();
         // Allow single-step or emergency jump Q4→Q5 only.
-        if new_level != current_level + 1
-            && !(current_level == 4 && new_level == 5)
-        {
+        if new_level != current_level + 1 && !(current_level == 4 && new_level == 5) {
             return Err(DomainError::InvalidConstitution(format!(
                 "quantum state can only advance one step at a time: {} → {} invalid (gap > 1)",
                 self.current_state.as_str(),
@@ -247,16 +235,12 @@ impl QuantumMigrationConfig {
         };
 
         // Q1→Q5: must have emergency constitution hash and migration descriptor.
-        if new_state >= QuantumState::Q1PqPrepared
-            && self.emergency_constitution_hash.is_none()
-        {
+        if new_state >= QuantumState::Q1PqPrepared && self.emergency_constitution_hash.is_none() {
             return Err(DomainError::InvalidConstitution(
                 "quantum migration requires emergency_constitution_hash set at Q1+".into(),
             ));
         }
-        if new_state >= QuantumState::Q1PqPrepared
-            && self.migration_destination_descriptor.is_none()
-        {
+        if new_state >= QuantumState::Q1PqPrepared && self.migration_destination_descriptor.is_none() {
             return Err(DomainError::InvalidConstitution(
                 "quantum migration requires migration_destination_descriptor set at Q1+".into(),
             ));
@@ -340,28 +324,20 @@ mod tests {
         cfg.migration_destination_descriptor = Some("wsh(sortedmulti(3,...))".into());
 
         // Valid: Q0→Q1
-        assert!(cfg
-            .validate_transition(QuantumState::Q1PqPrepared, 5, &epoch("2025-01-02"))
-            .is_ok());
+        assert!(cfg.validate_transition(QuantumState::Q1PqPrepared, 5, &epoch("2025-01-02")).is_ok());
 
         // Invalid: Q0→Q2 (skip Q1)
-        assert!(cfg
-            .validate_transition(QuantumState::Q2ElevatedRisk, 5, &epoch("2025-01-02"))
-            .is_err());
+        assert!(cfg.validate_transition(QuantumState::Q2ElevatedRisk, 5, &epoch("2025-01-02")).is_err());
 
         // Invalid: Q0→Q0 (not monotonic)
-        assert!(cfg
-            .validate_transition(QuantumState::Q0Normal, 5, &epoch("2025-01-02"))
-            .is_err());
+        assert!(cfg.validate_transition(QuantumState::Q0Normal, 5, &epoch("2025-01-02")).is_err());
     }
 
     #[test]
     fn transition_requires_descriptor_and_hash() {
         let cfg = QuantumMigrationConfig::default_at(epoch("2025-01-01"));
         // Missing descriptor and emergency hash — should fail.
-        assert!(cfg
-            .validate_transition(QuantumState::Q1PqPrepared, 5, &epoch("2025-01-02"))
-            .is_err());
+        assert!(cfg.validate_transition(QuantumState::Q1PqPrepared, 5, &epoch("2025-01-02")).is_err());
     }
 
     #[test]
@@ -371,9 +347,7 @@ mod tests {
         cfg.emergency_constitution_hash = Some("abc123".into());
         cfg.migration_destination_descriptor = Some("wsh(...)".into());
 
-        let auth = cfg
-            .validate_transition(QuantumState::Q5EmergencySweep, 5, &epoch("2025-01-03"))
-            .unwrap();
+        let auth = cfg.validate_transition(QuantumState::Q5EmergencySweep, 5, &epoch("2025-01-03")).unwrap();
         assert_eq!(auth, TransitionAuth::ReducedQuorum(3));
         // 5 vaults → 2/3 = 3, min 2 → 3
     }
@@ -386,9 +360,7 @@ mod tests {
         cfg.migration_destination_descriptor = Some("wsh(...)".into());
 
         // 3 vaults → 2/3 = 2, min 2 → 2
-        let auth = cfg
-            .validate_transition(QuantumState::Q5EmergencySweep, 3, &epoch("2025-01-03"))
-            .unwrap();
+        let auth = cfg.validate_transition(QuantumState::Q5EmergencySweep, 3, &epoch("2025-01-03")).unwrap();
         assert_eq!(auth, TransitionAuth::ReducedQuorum(2));
     }
 
@@ -407,12 +379,7 @@ mod tests {
         cfg.emergency_constitution_hash = Some("abc123".into());
         cfg.migration_destination_descriptor = Some("wsh(...)".into());
 
-        cfg.apply_transition(
-            QuantumState::Q1PqPrepared,
-            "quorum decision",
-            epoch("2025-01-02"),
-        )
-        .unwrap();
+        cfg.apply_transition(QuantumState::Q1PqPrepared, "quorum decision", epoch("2025-01-02")).unwrap();
 
         assert_eq!(cfg.current_state, QuantumState::Q1PqPrepared);
         assert_eq!(cfg.state_changed_at.as_str(), "2025-01-02");

@@ -19,7 +19,7 @@ use sha2::Sha384;
 use x25519_dalek::{EphemeralSecret, PublicKey as X25519PublicKey};
 
 use crate::application::ports::HybridEnvelopePort;
-use crate::domain::{HybridContext, HybridEnvelope, HybridKeyMaterial, DayEpoch, DomainError};
+use crate::domain::{DayEpoch, DomainError, HybridContext, HybridEnvelope, HybridKeyMaterial};
 
 /// Canonical hybrid envelope adapter.
 pub struct HybridEnvelopeAdapter;
@@ -29,11 +29,7 @@ impl HybridEnvelopeAdapter {
         Self
     }
 
-    fn build_ikm(
-        &self,
-        ss_classical: &[u8; 32],
-        ss_pq: &[u8; 32],
-    ) -> Vec<u8> {
+    fn build_ikm(&self, ss_classical: &[u8; 32], ss_pq: &[u8; 32]) -> Vec<u8> {
         // Length-prefixed concat: ||len32||ss_classical||len32||ss_pq
         let mut ikm = Vec::with_capacity(4 + 32 + 4 + 32);
         ikm.extend_from_slice(&32u32.to_be_bytes());
@@ -43,10 +39,7 @@ impl HybridEnvelopeAdapter {
         ikm
     }
 
-    fn deterministic_encode_context(
-        &self,
-        context: &HybridContext,
-    ) -> Vec<u8> {
+    fn deterministic_encode_context(&self, context: &HybridContext) -> Vec<u8> {
         let domain_bytes = context.domain_separator.as_bytes();
         let suite_bytes = context.suite_id.as_bytes();
         let sender_bytes = context.sender_id.as_str().as_bytes();
@@ -81,11 +74,7 @@ impl HybridEnvelopeAdapter {
 }
 
 impl HybridEnvelopePort for HybridEnvelopeAdapter {
-    fn seal(
-        &self,
-        plaintext: &[u8],
-        context: &HybridContext,
-    ) -> Result<HybridEnvelope, DomainError> {
+    fn seal(&self, plaintext: &[u8], context: &HybridContext) -> Result<HybridEnvelope, DomainError> {
         // 1. Generate X25519 ephemeral keypair
         let mut rng = OsRng;
         let eph_sk = EphemeralSecret::random_from_rng(&mut rng);
@@ -99,11 +88,7 @@ impl HybridEnvelopePort for HybridEnvelopeAdapter {
         ));
     }
 
-    fn open(
-        &self,
-        envelope: &HybridEnvelope,
-        context: &HybridContext,
-    ) -> Result<Vec<u8>, DomainError> {
+    fn open(&self, envelope: &HybridEnvelope, context: &HybridContext) -> Result<Vec<u8>, DomainError> {
         envelope.validate_header()?;
 
         if envelope.key_epoch.as_str() != context.epoch.as_str() {

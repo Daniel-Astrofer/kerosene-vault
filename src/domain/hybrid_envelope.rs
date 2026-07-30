@@ -66,35 +66,22 @@ impl HybridEnvelope {
             )));
         }
         if self.suite_id != Self::SUITE_ID {
-            return Err(DomainError::InvalidIntent(format!(
-                "unknown suite_id: {}",
-                self.suite_id
-            )));
+            return Err(DomainError::InvalidIntent(format!("unknown suite_id: {}", self.suite_id)));
         }
         if self.sender_eph_pk == [0u8; 32] {
-            return Err(DomainError::InvalidIntent(
-                "sender_eph_pk is all-zero".into(),
-            ));
+            return Err(DomainError::InvalidIntent("sender_eph_pk is all-zero".into()));
         }
         if self.kem_ciphertext.is_empty() {
-            return Err(DomainError::InvalidIntent(
-                "kem_ciphertext is empty".into(),
-            ));
+            return Err(DomainError::InvalidIntent("kem_ciphertext is empty".into()));
         }
         if self.ciphertext.is_empty() {
-            return Err(DomainError::InvalidIntent(
-                "ciphertext is empty".into(),
-            ));
+            return Err(DomainError::InvalidIntent("ciphertext is empty".into()));
         }
         if self.classical_signature.is_empty() {
-            return Err(DomainError::InvalidIntent(
-                "classical_signature missing".into(),
-            ));
+            return Err(DomainError::InvalidIntent("classical_signature missing".into()));
         }
         if self.pq_signature.is_empty() {
-            return Err(DomainError::InvalidIntent(
-                "pq_signature missing".into(),
-            ));
+            return Err(DomainError::InvalidIntent("pq_signature missing".into()));
         }
         Ok(())
     }

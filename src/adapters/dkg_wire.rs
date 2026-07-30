@@ -56,12 +56,7 @@ pub enum WireDkgPeerAuth {
     /// Lab: send `X-Vault-Token` over plain HTTP.
     StaticToken(String),
     /// Gate: mTLS client identity; never send static token header.
-    MutualTls {
-        client_cert_path: PathBuf,
-        client_key_path: PathBuf,
-        ca_path: PathBuf,
-        verify: TlsPeerVerifyPolicy,
-    },
+    MutualTls { client_cert_path: PathBuf, client_key_path: PathBuf, ca_path: PathBuf, verify: TlsPeerVerifyPolicy },
 }
 
 impl WireDkgPeerAuth {
@@ -160,13 +155,8 @@ struct SessionInner {
 
 impl SessionInner {
     fn status(&self) -> WireDkgStatus {
-        let verifying_key_hex = self.pubkey_package.as_ref().map(|pk| {
-            hex::encode(
-                pk.verifying_key()
-                    .serialize()
-                    .unwrap_or_default(),
-            )
-        });
+        let verifying_key_hex =
+            self.pubkey_package.as_ref().map(|pk| hex::encode(pk.verifying_key().serialize().unwrap_or_default()));
         WireDkgStatus {
             session_id: self.session_id.clone(),
             phase: self.phase.as_str().to_string(),
@@ -202,9 +192,7 @@ fn build_roster(roster: &[String]) -> Result<BTreeMap<String, Identifier>, Domai
     sorted.sort();
     sorted.dedup();
     if sorted.len() < 2 {
-        return Err(DomainError::ThresholdError(
-            "DKG roster must have >= 2 unique node ids".into(),
-        ));
+        return Err(DomainError::ThresholdError("DKG roster must have >= 2 unique node ids".into()));
     }
     let mut map = BTreeMap::new();
     for (i, node) in sorted.into_iter().enumerate() {
@@ -261,27 +249,14 @@ fn assert_threshold(kp: &KeyPackage, pk: &PublicKeyPackage, min: u16, max: u16) 
     Ok(())
 }
 
-fn build_http_client(
-    auth: &WireDkgPeerAuth,
-    peer_http: &PeerHttpSettings,
-) -> Result<reqwest::Client, DomainError> {
+fn build_http_client(auth: &WireDkgPeerAuth, peer_http: &PeerHttpSettings) -> Result<reqwest::Client, DomainError> {
     let builder = peer_http.apply_builder(reqwest::Client::builder())?;
     match auth {
-        WireDkgPeerAuth::StaticToken(_) => builder
-            .build()
-            .map_err(|e| DomainError::ThresholdError(format!("dkg http client: {e}"))),
-        WireDkgPeerAuth::MutualTls {
-            client_cert_path,
-            client_key_path,
-            ca_path,
-            verify,
-        } => {
-            let tls = build_mtls_rustls_client_config(
-                client_cert_path,
-                client_key_path,
-                ca_path,
-                verify,
-            )?;
+        WireDkgPeerAuth::StaticToken(_) => {
+            builder.build().map_err(|e| DomainError::ThresholdError(format!("dkg http client: {e}")))
+        }
+        WireDkgPeerAuth::MutualTls { client_cert_path, client_key_path, ca_path, verify } => {
+            let tls = build_mtls_rustls_client_config(client_cert_path, client_key_path, ca_path, verify)?;
             builder
                 .use_preconfigured_tls(tls)
                 .build()
@@ -322,12 +297,7 @@ impl WireDkgHub {
         peer_addrs: BTreeMap<String, String>,
         peer_auth: WireDkgPeerAuth,
     ) -> Result<Self, DomainError> {
-        Self::with_peer_http(
-            local_node_id,
-            peer_addrs,
-            peer_auth,
-            PeerHttpSettings::clearnet_defaults(),
-        )
+        Self::with_peer_http(local_node_id, peer_addrs, peer_auth, PeerHttpSettings::clearnet_defaults())
     }
 
     pub fn with_peer_http(
@@ -354,12 +324,8 @@ impl WireDkgHub {
         peer_addrs: BTreeMap<String, String>,
         token: impl Into<String>,
     ) -> Self {
-        Self::new(
-            local_node_id,
-            peer_addrs,
-            WireDkgPeerAuth::StaticToken(token.into()),
-        )
-        .expect("static_token dkg http client")
+        Self::new(local_node_id, peer_addrs, WireDkgPeerAuth::StaticToken(token.into()))
+            .expect("static_token dkg http client")
     }
 
     pub fn peer_auth_mode(&self) -> &'static str {
@@ -370,17 +336,15 @@ impl WireDkgHub {
         }
     }
 
-    pub fn completed_local(
-        &self,
-    ) -> Option<(KeyPackage, PublicKeyPackage, u16)> {
+    pub fn completed_local(&self) -> Option<(KeyPackage, PublicKeyPackage, u16)> {
         self.completed.lock().expect("dkg completed").clone()
     }
 
     pub fn status(&self, session_id: &str) -> Result<WireDkgStatus, DomainError> {
         let g = self.sessions.lock().expect("dkg sessions");
-        let s = g.get(session_id).ok_or_else(|| {
-            DomainError::ThresholdError(format!("unknown DKG session: {session_id}"))
-        })?;
+        let s = g
+            .get(session_id)
+            .ok_or_else(|| DomainError::ThresholdError(format!("unknown DKG session: {session_id}")))?;
         Ok(s.status())
     }
 
@@ -400,8 +364,7 @@ impl WireDkgHub {
                 req.max_signers
             )));
         }
-        let transcript_hex =
-            session_transcript(&req.session_id, req.max_signers, req.min_signers, &roster);
+        let transcript_hex = session_transcript(&req.session_id, req.max_signers, req.min_signers, &roster);
 
         {
             let g = self.sessions.lock().expect("dkg sessions");
@@ -413,21 +376,16 @@ impl WireDkgHub {
                     || existing.roster != roster
                 {
                     return Err(DomainError::ThresholdError(
-                        "DKG participants/threshold frozen at round1; constitution drift rejected"
-                            .into(),
+                        "DKG participants/threshold frozen at round1; constitution drift rejected".into(),
                     ));
                 }
                 let local_identifier = existing.local_identifier;
                 let package = existing
                     .round1_packages
                     .get(&local_identifier)
-                    .ok_or_else(|| {
-                        DomainError::ThresholdError("missing local round1 package".into())
-                    })?;
+                    .ok_or_else(|| DomainError::ThresholdError("missing local round1 package".into()))?;
                 let package_hex = hex::encode(
-                    package
-                        .serialize()
-                        .map_err(|e| DomainError::ThresholdError(format!("round1 serialize: {e}")))?,
+                    package.serialize().map_err(|e| DomainError::ThresholdError(format!("round1 serialize: {e}")))?,
                 );
                 let wire = Round1WireMessage {
                     session_id: existing.session_id.clone(),
@@ -444,21 +402,15 @@ impl WireDkgHub {
         }
 
         let local_identifier = *roster.get(&self.local_node_id).ok_or_else(|| {
-            DomainError::ThresholdError(format!(
-                "local node {} missing from DKG roster",
-                self.local_node_id
-            ))
+            DomainError::ThresholdError(format!("local node {} missing from DKG roster", self.local_node_id))
         })?;
 
         let mut rng = OsRng;
-        let (secret, package) =
-            frost::keys::dkg::part1(local_identifier, req.max_signers, req.min_signers, &mut rng)
-                .map_err(|e| DomainError::ThresholdError(format!("frost dkg part1: {e}")))?;
+        let (secret, package) = frost::keys::dkg::part1(local_identifier, req.max_signers, req.min_signers, &mut rng)
+            .map_err(|e| DomainError::ThresholdError(format!("frost dkg part1: {e}")))?;
 
         let package_hex = hex::encode(
-            package
-                .serialize()
-                .map_err(|e| DomainError::ThresholdError(format!("round1 serialize: {e}")))?,
+            package.serialize().map_err(|e| DomainError::ThresholdError(format!("round1 serialize: {e}")))?,
         );
 
         let mut round1_packages = BTreeMap::new();
@@ -494,10 +446,7 @@ impl WireDkgHub {
             envelope: None,
         };
         let status = inner.status();
-        self.sessions
-            .lock()
-            .expect("dkg sessions")
-            .insert(req.session_id, inner);
+        self.sessions.lock().expect("dkg sessions").insert(req.session_id, inner);
         Ok((status, wire))
     }
 
@@ -505,18 +454,12 @@ impl WireDkgHub {
     pub fn ingest_round1(&self, msg: Round1WireMessage) -> Result<WireDkgStatus, DomainError> {
         // Validate hybrid envelope if present (fail-closed on invalid envelope).
         if let Some(ref env) = msg.envelope {
-            env.validate_header().map_err(|e| {
-                DomainError::ThresholdError(format!(
-                    "round1 hybrid envelope validation failed: {e}"
-                ))
-            })?;
+            env.validate_header()
+                .map_err(|e| DomainError::ThresholdError(format!("round1 hybrid envelope validation failed: {e}")))?;
         }
         let mut g = self.sessions.lock().expect("dkg sessions");
         let session = g.get_mut(&msg.session_id).ok_or_else(|| {
-            DomainError::ThresholdError(format!(
-                "unknown DKG session {} (start locally first)",
-                msg.session_id
-            ))
+            DomainError::ThresholdError(format!("unknown DKG session {} (start locally first)", msg.session_id))
         })?;
         if session.phase == WireDkgPhase::Complete {
             return Ok(session.status());
@@ -525,14 +468,11 @@ impl WireDkgHub {
         // Threshold / min_signers drift (ToB 2024 silent bump).
         if msg.max_signers != session.max_signers || msg.min_signers != session.min_signers {
             return Err(DomainError::ThresholdError(
-                "round1 threshold/min_signers drift rejected (ToB); constitution frozen at start"
-                    .into(),
+                "round1 threshold/min_signers drift rejected (ToB); constitution frozen at start".into(),
             ));
         }
         if msg.transcript_hex != session.transcript_hex {
-            return Err(DomainError::ThresholdError(
-                "round1 transcript binding mismatch; abort DKG".into(),
-            ));
+            return Err(DomainError::ThresholdError("round1 transcript binding mismatch; abort DKG".into()));
         }
 
         let sender_id = identifier_from_u16(msg.sender_identifier)?;
@@ -544,10 +484,7 @@ impl WireDkgHub {
             )));
         }
         if expected != Some(sender_id) {
-            return Err(DomainError::ThresholdError(format!(
-                "sender {} identifier mismatch",
-                msg.sender_node_id
-            )));
+            return Err(DomainError::ThresholdError(format!("sender {} identifier mismatch", msg.sender_node_id)));
         }
         if sender_id == session.local_identifier {
             return Ok(session.status());
@@ -558,13 +495,11 @@ impl WireDkgHub {
             if session.round1_packages.contains_key(&sender_id) {
                 return Ok(session.status());
             }
-            return Err(DomainError::ThresholdError(
-                "late join rejected: participant set frozen after round1".into(),
-            ));
+            return Err(DomainError::ThresholdError("late join rejected: participant set frozen after round1".into()));
         }
 
-        let bytes = hex::decode(&msg.package_hex)
-            .map_err(|e| DomainError::ThresholdError(format!("round1 hex: {e}")))?;
+        let bytes =
+            hex::decode(&msg.package_hex).map_err(|e| DomainError::ThresholdError(format!("round1 hex: {e}")))?;
         let package = round1::Package::deserialize(&bytes)
             .map_err(|e| DomainError::ThresholdError(format!("round1 deserialize: {e}")))?;
         session.round1_packages.insert(sender_id, package);
@@ -579,10 +514,8 @@ impl WireDkgHub {
     }
 
     fn advance_to_round2(session: &mut SessionInner) -> Result<(), DomainError> {
-        let secret = session
-            .round1_secret
-            .take()
-            .ok_or_else(|| DomainError::ThresholdError("missing round1 secret".into()))?;
+        let secret =
+            session.round1_secret.take().ok_or_else(|| DomainError::ThresholdError("missing round1 secret".into()))?;
         let mut received = session.round1_packages.clone();
         received.remove(&session.local_identifier);
         let (r2_secret, outbound) = frost::keys::dkg::part2(secret, &received)
@@ -597,9 +530,9 @@ impl WireDkgHub {
     /// Packages this vault must send for round2 (after advance).
     pub fn take_round2_outbound(&self, session_id: &str) -> Result<Vec<Round2WireMessage>, DomainError> {
         let mut g = self.sessions.lock().expect("dkg sessions");
-        let session = g.get_mut(session_id).ok_or_else(|| {
-            DomainError::ThresholdError(format!("unknown DKG session: {session_id}"))
-        })?;
+        let session = g
+            .get_mut(session_id)
+            .ok_or_else(|| DomainError::ThresholdError(format!("unknown DKG session: {session_id}")))?;
         let mut out = Vec::new();
         let outbound = std::mem::take(&mut session.round2_outbound);
         for (recipient_id, package) in outbound {
@@ -608,13 +541,9 @@ impl WireDkgHub {
                 .iter()
                 .find(|(_, id)| **id == recipient_id)
                 .map(|(n, _)| n.clone())
-                .ok_or_else(|| {
-                    DomainError::ThresholdError(format!("unknown recipient id {recipient_id:?}"))
-                })?;
+                .ok_or_else(|| DomainError::ThresholdError(format!("unknown recipient id {recipient_id:?}")))?;
             let package_hex = hex::encode(
-                package
-                    .serialize()
-                    .map_err(|e| DomainError::ThresholdError(format!("round2 serialize: {e}")))?,
+                package.serialize().map_err(|e| DomainError::ThresholdError(format!("round2 serialize: {e}")))?,
             );
             out.push(Round2WireMessage {
                 session_id: session_id.to_string(),
@@ -633,28 +562,21 @@ impl WireDkgHub {
     pub fn ingest_round2(&self, msg: Round2WireMessage) -> Result<WireDkgStatus, DomainError> {
         // Validate hybrid envelope if present (fail-closed).
         if let Some(ref env) = msg.envelope {
-            env.validate_header().map_err(|e| {
-                DomainError::ThresholdError(format!(
-                    "round2 hybrid envelope validation failed: {e}"
-                ))
-            })?;
+            env.validate_header()
+                .map_err(|e| DomainError::ThresholdError(format!("round2 hybrid envelope validation failed: {e}")))?;
         }
         let mut g = self.sessions.lock().expect("dkg sessions");
-        let session = g.get_mut(&msg.session_id).ok_or_else(|| {
-            DomainError::ThresholdError(format!("unknown DKG session: {}", msg.session_id))
-        })?;
+        let session = g
+            .get_mut(&msg.session_id)
+            .ok_or_else(|| DomainError::ThresholdError(format!("unknown DKG session: {}", msg.session_id)))?;
         if session.phase == WireDkgPhase::Complete {
             return Ok(session.status());
         }
         if msg.transcript_hex != session.transcript_hex {
-            return Err(DomainError::ThresholdError(
-                "round2 transcript binding mismatch; abort DKG".into(),
-            ));
+            return Err(DomainError::ThresholdError("round2 transcript binding mismatch; abort DKG".into()));
         }
         if msg.recipient_node_id != session.local_node_id {
-            return Err(DomainError::ThresholdError(
-                "round2 package not addressed to this vault".into(),
-            ));
+            return Err(DomainError::ThresholdError("round2 package not addressed to this vault".into()));
         }
         let sender_id = identifier_from_u16(msg.sender_identifier)?;
         let expected = session.roster.get(&msg.sender_node_id).copied();
@@ -670,8 +592,8 @@ impl WireDkgHub {
                 msg.sender_node_id
             )));
         }
-        let bytes = hex::decode(&msg.package_hex)
-            .map_err(|e| DomainError::ThresholdError(format!("round2 hex: {e}")))?;
+        let bytes =
+            hex::decode(&msg.package_hex).map_err(|e| DomainError::ThresholdError(format!("round2 hex: {e}")))?;
         let package = round2::Package::deserialize(&bytes)
             .map_err(|e| DomainError::ThresholdError(format!("round2 deserialize: {e}")))?;
         session.round2_inbox.insert(sender_id, package);
@@ -685,9 +607,9 @@ impl WireDkgHub {
         share_store: &dyn ShareStorePort,
     ) -> Result<WireDkgStatus, DomainError> {
         let mut g = self.sessions.lock().expect("dkg sessions");
-        let session = g.get_mut(session_id).ok_or_else(|| {
-            DomainError::ThresholdError(format!("unknown DKG session: {session_id}"))
-        })?;
+        let session = g
+            .get_mut(session_id)
+            .ok_or_else(|| DomainError::ThresholdError(format!("unknown DKG session: {session_id}")))?;
         if session.phase == WireDkgPhase::Complete {
             return Ok(session.status());
         }
@@ -704,24 +626,15 @@ impl WireDkgHub {
             .ok_or_else(|| DomainError::ThresholdError("missing round2 secret".into()))?;
         let mut r1_received = session.round1_packages.clone();
         r1_received.remove(&session.local_identifier);
-        let (kp, pk) =
-            frost::keys::dkg::part3(r2_secret, &r1_received, &session.round2_inbox).map_err(
-                |e| DomainError::ThresholdError(format!("frost dkg part3: {e}")),
-            )?;
+        let (kp, pk) = frost::keys::dkg::part3(r2_secret, &r1_received, &session.round2_inbox)
+            .map_err(|e| DomainError::ThresholdError(format!("frost dkg part3: {e}")))?;
         assert_threshold(&kp, &pk, session.min_signers, session.max_signers)?;
 
         // Persist only this vault's share (+ group pubkey for verify).
-        let bytes = kp
-            .serialize()
-            .map_err(|e| DomainError::ThresholdError(format!("key package serialize: {e}")))?;
-        let share_id = format!(
-            "frost-dkg-id-{}",
-            hex::encode(session.local_identifier.serialize())
-        );
+        let bytes = kp.serialize().map_err(|e| DomainError::ThresholdError(format!("key package serialize: {e}")))?;
+        let share_id = format!("frost-dkg-id-{}", hex::encode(session.local_identifier.serialize()));
         share_store.put_share(&share_id, &bytes)?;
-        let pk_bytes = pk
-            .serialize()
-            .map_err(|e| DomainError::ThresholdError(format!("pubkey serialize: {e}")))?;
+        let pk_bytes = pk.serialize().map_err(|e| DomainError::ThresholdError(format!("pubkey serialize: {e}")))?;
         share_store.put_share("frost-dkg-pubkey", &pk_bytes)?;
 
         session.key_package = Some(kp.clone());
@@ -729,8 +642,7 @@ impl WireDkgHub {
         session.phase = WireDkgPhase::Complete;
         session.round2_secret = None;
 
-        *self.completed.lock().expect("dkg completed") =
-            Some((kp, pk, session.min_signers));
+        *self.completed.lock().expect("dkg completed") = Some((kp, pk, session.min_signers));
         Ok(session.status())
     }
 
@@ -749,20 +661,13 @@ impl WireDkgHub {
                 continue;
             }
             let url = format!("{}/v1/dkg/round1", peer_base_url(addr, mtls));
-            let res = post_json_with_retry(
-                &self.http,
-                &self.peer_http,
-                &url,
-                |req| self.apply_peer_auth_headers(req),
-                msg,
-            )
-            .await
-            .map_err(|e| DomainError::ThresholdError(format!("round1 fanout to {peer_id}: {e}")))?;
+            let res =
+                post_json_with_retry(&self.http, &self.peer_http, &url, |req| self.apply_peer_auth_headers(req), msg)
+                    .await
+                    .map_err(|e| DomainError::ThresholdError(format!("round1 fanout to {peer_id}: {e}")))?;
             if !res.status().is_success() {
                 let body = res.text().await.unwrap_or_default();
-                return Err(DomainError::ThresholdError(format!(
-                    "round1 fanout to {peer_id} failed: {body}"
-                )));
+                return Err(DomainError::ThresholdError(format!("round1 fanout to {peer_id} failed: {body}")));
             }
         }
         Ok(())
@@ -771,27 +676,17 @@ impl WireDkgHub {
     pub async fn fanout_round2(&self, messages: &[Round2WireMessage]) -> Result<(), DomainError> {
         let mtls = self.peer_auth.is_mtls();
         for msg in messages {
-            let addr = self.peer_addrs.get(&msg.recipient_node_id).ok_or_else(|| {
-                DomainError::ThresholdError(format!(
-                    "no peer addr for {}",
-                    msg.recipient_node_id
-                ))
-            })?;
+            let addr = self
+                .peer_addrs
+                .get(&msg.recipient_node_id)
+                .ok_or_else(|| DomainError::ThresholdError(format!("no peer addr for {}", msg.recipient_node_id)))?;
             let url = format!("{}/v1/dkg/round2", peer_base_url(addr, mtls));
-            let res = post_json_with_retry(
-                &self.http,
-                &self.peer_http,
-                &url,
-                |req| self.apply_peer_auth_headers(req),
-                msg,
-            )
-            .await
-            .map_err(|e| {
-                DomainError::ThresholdError(format!(
-                    "round2 fanout to {}: {e}",
-                    msg.recipient_node_id
-                ))
-            })?;
+            let res =
+                post_json_with_retry(&self.http, &self.peer_http, &url, |req| self.apply_peer_auth_headers(req), msg)
+                    .await
+                    .map_err(|e| {
+                        DomainError::ThresholdError(format!("round2 fanout to {}: {e}", msg.recipient_node_id))
+                    })?;
             if !res.status().is_success() {
                 let body = res.text().await.unwrap_or_default();
                 return Err(DomainError::ThresholdError(format!(
@@ -821,18 +716,14 @@ impl crate::application::DkgPort for DistributedWireDkgPort {
 mod tests {
     use super::*;
     use crate::adapters::{
-        AeadDiskShareStore, FrostSignOrchestrator, LedgerDayEpochStub, PersistedAntiNonce,
-        SystemClock,
+        AeadDiskShareStore, FrostSignOrchestrator, LedgerDayEpochStub, PersistedAntiNonce, SystemClock,
     };
     use std::sync::Arc;
 
     struct TempDir(std::path::PathBuf);
     impl TempDir {
         fn new(name: &str) -> Self {
-            let p = std::env::temp_dir().join(format!(
-                "kv-wire-dkg-{name}-{}",
-                std::process::id()
-            ));
+            let p = std::env::temp_dir().join(format!("kv-wire-dkg-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&p);
             std::fs::create_dir_all(&p).unwrap();
             Self(p)
@@ -845,19 +736,9 @@ mod tests {
     }
 
     fn three_hubs() -> (Vec<WireDkgHub>, Vec<String>, DkgStartRequest) {
-        let roster = vec![
-            "vault-1".into(),
-            "vault-2".into(),
-            "vault-3".into(),
-        ];
+        let roster = vec!["vault-1".into(), "vault-2".into(), "vault-3".into()];
         let hubs: Vec<WireDkgHub> = (1..=3)
-            .map(|i| {
-                WireDkgHub::with_static_token(
-                    format!("vault-{i}"),
-                    BTreeMap::new(),
-                    "lab-token",
-                )
-            })
+            .map(|i| WireDkgHub::with_static_token(format!("vault-{i}"), BTreeMap::new(), "lab-token"))
             .collect();
         let start = DkgStartRequest {
             session_id: "sess-wire-1".into(),
@@ -902,10 +783,7 @@ mod tests {
         let mut key_packages = BTreeMap::new();
         let mut pubkey = None;
         for (i, h) in hubs.iter().enumerate() {
-            let store = AeadDiskShareStore::new(
-                tmp.0.join(format!("shares-{i}")),
-                "lab-pass",
-            );
+            let store = AeadDiskShareStore::new(tmp.0.join(format!("shares-{i}")), "lab-pass");
             let st = h.finalize_round3(&session, &store).unwrap();
             assert!(st.complete);
             let (kp, pk, min) = h.completed_local().unwrap();
@@ -918,16 +796,8 @@ mod tests {
 
         let anti = PersistedAntiNonce::open(tmp.0.join("sessions.log")).unwrap();
         let rotation = LedgerDayEpochStub::new(Arc::new(SystemClock));
-        let orch = FrostSignOrchestrator::new(
-            key_packages,
-            pubkey.unwrap(),
-            2,
-            Box::new(anti),
-            Arc::new(rotation),
-        );
-        let r = orch
-            .sign_lab_quorum("wire-sign-1", b"over-wire-dkg")
-            .unwrap();
+        let orch = FrostSignOrchestrator::new(key_packages, pubkey.unwrap(), 2, Box::new(anti), Arc::new(rotation));
+        let r = orch.sign_lab_quorum("wire-sign-1", b"over-wire-dkg").unwrap();
         assert_eq!(r.participants, 2);
     }
 
@@ -941,10 +811,7 @@ mod tests {
         msg.transcript_hex = "deadbeef".into();
         let err = hubs[1].ingest_round1(msg).unwrap_err();
         let s = err.to_string();
-        assert!(
-            s.contains("threshold") || s.contains("transcript") || s.contains("drift"),
-            "unexpected err: {s}"
-        );
+        assert!(s.contains("threshold") || s.contains("transcript") || s.contains("drift"), "unexpected err: {s}");
     }
 
     #[test]
@@ -963,28 +830,19 @@ mod tests {
         evil.sender_node_id = "vault-evil".into();
         evil.sender_identifier = 99;
         let err = hubs[0].ingest_round1(evil).unwrap_err();
-        assert!(
-            err.to_string().contains("participant") || err.to_string().contains("late join"),
-            "{err}"
-        );
+        assert!(err.to_string().contains("participant") || err.to_string().contains("late join"), "{err}");
 
         let mut late = r1[1].clone();
         late.package_hex = "00".repeat(64);
         late.sender_identifier = 3;
         let err2 = hubs[0].ingest_round1(late).unwrap_err();
-        assert!(
-            err2.to_string().contains("mismatch") || err2.to_string().contains("late"),
-            "{err2}"
-        );
+        assert!(err2.to_string().contains("mismatch") || err2.to_string().contains("late"), "{err2}");
 
         let mut bumped = start.clone();
         bumped.roster.push("vault-4".into());
         bumped.max_signers = 4;
         let err3 = hubs[0].start(bumped).unwrap_err();
-        assert!(
-            err3.to_string().contains("frozen") || err3.to_string().contains("drift"),
-            "{err3}"
-        );
+        assert!(err3.to_string().contains("frozen") || err3.to_string().contains("drift"), "{err3}");
     }
 
     #[test]
@@ -1011,18 +869,9 @@ mod tests {
 
     #[test]
     fn peer_base_url_forces_https_for_mtls() {
-        assert_eq!(
-            peer_base_url("vault-2:7701", true),
-            "https://vault-2:7701"
-        );
-        assert_eq!(
-            peer_base_url("http://vault-2:7701", true),
-            "https://vault-2:7701"
-        );
-        assert_eq!(
-            peer_base_url("vault-2:7701", false),
-            "http://vault-2:7701"
-        );
+        assert_eq!(peer_base_url("vault-2:7701", true), "https://vault-2:7701");
+        assert_eq!(peer_base_url("http://vault-2:7701", true), "https://vault-2:7701");
+        assert_eq!(peer_base_url("vault-2:7701", false), "http://vault-2:7701");
     }
 
     #[test]

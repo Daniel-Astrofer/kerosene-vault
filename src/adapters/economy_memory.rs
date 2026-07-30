@@ -15,8 +15,8 @@ use super::sync_util::lock_mutex;
 
 use crate::application::ports::EconomyPort;
 use crate::domain::{
-    DomainError, EconomyState, GovernanceAccrual, GovernanceJobKind, GovernanceRewardConfig,
-    MinerOperator, NodeId, ProfitSplitAccrual, ProfitSplits, RewardPolicy,
+    DomainError, EconomyState, GovernanceAccrual, GovernanceJobKind, GovernanceRewardConfig, MinerOperator, NodeId,
+    ProfitSplitAccrual, ProfitSplits, RewardPolicy,
 };
 
 pub struct InMemoryEconomy {
@@ -25,9 +25,7 @@ pub struct InMemoryEconomy {
 
 impl InMemoryEconomy {
     pub fn new(state: EconomyState) -> Self {
-        Self {
-            inner: Mutex::new(state),
-        }
+        Self { inner: Mutex::new(state) }
     }
 
     pub fn open() -> Self {
@@ -48,11 +46,7 @@ impl EconomyPort for InMemoryEconomy {
         Ok(lock_mutex(&self.inner, "economy")?.accrue_from_profit(profit_sats, p_reward_bps))
     }
 
-    fn accrue_profit_splits(
-        &self,
-        profit_sats: u64,
-        splits: &ProfitSplits,
-    ) -> Result<ProfitSplitAccrual, DomainError> {
+    fn accrue_profit_splits(&self, profit_sats: u64, splits: &ProfitSplits) -> Result<ProfitSplitAccrual, DomainError> {
         lock_mutex(&self.inner, "economy")?.accrue_profit_splits(profit_sats, splits)
     }
 
@@ -62,14 +56,10 @@ impl EconomyPort for InMemoryEconomy {
         participants: &[NodeId],
         config: &GovernanceRewardConfig,
     ) -> Result<GovernanceAccrual, DomainError> {
-        Ok(lock_mutex(&self.inner, "economy")?
-            .accrue_governance_job(job, participants, config))
+        Ok(lock_mutex(&self.inner, "economy")?.accrue_governance_job(job, participants, config))
     }
 
-    fn propose_equal_payouts(
-        &self,
-        amount: u64,
-    ) -> Result<Vec<crate::domain::MinerPayoutShare>, DomainError> {
+    fn propose_equal_payouts(&self, amount: u64) -> Result<Vec<crate::domain::MinerPayoutShare>, DomainError> {
         lock_mutex(&self.inner, "economy")?.propose_equal_payouts(amount)
     }
 
@@ -92,15 +82,8 @@ pub struct PersistedEconomy {
 impl PersistedEconomy {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, DomainError> {
         let path = path.into();
-        let state = if path.exists() {
-            load_economy(&path)?
-        } else {
-            EconomyState::new_open()
-        };
-        let eco = Self {
-            path,
-            inner: Mutex::new(state),
-        };
+        let state = if path.exists() { load_economy(&path)? } else { EconomyState::new_open() };
+        let eco = Self { path, inner: Mutex::new(state) };
         eco.persist()?;
         Ok(eco)
     }
@@ -108,9 +91,8 @@ impl PersistedEconomy {
     fn persist(&self) -> Result<(), DomainError> {
         let state = lock_mutex(&self.inner, "economy")?.clone();
         let json = serialize_economy(&state);
-        atomic_write_fsync(&self.path, json.as_bytes()).map_err(|e| {
-            DomainError::ThresholdError(format!("economy persist: {e}"))
-        })
+        atomic_write_fsync(&self.path, json.as_bytes())
+            .map_err(|e| DomainError::ThresholdError(format!("economy persist: {e}")))
     }
 }
 
@@ -130,11 +112,7 @@ impl EconomyPort for PersistedEconomy {
         Ok(got)
     }
 
-    fn accrue_profit_splits(
-        &self,
-        profit_sats: u64,
-        splits: &ProfitSplits,
-    ) -> Result<ProfitSplitAccrual, DomainError> {
+    fn accrue_profit_splits(&self, profit_sats: u64, splits: &ProfitSplits) -> Result<ProfitSplitAccrual, DomainError> {
         let got = lock_mutex(&self.inner, "economy")?.accrue_profit_splits(profit_sats, splits)?;
         self.persist()?;
         Ok(got)
@@ -146,16 +124,12 @@ impl EconomyPort for PersistedEconomy {
         participants: &[NodeId],
         config: &GovernanceRewardConfig,
     ) -> Result<GovernanceAccrual, DomainError> {
-        let got = lock_mutex(&self.inner, "economy")?
-            .accrue_governance_job(job, participants, config);
+        let got = lock_mutex(&self.inner, "economy")?.accrue_governance_job(job, participants, config);
         self.persist()?;
         Ok(got)
     }
 
-    fn propose_equal_payouts(
-        &self,
-        amount: u64,
-    ) -> Result<Vec<crate::domain::MinerPayoutShare>, DomainError> {
+    fn propose_equal_payouts(&self, amount: u64) -> Result<Vec<crate::domain::MinerPayoutShare>, DomainError> {
         lock_mutex(&self.inner, "economy")?.propose_equal_payouts(amount)
     }
 
@@ -191,14 +165,8 @@ fn serialize_economy(state: &EconomyState) -> String {
         .iter()
         .map(|(k, v)| format!(r#"{{"node_id":"{}","sats":{}}}"#, escape(k), v))
         .collect();
-    let last_at = state
-        .last_miner_payout_at_secs
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| "null".into());
-    let last_ep = state
-        .last_miner_payout_epoch
-        .map(|n| n.to_string())
-        .unwrap_or_else(|| "null".into());
+    let last_at = state.last_miner_payout_at_secs.map(|n| n.to_string()).unwrap_or_else(|| "null".into());
+    let last_ep = state.last_miner_payout_epoch.map(|n| n.to_string()).unwrap_or_else(|| "null".into());
     format!(
         r#"{{"version":1,"miner_pool_sats":{},"channels_pool_sats":{},"infra_pool_sats":{},"accrued_profit_sats":{},"pending_governance_reward_sats":{},"crypto_suite_id_pq":"{}","last_miner_payout_at_secs":{},"last_miner_payout_epoch":{},"policy":{{"min_uptime_bps_30d":{},"min_attestation_streak_days":{},"min_bond_sats":{},"waiting_pool_share_bps":{}}},"operators":[{}],"governance_credits":[{}]}}"#,
         state.miner_pool_sats,
@@ -219,19 +187,15 @@ fn serialize_economy(state: &EconomyState) -> String {
 }
 
 fn load_economy(path: &Path) -> Result<EconomyState, DomainError> {
-    let raw = fs::read_to_string(path).map_err(|e| {
-        DomainError::ThresholdError(format!("economy read: {e}"))
-    })?;
-    let v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
-        DomainError::ThresholdError(format!("economy json: {e}"))
-    })?;
+    let raw = fs::read_to_string(path).map_err(|e| DomainError::ThresholdError(format!("economy read: {e}")))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| DomainError::ThresholdError(format!("economy json: {e}")))?;
     let mut state = EconomyState::new_open();
     state.miner_pool_sats = v["miner_pool_sats"].as_u64().unwrap_or(0);
     state.channels_pool_sats = v["channels_pool_sats"].as_u64().unwrap_or(0);
     state.infra_pool_sats = v["infra_pool_sats"].as_u64().unwrap_or(0);
     state.accrued_profit_sats = v["accrued_profit_sats"].as_u64().unwrap_or(0);
-    state.pending_governance_reward_sats =
-        v["pending_governance_reward_sats"].as_u64().unwrap_or(0);
+    state.pending_governance_reward_sats = v["pending_governance_reward_sats"].as_u64().unwrap_or(0);
     if let Some(pq) = v["crypto_suite_id_pq"].as_str() {
         state.crypto_suite_id_pq = pq.to_string();
     }
@@ -240,9 +204,7 @@ fn load_economy(path: &Path) -> Result<EconomyState, DomainError> {
     if let Some(p) = v.get("policy") {
         state.policy = RewardPolicy {
             min_uptime_bps_30d: p["min_uptime_bps_30d"].as_u64().unwrap_or(9_500) as u32,
-            min_attestation_streak_days: p["min_attestation_streak_days"]
-                .as_u64()
-                .unwrap_or(1) as u32,
+            min_attestation_streak_days: p["min_attestation_streak_days"].as_u64().unwrap_or(1) as u32,
             min_bond_sats: p["min_bond_sats"].as_u64().unwrap_or(0),
             waiting_pool_share_bps: p["waiting_pool_share_bps"].as_u64().unwrap_or(0) as u32,
         };
@@ -255,10 +217,7 @@ fn load_economy(path: &Path) -> Result<EconomyState, DomainError> {
             };
             let _ = state.upsert_operator(MinerOperator {
                 node_id,
-                payout_destination: o["payout_destination"]
-                    .as_str()
-                    .unwrap_or("")
-                    .to_string(),
+                payout_destination: o["payout_destination"].as_str().unwrap_or("").to_string(),
                 uptime_bps_30d: o["uptime_bps_30d"].as_u64().unwrap_or(0) as u32,
                 attestation_streak_days: o["attestation_streak_days"].as_u64().unwrap_or(0) as u32,
                 bond_sats: o["bond_sats"].as_u64().unwrap_or(0),
@@ -290,11 +249,7 @@ mod tests {
     struct TempProbe(PathBuf);
     impl TempProbe {
         fn new(tag: &str) -> Self {
-            let dir = std::env::temp_dir().join(format!(
-                "kerosene-economy-persist-{}-{}",
-                tag,
-                std::process::id()
-            ));
+            let dir = std::env::temp_dir().join(format!("kerosene-economy-persist-{}-{}", tag, std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             fs::create_dir_all(&dir).unwrap();
             Self(dir)

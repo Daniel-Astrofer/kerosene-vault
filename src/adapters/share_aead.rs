@@ -122,13 +122,7 @@ pub struct ShareEnvelope {
 impl ShareEnvelope {
     pub const CURRENT_FORMAT: u16 = 1;
 
-    pub fn new(
-        suite_id: &str,
-        share_id: &str,
-        node_id: &str,
-        key_epoch: &str,
-        share_kind: &str,
-    ) -> Self {
+    pub fn new(suite_id: &str, share_id: &str, node_id: &str, key_epoch: &str, share_kind: &str) -> Self {
         Self {
             format_version: Self::CURRENT_FORMAT,
             suite_id: suite_id.to_string(),
@@ -147,8 +141,7 @@ impl ShareEnvelope {
     }
 
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, DomainError> {
-        serde_json::from_slice(bytes)
-            .map_err(|e| DomainError::ShareStoreForbidden(format!("share envelope: {e}")))
+        serde_json::from_slice(bytes).map_err(|e| DomainError::ShareStoreForbidden(format!("share envelope: {e}")))
     }
 }
 
@@ -163,16 +156,8 @@ impl AeadDiskShareStore {
         Self::with_tpm_seal(root, passphrase, false)
     }
 
-    pub fn with_tpm_seal(
-        root: impl Into<PathBuf>,
-        passphrase: impl Into<String>,
-        tpm_sealed_passphrase: bool,
-    ) -> Self {
-        Self {
-            root: root.into(),
-            passphrase: SecretString::from(passphrase.into()),
-            tpm_sealed_passphrase,
-        }
+    pub fn with_tpm_seal(root: impl Into<PathBuf>, passphrase: impl Into<String>, tpm_sealed_passphrase: bool) -> Self {
+        Self { root: root.into(), passphrase: SecretString::from(passphrase.into()), tpm_sealed_passphrase }
     }
 
     fn path_for(&self, share_id: &str) -> PathBuf {
@@ -188,9 +173,8 @@ impl AeadDiskShareStore {
     }
 
     fn derive_key(&self, salt: &[u8; 16]) -> Result<[u8; 32], DomainError> {
-        let params = Params::new(19_456, 2, 1, Some(32)).map_err(|e| {
-            DomainError::ShareStoreForbidden(format!("argon2 params: {e}"))
-        })?;
+        let params = Params::new(19_456, 2, 1, Some(32))
+            .map_err(|e| DomainError::ShareStoreForbidden(format!("argon2 params: {e}")))?;
         let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
         let mut key = [0u8; 32];
         argon
@@ -210,9 +194,7 @@ impl ShareStorePort for AeadDiskShareStore {
     }
 
     fn put_share(&self, share_id: &str, plaintext: &[u8]) -> Result<(), DomainError> {
-        fs::create_dir_all(&self.root).map_err(|e| {
-            DomainError::ShareStoreForbidden(format!("mkdir: {e}"))
-        })?;
+        fs::create_dir_all(&self.root).map_err(|e| DomainError::ShareStoreForbidden(format!("mkdir: {e}")))?;
         let mut salt = [0u8; 16];
         rand::thread_rng().fill_bytes(&mut salt);
         let mut key = self.derive_key(&salt)?;
@@ -224,13 +206,7 @@ impl ShareStorePort for AeadDiskShareStore {
         let nonce = Nonce::from_slice(&nonce_bytes);
         let aad = Self::aad(share_id);
         let ciphertext = cipher
-            .encrypt(
-                nonce,
-                Payload {
-                    msg: plaintext,
-                    aad: &aad,
-                },
-            )
+            .encrypt(nonce, Payload { msg: plaintext, aad: &aad })
             .map_err(|_| DomainError::ShareStoreForbidden("encrypt failed".into()))?;
         let mut out = Vec::with_capacity(16 + 12 + ciphertext.len());
         out.extend_from_slice(&salt);
@@ -240,9 +216,8 @@ impl ShareStorePort for AeadDiskShareStore {
     }
 
     fn get_share(&self, share_id: &str) -> Result<Vec<u8>, DomainError> {
-        let bytes = fs::read(&self.path_for(share_id)).map_err(|e| {
-            DomainError::ShareStoreForbidden(format!("read share: {e}"))
-        })?;
+        let bytes = fs::read(&self.path_for(share_id))
+            .map_err(|e| DomainError::ShareStoreForbidden(format!("read share: {e}")))?;
         if bytes.len() < 16 + 12 + 16 {
             return Err(DomainError::ShareStoreForbidden("share blob too short".into()));
         }
@@ -257,13 +232,7 @@ impl ShareStorePort for AeadDiskShareStore {
         let nonce = Nonce::from_slice(nonce_bytes);
         let aad = Self::aad(share_id);
         cipher
-            .decrypt(
-                nonce,
-                Payload {
-                    msg: ciphertext,
-                    aad: &aad,
-                },
-            )
+            .decrypt(nonce, Payload { msg: ciphertext, aad: &aad })
             .map_err(|_| DomainError::ShareStoreForbidden("decrypt failed".into()))
     }
 }
@@ -276,10 +245,7 @@ mod tests {
     struct TempProbe(PathBuf);
     impl TempProbe {
         fn new(name: &str) -> Self {
-            let p = std::env::temp_dir().join(format!(
-                "kv-aead-{name}-{}",
-                std::process::id()
-            ));
+            let p = std::env::temp_dir().join(format!("kv-aead-{name}-{}", std::process::id()));
             let _ = fs::remove_dir_all(&p);
             fs::create_dir_all(&p).unwrap();
             Self(p)

@@ -56,29 +56,18 @@ impl MeshAuditKeyAllowlist {
                 Self::merge_file(&mut keys, Path::new(&path))?;
             }
         }
-        Ok(Self {
-            pubkeys_hex: keys,
-        })
+        Ok(Self { pubkeys_hex: keys })
     }
 
     fn merge_file(keys: &mut BTreeSet<String>, path: &Path) -> Result<(), DomainError> {
-        let raw = std::fs::read_to_string(path).map_err(|e| {
-            DomainError::AuthRejected(format!(
-                "VAULT_AUDIT_PUBKEYS_PATH read {}: {e}",
-                path.display()
-            ))
-        })?;
+        let raw = std::fs::read_to_string(path)
+            .map_err(|e| DomainError::AuthRejected(format!("VAULT_AUDIT_PUBKEYS_PATH read {}: {e}", path.display())))?;
         for line in raw.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') {
                 continue;
             }
-            let hex = line
-                .split_whitespace()
-                .last()
-                .unwrap_or("")
-                .trim()
-                .to_ascii_lowercase();
+            let hex = line.split_whitespace().last().unwrap_or("").trim().to_ascii_lowercase();
             if !hex.is_empty() {
                 keys.insert(hex);
             }
@@ -95,8 +84,7 @@ impl MeshAuditKeyAllowlist {
     }
 
     pub fn contains(&self, pubkey_hex: &str) -> bool {
-        self.pubkeys_hex
-            .contains(&pubkey_hex.trim().to_ascii_lowercase())
+        self.pubkeys_hex.contains(&pubkey_hex.trim().to_ascii_lowercase())
     }
 
     /// Verify-hook: reject keys not on the mesh audit allowlist.
@@ -129,8 +117,6 @@ mod tests {
         let al = MeshAuditKeyAllowlist::from_hex_list(["aabbcc", "ddeeff"]);
         assert!(al.require_allowlisted("AABBCC").is_ok());
         assert!(al.require_allowlisted("000000").is_err());
-        assert!(MeshAuditKeyAllowlist::empty()
-            .require_allowlisted("aabbcc")
-            .is_err());
+        assert!(MeshAuditKeyAllowlist::empty().require_allowlisted("aabbcc").is_err());
     }
 }

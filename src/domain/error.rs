@@ -10,22 +10,40 @@ pub enum DomainError {
     InvalidConstitution(String),
     LedgerConflict(String),
     UnauthorizedWriter(String),
-    QuorumNotMet { have: usize, need: usize },
+    QuorumNotMet {
+        have: usize,
+        need: usize,
+    },
     UnknownProposal(String),
-    EpochMismatch { expected: u64, got: u64 },
+    EpochMismatch {
+        expected: u64,
+        got: u64,
+    },
     ProposalClosed(String),
     InvalidShare(String),
     ThresholdError(String),
     NonceReuse(String),
-    FailStop { online: usize, need: usize },
+    FailStop {
+        online: usize,
+        need: usize,
+    },
     SessionConsumed(String),
-    BadSigningPhase { session_id: String, phase: String },
+    BadSigningPhase {
+        session_id: String,
+        phase: String,
+    },
     InvalidRelease(String),
     UnknownBlob(String),
     UnknownRelease(String),
-    RebuildMismatch { expected: String, got: String },
+    RebuildMismatch {
+        expected: String,
+        got: String,
+    },
     ReleasePredicate(String),
-    TimelockNotElapsed { age_secs: u64, need_secs: u64 },
+    TimelockNotElapsed {
+        age_secs: u64,
+        need_secs: u64,
+    },
     ReleaseClosed(String),
     NotAllowlisted(String),
     InvalidBucket(String),
@@ -43,7 +61,10 @@ pub enum DomainError {
     LabFlagForbidden(String),
     RequestRejected(String),
     NoEligibleMiners,
-    InsufficientMinerPool { have: u64, want: u64 },
+    InsufficientMinerPool {
+        have: u64,
+        want: u64,
+    },
     MinerSelfPayForbidden,
     AuthRejected(String),
     ShareStoreForbidden(String),
@@ -52,7 +73,10 @@ pub enum DomainError {
     /// Domestic TPM seal required / unavailable (honest: TPM ≠ SEV).
     TpmRequired(String),
     BitcoinNetworkMismatch(String),
-    DayEpochStale { have: String, need: String },
+    DayEpochStale {
+        have: String,
+        need: String,
+    },
     ProductionGate(String),
 }
 
@@ -119,10 +143,7 @@ impl fmt::Display for DomainError {
                 write!(f, "insufficient miner pool: have {have}, want {want}")
             }
             Self::MinerSelfPayForbidden => {
-                write!(
-                    f,
-                    "miner payout forbidden: destination not an eligible registered operator (no self-pay)"
-                )
+                write!(f, "miner payout forbidden: destination not an eligible registered operator (no self-pay)")
             }
             Self::AuthRejected(r) => write!(f, "auth rejected: {r}"),
             Self::ShareStoreForbidden(r) => write!(f, "share store forbidden: {r}"),

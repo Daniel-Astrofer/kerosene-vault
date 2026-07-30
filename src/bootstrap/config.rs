@@ -2,12 +2,11 @@ use std::collections::BTreeMap;
 use std::fs;
 
 use crate::adapters::{
-    peer_addr_is_onion, MeshAuditKeyAllowlist, PeerHttpSettings, TlsPeerVerifyPolicy,
-    VaultTransport,
+    peer_addr_is_onion, MeshAuditKeyAllowlist, PeerHttpSettings, TlsPeerVerifyPolicy, VaultTransport,
 };
 use crate::domain::{
-    resolve_node_tier, seat_genesis_by_tier, AttestationMode, BitcoinNetwork, DomainError,
-    GovernanceRewardConfig, NodeId, ResharePolicy, SeatingCandidate, VaultNodeTier,
+    resolve_node_tier, seat_genesis_by_tier, AttestationMode, BitcoinNetwork, DomainError, GovernanceRewardConfig,
+    NodeId, ResharePolicy, SeatingCandidate, VaultNodeTier,
 };
 use serde::Deserialize;
 use std::time::Duration;
@@ -234,54 +233,40 @@ pub struct VaultConfig {
 
 impl VaultConfig {
     pub fn from_env() -> Result<Self, DomainError> {
-        let node_id =
-            NodeId::new(std::env::var("VAULT_NODE_ID").unwrap_or_else(|_| "vault-local-1".into()))?;
+        let node_id = NodeId::new(std::env::var("VAULT_NODE_ID").unwrap_or_else(|_| "vault-local-1".into()))?;
 
         let tier_raw = std::env::var("VAULT_NODE_TIER").ok();
         let (node_tier, tee_available) = resolve_node_tier(tier_raw.as_deref())?;
 
         let kerosene_env = std::env::var("KEROSENE_ENV").unwrap_or_else(|_| "lab".into());
-        let is_production =
-            cfg!(feature = "production") || kerosene_env.eq_ignore_ascii_case("production");
+        let is_production = cfg!(feature = "production") || kerosene_env.eq_ignore_ascii_case("production");
         let is_staging = kerosene_env.eq_ignore_ascii_case("staging");
         let refuse_sim = env_flag("KEROSENE_VAULT_REFUSE_SIM") || is_production || is_staging;
         let hardened = refuse_sim;
         let attestation_staging_stub = env_flag("ATTESTATION_STAGING_STUB");
 
-        let ceremony_raw =
-            std::env::var("VAULT_CEREMONY_MODE").unwrap_or_else(|_| kerosene_env.clone());
-        let ceremony_mode = CeremonyMode::parse(&ceremony_raw).ok_or_else(|| {
-            DomainError::AttestationRejected(format!("unknown VAULT_CEREMONY_MODE={ceremony_raw}"))
-        })?;
+        let ceremony_raw = std::env::var("VAULT_CEREMONY_MODE").unwrap_or_else(|_| kerosene_env.clone());
+        let ceremony_mode = CeremonyMode::parse(&ceremony_raw)
+            .ok_or_else(|| DomainError::AttestationRejected(format!("unknown VAULT_CEREMONY_MODE={ceremony_raw}")))?;
 
         let mode_default = match node_tier {
-            VaultNodeTier::Domestic if matches!(ceremony_mode, CeremonyMode::Lab) && !hardened => {
-                "sim"
-            }
+            VaultNodeTier::Domestic if matches!(ceremony_mode, CeremonyMode::Lab) && !hardened => "sim",
             VaultNodeTier::Domestic => "software",
             VaultNodeTier::Sev => "sev",
             VaultNodeTier::Sgx => "sgx",
         };
-        let mode_raw =
-            std::env::var("ATTESTATION_MODE").unwrap_or_else(|_| mode_default.to_string());
-        let attestation_mode = AttestationMode::parse(&mode_raw).ok_or_else(|| {
-            DomainError::AttestationRejected(format!("unknown ATTESTATION_MODE={mode_raw}"))
-        })?;
+        let mode_raw = std::env::var("ATTESTATION_MODE").unwrap_or_else(|_| mode_default.to_string());
+        let attestation_mode = AttestationMode::parse(&mode_raw)
+            .ok_or_else(|| DomainError::AttestationRejected(format!("unknown ATTESTATION_MODE={mode_raw}")))?;
 
-        let listen_default = if matches!(
-            ceremony_mode,
-            CeremonyMode::Staging | CeremonyMode::Production
-        ) || hardened
-        {
+        let listen_default = if matches!(ceremony_mode, CeremonyMode::Staging | CeremonyMode::Production) || hardened {
             "127.0.0.1:7701"
         } else {
             // Lab compose often publishes on all interfaces intentionally.
             "0.0.0.0:7701"
         };
-        let listen_addr =
-            std::env::var("VAULT_LISTEN_ADDR").unwrap_or_else(|_| listen_default.into());
-        let lab_root =
-            std::env::var("LAB_ATTESTATION_ROOT").unwrap_or_else(|_| "kerosene-lab-root".into());
+        let listen_addr = std::env::var("VAULT_LISTEN_ADDR").unwrap_or_else(|_| listen_default.into());
+        let lab_root = std::env::var("LAB_ATTESTATION_ROOT").unwrap_or_else(|_| "kerosene-lab-root".into());
 
         let node_directory_configured = std::env::var_os("VAULT_KEROSENE_NODE_URL").is_some();
         let mut seed_peers = if node_directory_configured {
@@ -296,9 +281,9 @@ impl VaultConfig {
                 if part.is_empty() {
                     continue;
                 }
-                let (id, addr) = part.split_once('=').ok_or_else(|| {
-                    DomainError::AttestationRejected(format!("bad VAULT_SEED_PEERS entry: {part}"))
-                })?;
+                let (id, addr) = part
+                    .split_once('=')
+                    .ok_or_else(|| DomainError::AttestationRejected(format!("bad VAULT_SEED_PEERS entry: {part}")))?;
                 seed_peers.push((id.trim().to_string(), addr.trim().to_string()));
             }
         }
@@ -310,13 +295,11 @@ impl VaultConfig {
                 if part.is_empty() {
                     continue;
                 }
-                let (id, tier_s) = part.split_once('=').ok_or_else(|| {
-                    DomainError::AttestationRejected(format!("bad VAULT_PEER_TIERS entry: {part}"))
-                })?;
+                let (id, tier_s) = part
+                    .split_once('=')
+                    .ok_or_else(|| DomainError::AttestationRejected(format!("bad VAULT_PEER_TIERS entry: {part}")))?;
                 let tier = VaultNodeTier::parse(tier_s).ok_or_else(|| {
-                    DomainError::AttestationRejected(format!(
-                        "unknown tier in VAULT_PEER_TIERS: {tier_s}"
-                    ))
+                    DomainError::AttestationRejected(format!("unknown tier in VAULT_PEER_TIERS: {tier_s}"))
                 })?;
                 peer_tiers.insert(id.trim().to_string(), tier);
             }
@@ -329,9 +312,7 @@ impl VaultConfig {
                     continue;
                 }
                 let (id, quote) = part.split_once('=').ok_or_else(|| {
-                    DomainError::AttestationRejected(format!(
-                        "bad VAULT_PEER_TIER_QUOTES entry: {part}"
-                    ))
+                    DomainError::AttestationRejected(format!("bad VAULT_PEER_TIER_QUOTES entry: {part}"))
                 })?;
                 peer_tier_quotes.insert(id.trim().to_string(), quote.trim().to_string());
             }
@@ -341,12 +322,8 @@ impl VaultConfig {
             Err(_) => !matches!(ceremony_mode, CeremonyMode::Lab),
         };
 
-        let genesis_n = std::env::var("VAULT_GENESIS_N")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok());
-        let online_count = std::env::var("VAULT_ONLINE_COUNT")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok());
+        let genesis_n = std::env::var("VAULT_GENESIS_N").ok().and_then(|s| s.parse::<usize>().ok());
+        let online_count = std::env::var("VAULT_ONLINE_COUNT").ok().and_then(|s| s.parse::<usize>().ok());
         let online_static = env_flag("VAULT_ONLINE_STATIC");
         let mut psbt_policy = crate::domain::PsbtPolicy::lab_defaults();
         if let Ok(s) = std::env::var("VAULT_PSBT_MAX_FEE_SATS") {
@@ -370,22 +347,12 @@ impl VaultConfig {
             }
         }
         let lab_timelock_env_set = std::env::var_os("LAB_TIMELOCK_SCALE").is_some();
-        let lab_timelock_scale = std::env::var("LAB_TIMELOCK_SCALE")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(0);
-        let lab_council_n = std::env::var("LAB_COUNCIL_N")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(3);
-        let lab_min_rebuilds = std::env::var("LAB_MIN_REBUILDS")
-            .ok()
-            .and_then(|s| s.parse::<usize>().ok())
-            .unwrap_or(3);
-        let open_economy = matches!(
-            std::env::var("VAULT_ECONOMY").as_deref(),
-            Ok("open" | "OPEN" | "v1_open")
-        );
+        let lab_timelock_scale =
+            std::env::var("LAB_TIMELOCK_SCALE").ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+        let lab_council_n = std::env::var("LAB_COUNCIL_N").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(3);
+        let lab_min_rebuilds =
+            std::env::var("LAB_MIN_REBUILDS").ok().and_then(|s| s.parse::<usize>().ok()).unwrap_or(3);
+        let open_economy = matches!(std::env::var("VAULT_ECONOMY").as_deref(), Ok("open" | "OPEN" | "v1_open"));
         let miner_payout_cadence = std::env::var("VAULT_MINER_PAYOUT_CADENCE")
             .ok()
             .and_then(|s| crate::domain::MinerPayoutCadence::parse(&s))
@@ -396,33 +363,20 @@ impl VaultConfig {
             .and_then(|s| crate::domain::MinerPayoutCadence::parse(&s))
             .unwrap_or(crate::domain::MinerPayoutCadence::Daily);
 
-        let seating_policy_timeout_hours = std::env::var("VAULT_SEATING_POLICY")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(24);
+        let seating_policy_timeout_hours =
+            std::env::var("VAULT_SEATING_POLICY").ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(24);
 
         let btc_raw = std::env::var("BITCOIN_NETWORK").unwrap_or_else(|_| "testnet3".into());
-        let bitcoin_network = BitcoinNetwork::parse(&btc_raw).ok_or_else(|| {
-            DomainError::BitcoinNetworkMismatch(format!("unknown BITCOIN_NETWORK={btc_raw}"))
-        })?;
+        let bitcoin_network = BitcoinNetwork::parse(&btc_raw)
+            .ok_or_else(|| DomainError::BitcoinNetworkMismatch(format!("unknown BITCOIN_NETWORK={btc_raw}")))?;
 
         let users_destination_allowlist = std::env::var("VAULT_USERS_DESTINATION_ALLOWLIST")
             .ok()
-            .map(|raw| {
-                raw.split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<_>>()
-            })
+            .map(|raw| raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect::<Vec<_>>())
             .unwrap_or_default();
         let miners_destination_allowlist = std::env::var("VAULT_MINERS_DESTINATION_ALLOWLIST")
             .ok()
-            .map(|raw| {
-                raw.split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect::<Vec<_>>()
-            })
+            .map(|raw| raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect::<Vec<_>>())
             .unwrap_or_default();
         let allow_manual_reshare = env_flag("VAULT_ALLOW_MANUAL_RESHARE");
         let lab_allow_raw_sighash = env_flag("VAULT_LAB_ALLOW_RAW_SIGHASH");
@@ -434,9 +388,8 @@ impl VaultConfig {
                 "static_token".into()
             }
         });
-        let auth_mode = AuthMode::parse(&auth_raw).ok_or_else(|| {
-            DomainError::AuthRejected(format!("unknown VAULT_AUTH_MODE={auth_raw}"))
-        })?;
+        let auth_mode = AuthMode::parse(&auth_raw)
+            .ok_or_else(|| DomainError::AuthRejected(format!("unknown VAULT_AUTH_MODE={auth_raw}")))?;
         // Lab P0 contract: VAULT_API_TOKEN (preferred) ↔ X-Vault-Token; VAULT_TOKEN legacy alias.
         let vault_token = env_nonempty_first(&["VAULT_API_TOKEN", "VAULT_TOKEN"]);
         let tls_cert_path = env_nonempty_first(&["VAULT_TLS_CERT_PATH"]);
@@ -450,12 +403,10 @@ impl VaultConfig {
             VaultNodeTier::Sev | VaultNodeTier::Sgx if hardened => "tee_seal".into(),
             VaultNodeTier::Sev | VaultNodeTier::Sgx => "aead_disk".into(),
         });
-        let share_store_mode = ShareStoreMode::parse(&store_raw).ok_or_else(|| {
-            DomainError::ShareStoreForbidden(format!("unknown VAULT_SHARE_STORE={store_raw}"))
-        })?;
+        let share_store_mode = ShareStoreMode::parse(&store_raw)
+            .ok_or_else(|| DomainError::ShareStoreForbidden(format!("unknown VAULT_SHARE_STORE={store_raw}")))?;
         // Lab P0: VAULT_DATA_PASSPHRASE (preferred); VAULT_SHARE_PASSPHRASE legacy alias.
-        let share_passphrase =
-            env_nonempty_first(&["VAULT_DATA_PASSPHRASE", "VAULT_SHARE_PASSPHRASE"]);
+        let share_passphrase = env_nonempty_first(&["VAULT_DATA_PASSPHRASE", "VAULT_SHARE_PASSPHRASE"]);
         let share_tpm_seal = env_flag("VAULT_SHARE_TPM_SEAL");
         let share_tpm_stub = env_flag("VAULT_SHARE_TPM_STUB");
         let share_tpm_clear_fallback = env_flag("VAULT_SHARE_TPM_CLEAR_FALLBACK");
@@ -467,27 +418,20 @@ impl VaultConfig {
         // Lab P0 / Gate: VAULT_DKG_MODE (preferred); VAULT_DKG legacy alias.
         // Production/staging default = over-wire FROST (same path as lab distributed_wire).
         // In-process `distributed` is lab/single-node only. Dealer never default in hardened.
-        let dkg_raw = std::env::var("VAULT_DKG_MODE")
-            .or_else(|_| std::env::var("VAULT_DKG"))
-            .ok();
+        let dkg_raw = std::env::var("VAULT_DKG_MODE").or_else(|_| std::env::var("VAULT_DKG")).ok();
         let dkg_mode = match dkg_raw.as_deref() {
-            Some(raw) => DkgMode::parse(raw).ok_or_else(|| {
-                DomainError::AttestationRejected(format!("unknown VAULT_DKG_MODE={raw}"))
-            })?,
+            Some(raw) => DkgMode::parse(raw)
+                .ok_or_else(|| DomainError::AttestationRejected(format!("unknown VAULT_DKG_MODE={raw}")))?,
             None if hardened => DkgMode::DistributedWire,
             None if cfg!(feature = "dealer_lab") => DkgMode::DealerLab,
             None => DkgMode::Distributed,
         };
         let dealer_requested = matches!(dkg_mode, DkgMode::DealerLab);
         let reshare_policy = ResharePolicy::from_env_or_default()?;
-        let governance_reward_sats = std::env::var("VAULT_GOVERNANCE_REWARD_SATS")
-            .ok()
-            .and_then(|s| s.parse::<u64>().ok())
-            .unwrap_or(0);
-        let governance_reward_bps = std::env::var("VAULT_GOVERNANCE_REWARD_BPS")
-            .ok()
-            .and_then(|s| s.parse::<u32>().ok())
-            .unwrap_or(0);
+        let governance_reward_sats =
+            std::env::var("VAULT_GOVERNANCE_REWARD_SATS").ok().and_then(|s| s.parse::<u64>().ok()).unwrap_or(0);
+        let governance_reward_bps =
+            std::env::var("VAULT_GOVERNANCE_REWARD_BPS").ok().and_then(|s| s.parse::<u32>().ok()).unwrap_or(0);
 
         let transport_raw = std::env::var("VAULT_TRANSPORT").unwrap_or_else(|_| {
             // Production ceremony defaults to Tor; lab/staging stay clearnet unless set.
@@ -497,15 +441,11 @@ impl VaultConfig {
                 "clearnet".into()
             }
         });
-        let transport = VaultTransport::parse(&transport_raw).ok_or_else(|| {
-            DomainError::AttestationRejected(format!("unknown VAULT_TRANSPORT={transport_raw}"))
-        })?;
+        let transport = VaultTransport::parse(&transport_raw)
+            .ok_or_else(|| DomainError::AttestationRejected(format!("unknown VAULT_TRANSPORT={transport_raw}")))?;
 
-        let mut peer_http = if transport.is_tor() {
-            PeerHttpSettings::tor_defaults()
-        } else {
-            PeerHttpSettings::clearnet_defaults()
-        };
+        let mut peer_http =
+            if transport.is_tor() { PeerHttpSettings::tor_defaults() } else { PeerHttpSettings::clearnet_defaults() };
         peer_http.transport = transport;
         if let Some(socks) = env_nonempty_first(&["VAULT_SOCKS_PROXY", "VAULT_TOR_SOCKS"]) {
             peer_http.socks_proxy = Some(PeerHttpSettings::normalize_socks_proxy(&socks));
@@ -538,8 +478,7 @@ impl VaultConfig {
             }
         }
         let clearnet_publish = env_flag("VAULT_CLEARNET_PUBLISH");
-        let tls_verify_policy =
-            resolve_tls_verify_policy(transport, node_id.as_str(), &seed_peers)?;
+        let tls_verify_policy = resolve_tls_verify_policy(transport, node_id.as_str(), &seed_peers)?;
         let audit_key_allowlist = MeshAuditKeyAllowlist::from_env()?;
 
         let cfg = Self {
@@ -632,19 +571,15 @@ impl VaultConfig {
             }
         }
         if self.ceremony_mode == CeremonyMode::Production && self.attestation_staging_stub {
-            return Err(DomainError::LabFlagForbidden(
-                "ATTESTATION_STAGING_STUB in production ceremony".into(),
-            ));
+            return Err(DomainError::LabFlagForbidden("ATTESTATION_STAGING_STUB in production ceremony".into()));
         }
         if cfg!(feature = "production") && self.attestation_staging_stub {
             return Err(DomainError::LabFlagForbidden(
                 "ATTESTATION_STAGING_STUB refused under production feature".into(),
             ));
         }
-        if matches!(
-            self.ceremony_mode,
-            CeremonyMode::Staging | CeremonyMode::Production
-        ) && self.attestation_mode.is_lab_only()
+        if matches!(self.ceremony_mode, CeremonyMode::Staging | CeremonyMode::Production)
+            && self.attestation_mode.is_lab_only()
         {
             return Err(DomainError::LabFlagForbidden("ATTESTATION_MODE=sim".into()));
         }
@@ -663,14 +598,9 @@ impl VaultConfig {
             ));
         }
 
-        if matches!(
-            self.ceremony_mode,
-            CeremonyMode::Staging | CeremonyMode::Production
-        ) {
+        if matches!(self.ceremony_mode, CeremonyMode::Staging | CeremonyMode::Production) {
             if self.dealer_requested {
-                return Err(DomainError::DealerForbidden(
-                    "dealer DKG refused in staging/production (ToB 2024)".into(),
-                ));
+                return Err(DomainError::DealerForbidden("dealer DKG refused in staging/production (ToB 2024)".into()));
             }
             if !matches!(self.dkg_mode, DkgMode::DistributedWire) {
                 return Err(DomainError::DealerForbidden(
@@ -678,9 +608,7 @@ impl VaultConfig {
                 ));
             }
             if self.auth_mode == AuthMode::StaticToken {
-                return Err(DomainError::AuthRejected(
-                    "static token refused in staging/production; use mTLS".into(),
-                ));
+                return Err(DomainError::AuthRejected("static token refused in staging/production; use mTLS".into()));
             }
             // F8: production ceremony requires mesh audit pubkey allowlist (≠ release ≠ settlement).
             // Ops dry-run before keygen: VAULT_SKIP_AUDIT_KEYS_CHECK=1 (forbidden for go-live).
@@ -718,10 +646,7 @@ impl VaultConfig {
         let protected_staging_bind = self.ceremony_mode == CeremonyMode::Staging
             && self.auth_mode == AuthMode::MutualTls
             && !self.clearnet_publish;
-        if is_all
-            && (self.ceremony_mode == CeremonyMode::Production
-                || (self.hardened && !protected_staging_bind))
-        {
+        if is_all && (self.ceremony_mode == CeremonyMode::Production || (self.hardened && !protected_staging_bind)) {
             return Err(DomainError::LabFlagForbidden(
                 "VAULT_LISTEN_ADDR all-interface bind requires staging mTLS with no clearnet publish; production requires loopback/onion-only"
                     .into(),
@@ -732,11 +657,8 @@ impl VaultConfig {
 
     /// Default share passphrase only in lab ceremony (#22).
     pub fn validate_lab_passphrase_defaults(&self) -> Result<(), DomainError> {
-        let using_default = self
-            .share_passphrase
-            .as_deref()
-            .map(|p| p == "kerosene-vault-lab-passphrase")
-            .unwrap_or(true);
+        let using_default =
+            self.share_passphrase.as_deref().map(|p| p == "kerosene-vault-lab-passphrase").unwrap_or(true);
         if using_default
             && self.share_store_mode == ShareStoreMode::AeadDisk
             && !matches!(self.ceremony_mode, CeremonyMode::Lab)
@@ -758,8 +680,7 @@ impl VaultConfig {
 
     /// Default `LAB_ATTESTATION_ROOT` is lab-only deterministic DKG entropy (#17).
     pub fn validate_lab_root_honesty(&self) -> Result<(), DomainError> {
-        if self.lab_root == "kerosene-lab-root" && !matches!(self.ceremony_mode, CeremonyMode::Lab)
-        {
+        if self.lab_root == "kerosene-lab-root" && !matches!(self.ceremony_mode, CeremonyMode::Lab) {
             return Err(DomainError::LabFlagForbidden(
                 "LAB_ATTESTATION_ROOT must be set explicitly outside lab (default is deterministic lab DKG entropy)"
                     .into(),
@@ -771,13 +692,8 @@ impl VaultConfig {
     /// TPM seal optional for domestic AEAD. Stub/clear-fallback lab-only. TPM ≠ SEV.
     pub fn validate_tpm_seal_hygiene(&self) -> Result<(), DomainError> {
         if self.share_tpm_clear_fallback {
-            if self.hardened
-                || matches!(self.ceremony_mode, CeremonyMode::Production)
-                || cfg!(feature = "production")
-            {
-                return Err(DomainError::LabFlagForbidden(
-                    "VAULT_SHARE_TPM_CLEAR_FALLBACK".into(),
-                ));
+            if self.hardened || matches!(self.ceremony_mode, CeremonyMode::Production) || cfg!(feature = "production") {
+                return Err(DomainError::LabFlagForbidden("VAULT_SHARE_TPM_CLEAR_FALLBACK".into()));
             }
             if !self.share_tpm_seal {
                 return Err(DomainError::ShareStoreForbidden(
@@ -786,14 +702,10 @@ impl VaultConfig {
             }
         }
         if self.share_tpm_stub {
-            if matches!(
-                self.ceremony_mode,
-                CeremonyMode::Staging | CeremonyMode::Production
-            ) || cfg!(feature = "production")
+            if matches!(self.ceremony_mode, CeremonyMode::Staging | CeremonyMode::Production)
+                || cfg!(feature = "production")
             {
-                return Err(DomainError::LabFlagForbidden(
-                    "VAULT_SHARE_TPM_STUB refused outside lab".into(),
-                ));
+                return Err(DomainError::LabFlagForbidden("VAULT_SHARE_TPM_STUB refused outside lab".into()));
             }
             if self.hardened {
                 return Err(DomainError::LabFlagForbidden("VAULT_SHARE_TPM_STUB".into()));
@@ -820,8 +732,7 @@ impl VaultConfig {
             let socks = self.peer_http.socks_proxy.as_deref().unwrap_or("");
             if socks.is_empty() {
                 return Err(DomainError::LabFlagForbidden(
-                    "VAULT_TRANSPORT=tor requires VAULT_SOCKS_PROXY (e.g. socks5h://127.0.0.1:9050)"
-                        .into(),
+                    "VAULT_TRANSPORT=tor requires VAULT_SOCKS_PROXY (e.g. socks5h://127.0.0.1:9050)".into(),
                 ));
             }
             for (id, addr) in &self.seed_peers {
@@ -831,18 +742,15 @@ impl VaultConfig {
                     )));
                 }
             }
-            if matches!(
-                self.ceremony_mode,
-                CeremonyMode::Staging | CeremonyMode::Production
-            ) && self.auth_mode != AuthMode::MutualTls
+            if matches!(self.ceremony_mode, CeremonyMode::Staging | CeremonyMode::Production)
+                && self.auth_mode != AuthMode::MutualTls
             {
                 return Err(DomainError::AuthRejected(
                     "VAULT_TRANSPORT=tor under staging/production requires VAULT_AUTH_MODE=mtls (static_token refused)"
                         .into(),
                 ));
             }
-            if self.auth_mode == AuthMode::MutualTls
-                && matches!(self.tls_verify_policy, TlsPeerVerifyPolicy::Hostname)
+            if self.auth_mode == AuthMode::MutualTls && matches!(self.tls_verify_policy, TlsPeerVerifyPolicy::Hostname)
             {
                 return Err(DomainError::AuthRejected(
                     "VAULT_TRANSPORT=tor with mTLS requires VAULT_TLS_VERIFY_MODE=onion_or_spiffe|spiffe (not hostname-only)"
@@ -854,14 +762,11 @@ impl VaultConfig {
         if self.ceremony_mode == CeremonyMode::Production {
             if !self.transport.is_tor() {
                 return Err(DomainError::LabFlagForbidden(
-                    "production ceremony requires VAULT_TRANSPORT=tor (private Tor mesh; not clearnet LAN)"
-                        .into(),
+                    "production ceremony requires VAULT_TRANSPORT=tor (private Tor mesh; not clearnet LAN)".into(),
                 ));
             }
             if self.auth_mode != AuthMode::MutualTls {
-                return Err(DomainError::AuthRejected(
-                    "production ceremony requires VAULT_AUTH_MODE=mtls".into(),
-                ));
+                return Err(DomainError::AuthRejected("production ceremony requires VAULT_AUTH_MODE=mtls".into()));
             }
             if self.clearnet_publish {
                 return Err(DomainError::LabFlagForbidden(
@@ -869,11 +774,9 @@ impl VaultConfig {
                         .into(),
                 ));
             }
-            if self.seed_peers.is_empty() && self.genesis_n.is_none_or(|configured| configured < 2)
-            {
+            if self.seed_peers.is_empty() && self.genesis_n.is_none_or(|configured| configured < 2) {
                 return Err(DomainError::AttestationRejected(
-                    "isolated production bootstrap requires explicit VAULT_GENESIS_N>=2; "
-                        .to_string()
+                    "isolated production bootstrap requires explicit VAULT_GENESIS_N>=2; ".to_string()
                         + "otherwise configure onion VAULT_SEED_PEERS",
                 ));
             }
@@ -893,9 +796,7 @@ impl VaultConfig {
             return Ok(());
         }
         if self.attestation_staging_stub {
-            if matches!(self.ceremony_mode, CeremonyMode::Production)
-                || cfg!(feature = "production")
-            {
+            if matches!(self.ceremony_mode, CeremonyMode::Production) || cfg!(feature = "production") {
                 return Err(DomainError::LabFlagForbidden(
                     "ATTESTATION_STAGING_STUB cannot back a TEE claim in production".into(),
                 ));
@@ -916,21 +817,13 @@ impl VaultConfig {
     }
 
     pub fn peer_tier(&self, peer_id: &str) -> VaultNodeTier {
-        let claimed = self
-            .peer_tiers
-            .get(peer_id)
-            .copied()
-            .unwrap_or(VaultNodeTier::Domestic);
+        let claimed = self.peer_tiers.get(peer_id).copied().unwrap_or(VaultNodeTier::Domestic);
         if !claimed.is_tee() {
             return claimed;
         }
         // High #15: refuse elevated seating without attestation quote proof.
         if self.peer_tier_require_quote {
-            let has_quote = self
-                .peer_tier_quotes
-                .get(peer_id)
-                .map(|q| !q.trim().is_empty())
-                .unwrap_or(false);
+            let has_quote = self.peer_tier_quotes.get(peer_id).map(|q| !q.trim().is_empty()).unwrap_or(false);
             if !has_quote {
                 return VaultNodeTier::Domestic;
             }
@@ -940,23 +833,16 @@ impl VaultConfig {
 
     /// Candidates for genesis seating: local + seed peers (pads added by caller if needed).
     pub fn seating_candidates(&self) -> Result<Vec<SeatingCandidate>, DomainError> {
-        let mut candidates = vec![SeatingCandidate {
-            id: self.node_id.clone(),
-            tier: self.node_tier,
-        }];
+        let mut candidates = vec![SeatingCandidate { id: self.node_id.clone(), tier: self.node_tier }];
         for (id, _) in &self.seed_peers {
-            candidates.push(SeatingCandidate {
-                id: NodeId::new(id.clone())?,
-                tier: self.peer_tier(id),
-            });
+            candidates.push(SeatingCandidate { id: NodeId::new(id.clone())?, tier: self.peer_tier(id) });
         }
         Ok(candidates)
     }
 
     /// Target genesis size (`VAULT_GENESIS_N` or local+seeds, min 2).
     pub fn effective_genesis_n(&self) -> usize {
-        self.genesis_n
-            .unwrap_or_else(|| self.seed_peers.len().saturating_add(1).max(2))
+        self.genesis_n.unwrap_or_else(|| self.seed_peers.len().saturating_add(1).max(2))
     }
 
     /// SEV-priority seating for genesis / wire DKG roster (§3.1).
@@ -980,22 +866,15 @@ impl VaultConfig {
         match (cert, key, ca) {
             (Some(c), Some(k), Some(a)) => Ok((c, k, a)),
             _ => Err(DomainError::AuthRejected(
-                "mTLS requires VAULT_TLS_CERT_PATH, VAULT_TLS_KEY_PATH, and VAULT_TLS_CLIENT_CA_PATH"
-                    .into(),
+                "mTLS requires VAULT_TLS_CERT_PATH, VAULT_TLS_KEY_PATH, and VAULT_TLS_CLIENT_CA_PATH".into(),
             )),
         }
     }
 
     /// Outbound peer client identity (`VAULT_TLS_CLIENT_CERT_PATH` / `VAULT_TLS_CLIENT_KEY_PATH`).
     pub fn require_mtls_client_identity(&self) -> Result<(&str, &str, &str), DomainError> {
-        let cert = self
-            .tls_client_cert_path
-            .as_deref()
-            .filter(|s| !s.is_empty());
-        let key = self
-            .tls_client_key_path
-            .as_deref()
-            .filter(|s| !s.is_empty());
+        let cert = self.tls_client_cert_path.as_deref().filter(|s| !s.is_empty());
+        let key = self.tls_client_key_path.as_deref().filter(|s| !s.is_empty());
         let ca = self.tls_client_ca_path.as_deref().filter(|s| !s.is_empty());
         match (cert, key, ca) {
             (Some(c), Some(k), Some(a)) => Ok((c, k, a)),
@@ -1019,15 +898,13 @@ impl VaultConfig {
     }
 
     pub fn effective_vault_token(&self) -> Option<&str> {
-        self.vault_token.as_deref().or(
-            if matches!(self.ceremony_mode, CeremonyMode::Lab) && !self.hardened {
-                // Matches vault-mesh-lab.compose.yaml + kfe-service-vaultmesh-testnet3.properties.
-                // Lab-only (#33): shared static token is by design for visualize.
-                Some("kerosene-vault-lab-only")
-            } else {
-                None
-            },
-        )
+        self.vault_token.as_deref().or(if matches!(self.ceremony_mode, CeremonyMode::Lab) && !self.hardened {
+            // Matches vault-mesh-lab.compose.yaml + kfe-service-vaultmesh-testnet3.properties.
+            // Lab-only (#33): shared static token is by design for visualize.
+            Some("kerosene-vault-lab-only")
+        } else {
+            None
+        })
     }
 
     /// Lab AEAD passphrase default — never outside lab ceremony (#22).
@@ -1051,9 +928,7 @@ impl VaultConfig {
     }
 
     pub fn effective_anti_nonce_shared_dir(&self) -> Option<std::path::PathBuf> {
-        self.anti_nonce_shared_dir
-            .as_deref()
-            .map(std::path::PathBuf::from)
+        self.anti_nonce_shared_dir.as_deref().map(std::path::PathBuf::from)
     }
 }
 
@@ -1070,28 +945,20 @@ struct NodeManifestMember {
     endpoint: String,
 }
 
-fn discover_vault_peers_from_node(
-    staging_allows_empty: bool,
-) -> Result<Vec<(String, String)>, DomainError> {
-    let base = std::env::var("VAULT_KEROSENE_NODE_URL").map_err(|_| {
-        DomainError::AttestationRejected("VAULT_KEROSENE_NODE_URL is required".into())
-    })?;
+fn discover_vault_peers_from_node(staging_allows_empty: bool) -> Result<Vec<(String, String)>, DomainError> {
+    let base = std::env::var("VAULT_KEROSENE_NODE_URL")
+        .map_err(|_| DomainError::AttestationRejected("VAULT_KEROSENE_NODE_URL is required".into()))?;
     let identity_path = std::env::var("VAULT_KEROSENE_NODE_CLIENT_IDENTITY_PEM").map_err(|_| {
-        DomainError::AuthRejected(
-            "VAULT_KEROSENE_NODE_CLIENT_IDENTITY_PEM is required for Node mTLS".into(),
-        )
+        DomainError::AuthRejected("VAULT_KEROSENE_NODE_CLIENT_IDENTITY_PEM is required for Node mTLS".into())
     })?;
-    let ca_path = std::env::var("VAULT_KEROSENE_NODE_CA_PATH").map_err(|_| {
-        DomainError::AuthRejected("VAULT_KEROSENE_NODE_CA_PATH is required for Node mTLS".into())
-    })?;
+    let ca_path = std::env::var("VAULT_KEROSENE_NODE_CA_PATH")
+        .map_err(|_| DomainError::AuthRejected("VAULT_KEROSENE_NODE_CA_PATH is required for Node mTLS".into()))?;
     let identity = reqwest::Identity::from_pem(
-        &fs::read(&identity_path)
-            .map_err(|error| DomainError::AuthRejected(format!("read Node identity: {error}")))?,
+        &fs::read(&identity_path).map_err(|error| DomainError::AuthRejected(format!("read Node identity: {error}")))?,
     )
     .map_err(|error| DomainError::AuthRejected(format!("parse Node identity: {error}")))?;
     let ca = reqwest::Certificate::from_pem(
-        &fs::read(&ca_path)
-            .map_err(|error| DomainError::AuthRejected(format!("read Node CA: {error}")))?,
+        &fs::read(&ca_path).map_err(|error| DomainError::AuthRejected(format!("read Node CA: {error}")))?,
     )
     .map_err(|error| DomainError::AuthRejected(format!("parse Node CA: {error}")))?;
     let client = reqwest::blocking::Client::builder()
@@ -1102,56 +969,48 @@ fn discover_vault_peers_from_node(
         .build()
         .map_err(|error| DomainError::AuthRejected(format!("build Node client: {error}")))?;
     let endpoint = format!("{}/v1/membership/current", base.trim_end_matches('/'));
-    let response = client.get(endpoint).send().map_err(|error| {
-        DomainError::AttestationRejected(format!("Node discovery failed: {error}"))
-    })?;
+    let response = client
+        .get(endpoint)
+        .send()
+        .map_err(|error| DomainError::AttestationRejected(format!("Node discovery failed: {error}")))?;
     if response.status() == reqwest::StatusCode::NOT_FOUND
         && (staging_allows_empty || env_flag("VAULT_KEROSENE_NODE_ALLOW_EMPTY"))
     {
         return Ok(Vec::new());
     }
-    let response = response.error_for_status().map_err(|error| {
-        DomainError::AttestationRejected(format!("Node membership unavailable: {error}"))
-    })?;
-    let manifest: NodeMembershipManifest = response.json().map_err(|error| {
-        DomainError::AttestationRejected(format!("invalid Node membership response: {error}"))
-    })?;
-    let expected_network =
-        std::env::var("VAULT_KEROSENE_NETWORK_ID").unwrap_or_else(|_| "kerosene-staging".into());
+    let response = response
+        .error_for_status()
+        .map_err(|error| DomainError::AttestationRejected(format!("Node membership unavailable: {error}")))?;
+    let manifest: NodeMembershipManifest = response
+        .json()
+        .map_err(|error| DomainError::AttestationRejected(format!("invalid Node membership response: {error}")))?;
+    let expected_network = std::env::var("VAULT_KEROSENE_NETWORK_ID").unwrap_or_else(|_| "kerosene-staging".into());
     if manifest.network_id != expected_network || manifest.plane != "vault" {
-        return Err(DomainError::AttestationRejected(
-            "Node membership network or plane mismatch".into(),
-        ));
+        return Err(DomainError::AttestationRejected("Node membership network or plane mismatch".into()));
     }
     let local_member = std::env::var("VAULT_KEROSENE_NODE_MEMBER_ID").unwrap_or_default();
     let service_port = std::env::var("VAULT_KEROSENE_SERVICE_PORT")
         .unwrap_or_else(|_| "7801".into())
         .parse::<u16>()
-        .map_err(|_| {
-            DomainError::AttestationRejected("invalid VAULT_KEROSENE_SERVICE_PORT".into())
-        })?;
+        .map_err(|_| DomainError::AttestationRejected("invalid VAULT_KEROSENE_SERVICE_PORT".into()))?;
 
     manifest
         .members
         .into_iter()
         .filter(|member| member.member_id != local_member)
         .map(|member| {
-            vault_service_endpoint(&member.endpoint, service_port)
-                .map(|endpoint| (member.member_id, endpoint))
+            vault_service_endpoint(&member.endpoint, service_port).map(|endpoint| (member.member_id, endpoint))
         })
         .collect()
 }
 
 fn vault_service_endpoint(node_endpoint: &str, service_port: u16) -> Result<String, DomainError> {
-    let mut endpoint = reqwest::Url::parse(node_endpoint).map_err(|_| {
-        DomainError::AttestationRejected("Node returned an invalid endpoint".into())
-    })?;
+    let mut endpoint = reqwest::Url::parse(node_endpoint)
+        .map_err(|_| DomainError::AttestationRejected("Node returned an invalid endpoint".into()))?;
     let host = endpoint.host_str().unwrap_or_default();
     let onion_label = host.strip_suffix(".onion").unwrap_or_default();
     let is_v3_onion = onion_label.len() == 56
-        && onion_label
-            .bytes()
-            .all(|byte| byte.is_ascii_lowercase() || (b'2'..=b'7').contains(&byte));
+        && onion_label.bytes().all(|byte| byte.is_ascii_lowercase() || (b'2'..=b'7').contains(&byte));
     if endpoint.scheme() != "https"
         || !is_v3_onion
         || !endpoint.username().is_empty()
@@ -1159,22 +1018,17 @@ fn vault_service_endpoint(node_endpoint: &str, service_port: u16) -> Result<Stri
         || endpoint.query().is_some()
         || endpoint.fragment().is_some()
     {
-        return Err(DomainError::AttestationRejected(
-            "Node returned a non-onion Vault member".into(),
-        ));
+        return Err(DomainError::AttestationRejected("Node returned a non-onion Vault member".into()));
     }
     endpoint.set_path("");
-    endpoint.set_port(Some(service_port)).map_err(|_| {
-        DomainError::AttestationRejected("could not derive Vault service port".into())
-    })?;
+    endpoint
+        .set_port(Some(service_port))
+        .map_err(|_| DomainError::AttestationRejected("could not derive Vault service port".into()))?;
     Ok(endpoint.to_string().trim_end_matches('/').into())
 }
 
 fn env_flag(name: &str) -> bool {
-    matches!(
-        std::env::var(name).as_deref(),
-        Ok("1" | "true" | "TRUE" | "yes" | "YES")
-    )
+    matches!(std::env::var(name).as_deref(), Ok("1" | "true" | "TRUE" | "yes" | "YES"))
 }
 
 fn env_nonempty_first(names: &[&str]) -> Option<String> {
@@ -1193,16 +1047,10 @@ fn resolve_tls_verify_policy(
     node_id: &str,
     seed_peers: &[(String, String)],
 ) -> Result<TlsPeerVerifyPolicy, DomainError> {
-    let trust =
-        env_nonempty_first(&["VAULT_MTLS_TRUST_DOMAIN"]).unwrap_or_else(|| "kerosene.lab".into());
+    let trust = env_nonempty_first(&["VAULT_MTLS_TRUST_DOMAIN"]).unwrap_or_else(|| "kerosene.lab".into());
     // Explicit override: comma-separated SPIFFE allowlist (unique per vault / SPIRE).
-    let allowed = if let Some(raw) =
-        env_nonempty_first(&["VAULT_TLS_PEER_SPIFFE_ID", "VAULT_MTLS_SPIFFE_VAULT"])
-    {
-        raw.split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect::<Vec<_>>()
+    let allowed = if let Some(raw) = env_nonempty_first(&["VAULT_TLS_PEER_SPIFFE_ID", "VAULT_MTLS_SPIFFE_VAULT"]) {
+        raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect::<Vec<_>>()
     } else {
         // Unique per-vault SPIFFE by default (#23): local + seed peers + shared lab alias.
         let mut ids = vec![format!("spiffe://{trust}/vault/{node_id}")];
@@ -1214,16 +1062,10 @@ fn resolve_tls_verify_policy(
         ids.dedup();
         ids
     };
-    let default_mode = if transport.is_tor() {
-        "onion_or_spiffe"
-    } else {
-        "hostname"
-    };
+    let default_mode = if transport.is_tor() { "onion_or_spiffe" } else { "hostname" };
     let raw = std::env::var("VAULT_TLS_VERIFY_MODE").unwrap_or_else(|_| default_mode.into());
     TlsPeerVerifyPolicy::parse(&raw, &allowed).ok_or_else(|| {
-        DomainError::AuthRejected(format!(
-            "unknown VAULT_TLS_VERIFY_MODE={raw} (or empty SPIFFE allowlist)"
-        ))
+        DomainError::AuthRejected(format!("unknown VAULT_TLS_VERIFY_MODE={raw} (or empty SPIFFE allowlist)"))
     })
 }
 
@@ -1236,10 +1078,7 @@ mod tests {
         let onion = "a".repeat(56);
         let node = format!("https://{onion}.onion:8800");
 
-        assert_eq!(
-            vault_service_endpoint(&node, 7801).unwrap(),
-            format!("https://{onion}.onion:7801")
-        );
+        assert_eq!(vault_service_endpoint(&node, 7801).unwrap(), format!("https://{onion}.onion:7801"));
     }
 
     #[test]
@@ -1324,19 +1163,12 @@ mod tests {
         cfg.transport = VaultTransport::Tor;
         cfg.peer_http = PeerHttpSettings::tor_defaults();
         cfg.clearnet_publish = false;
-        cfg.tls_verify_policy = TlsPeerVerifyPolicy::OnionOrSpiffe {
-            allowed: vec!["spiffe://kerosene.lab/vault/server".into()],
-        };
+        cfg.tls_verify_policy =
+            TlsPeerVerifyPolicy::OnionOrSpiffe { allowed: vec!["spiffe://kerosene.lab/vault/server".into()] };
         cfg.audit_key_allowlist = MeshAuditKeyAllowlist::from_hex_list(["aa".repeat(32)]);
         cfg.seed_peers = vec![
-            (
-                "vault-2".into(),
-                "http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion:7701".into(),
-            ),
-            (
-                "vault-3".into(),
-                "http://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.onion:7701".into(),
-            ),
+            ("vault-2".into(), "http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.onion:7701".into()),
+            ("vault-3".into(), "http://bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.onion:7701".into()),
         ];
         cfg.genesis_n = Some(3);
         cfg
@@ -1374,10 +1206,7 @@ mod tests {
         cfg.share_store_mode = ShareStoreMode::TeeSeal;
         cfg.dealer_requested = false;
         cfg.dkg_mode = DkgMode::Distributed;
-        assert_eq!(
-            cfg.validate_hygiene(),
-            Err(DomainError::LabFlagForbidden("LAB_TIMELOCK_SCALE".into()))
-        );
+        assert_eq!(cfg.validate_hygiene(), Err(DomainError::LabFlagForbidden("LAB_TIMELOCK_SCALE".into())));
     }
 
     #[test]
@@ -1405,9 +1234,7 @@ mod tests {
         cfg.dkg_mode = DkgMode::DistributedWire;
         assert_eq!(
             cfg.validate_hygiene(),
-            Err(DomainError::LabFlagForbidden(
-                "ATTESTATION_STAGING_STUB in production ceremony".into()
-            ))
+            Err(DomainError::LabFlagForbidden("ATTESTATION_STAGING_STUB in production ceremony".into()))
         );
     }
 
@@ -1427,10 +1254,7 @@ mod tests {
         cfg.dealer_requested = false;
         cfg.dkg_mode = DkgMode::DistributedWire;
         if cfg!(feature = "production") {
-            assert!(matches!(
-                cfg.validate_hygiene(),
-                Err(DomainError::LabFlagForbidden(_))
-            ));
+            assert!(matches!(cfg.validate_hygiene(), Err(DomainError::LabFlagForbidden(_))));
         } else {
             assert!(cfg.validate_hygiene().is_ok());
         }
@@ -1450,10 +1274,7 @@ mod tests {
         cfg.share_store_mode = ShareStoreMode::TeeSeal;
         cfg.dealer_requested = false;
         cfg.dkg_mode = DkgMode::DistributedWire;
-        assert!(matches!(
-            cfg.validate_hygiene(),
-            Err(DomainError::AuthRejected(_))
-        ));
+        assert!(matches!(cfg.validate_hygiene(), Err(DomainError::AuthRejected(_))));
         cfg.auth_mode = AuthMode::MutualTls;
         cfg = with_mtls_paths(cfg);
         cfg.node_tier = VaultNodeTier::Sev;
@@ -1504,10 +1325,7 @@ mod tests {
         cfg.share_store_mode = ShareStoreMode::AeadDisk;
         cfg.dealer_requested = false;
         cfg.dkg_mode = DkgMode::DistributedWire;
-        assert!(matches!(
-            cfg.validate_hygiene(),
-            Err(DomainError::AttestationRejected(_))
-        ));
+        assert!(matches!(cfg.validate_hygiene(), Err(DomainError::AttestationRejected(_))));
         cfg.measurement_pin_hex = Some("bb".repeat(32));
         assert!(cfg.validate_hygiene().is_ok());
     }
@@ -1583,10 +1401,7 @@ mod tests {
         cfg.peer_http = PeerHttpSettings::clearnet_defaults();
         cfg.seed_peers = vec![("vault-2".into(), "vault-2:7701".into())];
         cfg.measurement_pin_hex = Some("cc".repeat(32));
-        assert!(matches!(
-            cfg.validate_hygiene(),
-            Err(DomainError::LabFlagForbidden(_))
-        ));
+        assert!(matches!(cfg.validate_hygiene(), Err(DomainError::LabFlagForbidden(_))));
     }
 
     #[test]
@@ -1605,10 +1420,7 @@ mod tests {
         cfg.dealer_requested = false;
         cfg.dkg_mode = DkgMode::DistributedWire;
         cfg.measurement_pin_hex = Some("dd".repeat(32));
-        assert!(matches!(
-            cfg.validate_hygiene(),
-            Err(DomainError::LabFlagForbidden(_))
-        ));
+        assert!(matches!(cfg.validate_hygiene(), Err(DomainError::LabFlagForbidden(_))));
     }
 
     #[test]
@@ -1617,10 +1429,7 @@ mod tests {
         cfg.transport = VaultTransport::Tor;
         cfg.peer_http = PeerHttpSettings::tor_defaults();
         cfg.seed_peers = vec![("vault-2".into(), "vault-2:7701".into())];
-        assert!(matches!(
-            cfg.validate_transport_hygiene(),
-            Err(DomainError::AttestationRejected(_))
-        ));
+        assert!(matches!(cfg.validate_transport_hygiene(), Err(DomainError::AttestationRejected(_))));
     }
 
     #[test]
@@ -1637,10 +1446,7 @@ mod tests {
         cfg.dealer_requested = false;
         cfg.dkg_mode = DkgMode::Distributed;
         cfg.measurement_pin_hex = Some("ee".repeat(32));
-        assert!(matches!(
-            cfg.validate_hygiene(),
-            Err(DomainError::DealerForbidden(_))
-        ));
+        assert!(matches!(cfg.validate_hygiene(), Err(DomainError::DealerForbidden(_))));
     }
 
     #[test]
@@ -1648,12 +1454,8 @@ mod tests {
         let mut cfg = base();
         cfg.node_id = NodeId::new("vault-home").unwrap();
         cfg.node_tier = VaultNodeTier::Domestic;
-        cfg.seed_peers = vec![
-            ("vault-epyc".into(), "epyc:7701".into()),
-            ("vault-home-2".into(), "h2:7701".into()),
-        ];
-        cfg.peer_tiers
-            .insert("vault-epyc".into(), VaultNodeTier::Sev);
+        cfg.seed_peers = vec![("vault-epyc".into(), "epyc:7701".into()), ("vault-home-2".into(), "h2:7701".into())];
+        cfg.peer_tiers.insert("vault-epyc".into(), VaultNodeTier::Sev);
         cfg.genesis_n = Some(2);
         let seats = cfg.seat_genesis().unwrap();
         assert_eq!(seats.len(), 2);
@@ -1676,10 +1478,7 @@ mod tests {
         cfg.share_store_mode = ShareStoreMode::TeeSeal;
         cfg.dealer_requested = false;
         cfg.dkg_mode = DkgMode::DistributedWire;
-        assert!(matches!(
-            cfg.validate_hygiene(),
-            Err(DomainError::AttestationRejected(_))
-        ));
+        assert!(matches!(cfg.validate_hygiene(), Err(DomainError::AttestationRejected(_))));
     }
 
     #[test]
@@ -1697,21 +1496,16 @@ mod tests {
         cfg.share_store_mode = ShareStoreMode::TeeSeal;
         cfg.dealer_requested = false;
         cfg.dkg_mode = DkgMode::DistributedWire;
-        assert!(matches!(
-            cfg.validate_hygiene(),
-            Err(DomainError::LabFlagForbidden(_))
-        ));
+        assert!(matches!(cfg.validate_hygiene(), Err(DomainError::LabFlagForbidden(_))));
     }
 
     #[test]
     fn peer_tee_tier_without_quote_seats_as_domestic() {
         let mut cfg = base();
-        cfg.peer_tiers
-            .insert("vault-epyc".into(), VaultNodeTier::Sev);
+        cfg.peer_tiers.insert("vault-epyc".into(), VaultNodeTier::Sev);
         cfg.peer_tier_require_quote = true;
         assert_eq!(cfg.peer_tier("vault-epyc"), VaultNodeTier::Domestic);
-        cfg.peer_tier_quotes
-            .insert("vault-epyc".into(), "deadbeef".into());
+        cfg.peer_tier_quotes.insert("vault-epyc".into(), "deadbeef".into());
         assert_eq!(cfg.peer_tier("vault-epyc"), VaultNodeTier::Sev);
     }
 
@@ -1721,20 +1515,14 @@ mod tests {
         cfg.node_tier = VaultNodeTier::Domestic;
         cfg.attestation_mode = AttestationMode::Sev;
         cfg.tee_available = true;
-        assert!(matches!(
-            cfg.validate_tee_claims(),
-            Err(DomainError::AttestationRejected(_))
-        ));
+        assert!(matches!(cfg.validate_tee_claims(), Err(DomainError::AttestationRejected(_))));
     }
 
     #[test]
     fn mtls_requires_tls_paths() {
         let mut cfg = base();
         cfg.auth_mode = AuthMode::MutualTls;
-        assert!(matches!(
-            cfg.validate_hygiene(),
-            Err(DomainError::AuthRejected(_))
-        ));
+        assert!(matches!(cfg.validate_hygiene(), Err(DomainError::AuthRejected(_))));
         cfg = with_mtls_paths(cfg);
         assert!(cfg.validate_hygiene().is_ok());
     }
@@ -1768,10 +1556,7 @@ mod tests {
         cfg.share_tpm_seal = true;
         cfg.share_tpm_stub = true;
         if cfg!(feature = "production") {
-            assert!(matches!(
-                cfg.validate_tpm_seal_hygiene(),
-                Err(DomainError::LabFlagForbidden(_))
-            ));
+            assert!(matches!(cfg.validate_tpm_seal_hygiene(), Err(DomainError::LabFlagForbidden(_))));
         } else {
             assert!(cfg.validate_tpm_seal_hygiene().is_ok());
             assert!(cfg.validate_hygiene().is_ok());
@@ -1786,10 +1571,7 @@ mod tests {
         cfg.attestation_mode = AttestationMode::Software;
         cfg.share_tpm_seal = true;
         cfg.share_tpm_clear_fallback = true;
-        assert!(matches!(
-            cfg.validate_tpm_seal_hygiene(),
-            Err(DomainError::LabFlagForbidden(_))
-        ));
+        assert!(matches!(cfg.validate_tpm_seal_hygiene(), Err(DomainError::LabFlagForbidden(_))));
     }
 
     #[test]
@@ -1797,9 +1579,6 @@ mod tests {
         let mut cfg = base();
         cfg.share_store_mode = ShareStoreMode::TeeSeal;
         cfg.share_tpm_seal = true;
-        assert!(matches!(
-            cfg.validate_tpm_seal_hygiene(),
-            Err(DomainError::ShareStoreForbidden(_))
-        ));
+        assert!(matches!(cfg.validate_tpm_seal_hygiene(), Err(DomainError::ShareStoreForbidden(_))));
     }
 }

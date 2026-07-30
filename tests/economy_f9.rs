@@ -11,11 +11,7 @@ use kerosene_vault::domain::{
 };
 
 fn three_ids() -> [NodeId; 3] {
-    [
-        NodeId::new("vault-1").unwrap(),
-        NodeId::new("vault-2").unwrap(),
-        NodeId::new("vault-3").unwrap(),
-    ]
+    [NodeId::new("vault-1").unwrap(), NodeId::new("vault-2").unwrap(), NodeId::new("vault-3").unwrap()]
 }
 
 #[test]
@@ -32,9 +28,7 @@ fn open_constitution_splits_one_percent_to_miners() {
 fn allocate_profit_open_not_dry_run() {
     let ids = three_ids();
     let constitution = Constitution::v1_open(3).unwrap();
-    let ledger = Arc::new(
-        InMemoryLedger::genesis(constitution, ids.to_vec(), ids[0].clone()).unwrap(),
-    );
+    let ledger = Arc::new(InMemoryLedger::genesis(constitution, ids.to_vec(), ids[0].clone()).unwrap());
     let alloc = AllocateProfit::new(ledger).execute(1_000_000).unwrap();
     assert!(!alloc.dry_run_miners);
     assert_eq!(alloc.miners_sats, 10_000);
@@ -44,9 +38,7 @@ fn allocate_profit_open_not_dry_run() {
 fn accrue_and_propose_payouts_equal_split() {
     let ids = three_ids();
     let constitution = Constitution::v1_open(3).unwrap();
-    let ledger = Arc::new(
-        InMemoryLedger::genesis(constitution, ids.to_vec(), ids[0].clone()).unwrap(),
-    );
+    let ledger = Arc::new(InMemoryLedger::genesis(constitution, ids.to_vec(), ids[0].clone()).unwrap());
     let economy = Arc::new(InMemoryEconomy::new(EconomyState::new_open()));
     let upsert = UpsertMiner::new(economy.clone());
     upsert
@@ -84,29 +76,16 @@ fn accrue_and_propose_payouts_equal_split() {
     let accrue = AccrueMinerRewards::new(economy.clone(), ledger.clone(), ids[0].clone());
     let receipt = accrue.execute(1_000_000).unwrap();
     assert_eq!(receipt.accrued_to_pool_sats, 10_000);
-    assert_eq!(
-        receipt.channels_sats + receipt.infra_sats + receipt.accrued_to_pool_sats,
-        1_000_000
-    );
+    assert_eq!(receipt.channels_sats + receipt.infra_sats + receipt.accrued_to_pool_sats, 1_000_000);
 
     let clock = Arc::new(kerosene_vault::adapters::SystemClock);
-    let propose = ProposeMinerPayouts::new(
-        economy.clone(),
-        ledger,
-        clock,
-        kerosene_vault::domain::MinerPayoutCadence::Manual,
-    );
+    let propose =
+        ProposeMinerPayouts::new(economy.clone(), ledger, clock, kerosene_vault::domain::MinerPayoutCadence::Manual);
     let proposal = propose.execute(10_000, "pay").unwrap();
     assert_eq!(proposal.intents.len(), 2);
     assert_eq!(proposal.total_sats, 10_000);
-    assert!(proposal
-        .intents
-        .iter()
-        .all(|i| i.bucket == BucketKind::Miners));
-    assert!(!proposal
-        .intents
-        .iter()
-        .any(|i| i.destination == "bc1q-miner-wait"));
+    assert!(proposal.intents.iter().all(|i| i.bucket == BucketKind::Miners));
+    assert!(!proposal.intents.iter().any(|i| i.destination == "bc1q-miner-wait"));
     assert_eq!(economy.snapshot().unwrap().miner_pool_sats, 0);
 }
 
@@ -115,9 +94,7 @@ fn open_gate_rejects_unregistered_miner_destination() {
     let ids = three_ids();
     let constitution = Constitution::v1_open(3).unwrap();
     let policy_hash = constitution.hash.clone();
-    let ledger = Arc::new(
-        InMemoryLedger::genesis(constitution.clone(), ids.to_vec(), ids[0].clone()).unwrap(),
-    );
+    let ledger = Arc::new(InMemoryLedger::genesis(constitution.clone(), ids.to_vec(), ids[0].clone()).unwrap());
     let buckets = Arc::new(InMemoryBucketLedger::from_constitution_caps(
         constitution.max_withdraw_per_tx_sats,
         constitution.max_withdraw_per_day_sats,
@@ -134,18 +111,8 @@ fn open_gate_rejects_unregistered_miner_destination() {
         })
         .unwrap();
     let gate = GateIntent::new(buckets, ledger, economy);
-    let evil = SettlementIntent::new(
-        "self-pay",
-        BucketKind::Miners,
-        "bc1q-vault-self",
-        100,
-        policy_hash,
-    )
-    .unwrap();
-    assert_eq!(
-        gate.execute(evil).unwrap_err(),
-        DomainError::MinerSelfPayForbidden
-    );
+    let evil = SettlementIntent::new("self-pay", BucketKind::Miners, "bc1q-vault-self", 100, policy_hash).unwrap();
+    assert_eq!(gate.execute(evil).unwrap_err(), DomainError::MinerSelfPayForbidden);
 }
 
 #[test]
@@ -153,9 +120,7 @@ fn open_gate_accepts_registered_eligible_miner() {
     let ids = three_ids();
     let constitution = Constitution::v1_open(3).unwrap();
     let policy_hash = constitution.hash.clone();
-    let ledger = Arc::new(
-        InMemoryLedger::genesis(constitution.clone(), ids.to_vec(), ids[0].clone()).unwrap(),
-    );
+    let ledger = Arc::new(InMemoryLedger::genesis(constitution.clone(), ids.to_vec(), ids[0].clone()).unwrap());
     let buckets = Arc::new(InMemoryBucketLedger::from_constitution_caps(
         constitution.max_withdraw_per_tx_sats,
         constitution.max_withdraw_per_day_sats,
@@ -172,14 +137,7 @@ fn open_gate_accepts_registered_eligible_miner() {
         })
         .unwrap();
     let gate = GateIntent::new(buckets, ledger, economy);
-    let intent = SettlementIntent::new(
-        "bank-pay-1",
-        BucketKind::Miners,
-        "bc1q-miner-a",
-        100,
-        policy_hash,
-    )
-    .unwrap();
+    let intent = SettlementIntent::new("bank-pay-1", BucketKind::Miners, "bc1q-miner-a", 100, policy_hash).unwrap();
     assert_eq!(gate.execute(intent).unwrap().status, "ACCEPTED");
 }
 

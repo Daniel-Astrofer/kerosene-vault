@@ -12,8 +12,7 @@ use rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, Server
 use rustls::client::WebPkiServerVerifier;
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, ServerName, UnixTime};
 use rustls::{
-    CertificateError, ClientConfig, DigitallySignedStruct, Error as RustlsError, RootCertStore,
-    SignatureScheme,
+    CertificateError, ClientConfig, DigitallySignedStruct, Error as RustlsError, RootCertStore, SignatureScheme,
 };
 use x509_parser::prelude::*;
 
@@ -34,21 +33,17 @@ pub enum TlsPeerVerifyPolicy {
 
 impl TlsPeerVerifyPolicy {
     pub fn parse(raw: &str, allowed_spiffe: &[String]) -> Option<Self> {
-        if matches!(
-            raw.trim().to_ascii_lowercase().as_str(),
-            "spiffe" | "onion_or_spiffe" | "onion+spiffe" | "tor"
-        ) && allowed_spiffe.is_empty()
+        if matches!(raw.trim().to_ascii_lowercase().as_str(), "spiffe" | "onion_or_spiffe" | "onion+spiffe" | "tor")
+            && allowed_spiffe.is_empty()
         {
             return None;
         }
         match raw.trim().to_ascii_lowercase().as_str() {
             "hostname" | "dns" | "webpki" => Some(Self::Hostname),
-            "spiffe" => Some(Self::Spiffe {
-                allowed: allowed_spiffe.to_vec(),
-            }),
-            "onion_or_spiffe" | "onion+spiffe" | "tor" => Some(Self::OnionOrSpiffe {
-                allowed: allowed_spiffe.to_vec(),
-            }),
+            "spiffe" => Some(Self::Spiffe { allowed: allowed_spiffe.to_vec() }),
+            "onion_or_spiffe" | "onion+spiffe" | "tor" => {
+                Some(Self::OnionOrSpiffe { allowed: allowed_spiffe.to_vec() })
+            }
             _ => None,
         }
     }
@@ -98,17 +93,10 @@ pub fn build_mtls_rustls_client_config(
                 .map_err(|e| DomainError::AuthRejected(format!("peer TLS verifier: {e}")))?;
             ClientConfig::builder().with_webpki_verifier(verifier)
         }
-        TlsPeerVerifyPolicy::Spiffe { allowed }
-        | TlsPeerVerifyPolicy::OnionOrSpiffe { allowed } => {
+        TlsPeerVerifyPolicy::Spiffe { allowed } | TlsPeerVerifyPolicy::OnionOrSpiffe { allowed } => {
             let require_onion_san = matches!(verify, TlsPeerVerifyPolicy::OnionOrSpiffe { .. });
-            let verifier = Arc::new(OnionOrSpiffeVerifier::new(
-                roots,
-                allowed.clone(),
-                require_onion_san,
-            )?);
-            ClientConfig::builder()
-                .dangerous()
-                .with_custom_certificate_verifier(verifier)
+            let verifier = Arc::new(OnionOrSpiffeVerifier::new(roots, allowed.clone(), require_onion_san)?);
+            ClientConfig::builder().dangerous().with_custom_certificate_verifier(verifier)
         }
     };
 
@@ -118,25 +106,17 @@ pub fn build_mtls_rustls_client_config(
 }
 
 fn load_root_store(ca_path: &Path) -> Result<RootCertStore, DomainError> {
-    let ca_pem = std::fs::read(ca_path).map_err(|e| {
-        DomainError::AuthRejected(format!(
-            "read VAULT_TLS_CLIENT_CA_PATH {}: {e}",
-            ca_path.display()
-        ))
-    })?;
+    let ca_pem = std::fs::read(ca_path)
+        .map_err(|e| DomainError::AuthRejected(format!("read VAULT_TLS_CLIENT_CA_PATH {}: {e}", ca_path.display())))?;
     let mut roots = RootCertStore::empty();
     let mut n = 0usize;
     for ca in rustls_pemfile::certs(&mut ca_pem.as_slice()) {
         let ca = ca.map_err(|e| DomainError::AuthRejected(format!("parse peer CA PEM: {e}")))?;
-        roots
-            .add(ca)
-            .map_err(|e| DomainError::AuthRejected(format!("add peer CA: {e}")))?;
+        roots.add(ca).map_err(|e| DomainError::AuthRejected(format!("add peer CA: {e}")))?;
         n += 1;
     }
     if n == 0 {
-        return Err(DomainError::AuthRejected(
-            "VAULT_TLS_CLIENT_CA_PATH contains no certificates".into(),
-        ));
+        return Err(DomainError::AuthRejected("VAULT_TLS_CLIENT_CA_PATH contains no certificates".into()));
     }
     Ok(roots)
 }
@@ -146,30 +126,20 @@ fn load_client_identity(
     key_path: &Path,
 ) -> Result<(Vec<CertificateDer<'static>>, PrivateKeyDer<'static>), DomainError> {
     let cert_pem = std::fs::read(cert_path).map_err(|e| {
-        DomainError::AuthRejected(format!(
-            "read VAULT_TLS_CLIENT_CERT_PATH {}: {e}",
-            cert_path.display()
-        ))
+        DomainError::AuthRejected(format!("read VAULT_TLS_CLIENT_CERT_PATH {}: {e}", cert_path.display()))
     })?;
     let key_pem = std::fs::read(key_path).map_err(|e| {
-        DomainError::AuthRejected(format!(
-            "read VAULT_TLS_CLIENT_KEY_PATH {}: {e}",
-            key_path.display()
-        ))
+        DomainError::AuthRejected(format!("read VAULT_TLS_CLIENT_KEY_PATH {}: {e}", key_path.display()))
     })?;
     let certs: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut cert_pem.as_slice())
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| DomainError::AuthRejected(format!("parse client cert PEM: {e}")))?;
     if certs.is_empty() {
-        return Err(DomainError::AuthRejected(
-            "VAULT_TLS_CLIENT_CERT_PATH contains no certificates".into(),
-        ));
+        return Err(DomainError::AuthRejected("VAULT_TLS_CLIENT_CERT_PATH contains no certificates".into()));
     }
     let key = rustls_pemfile::private_key(&mut key_pem.as_slice())
         .map_err(|e| DomainError::AuthRejected(format!("parse client key PEM: {e}")))?
-        .ok_or_else(|| {
-            DomainError::AuthRejected("VAULT_TLS_CLIENT_KEY_PATH contains no private key".into())
-        })?;
+        .ok_or_else(|| DomainError::AuthRejected("VAULT_TLS_CLIENT_KEY_PATH contains no private key".into()))?;
     Ok((certs, key))
 }
 
@@ -217,53 +187,35 @@ struct OnionOrSpiffeVerifier {
 }
 
 impl OnionOrSpiffeVerifier {
-    fn new(
-        roots: RootCertStore,
-        allowed_spiffe: Vec<String>,
-        require_onion_san: bool,
-    ) -> Result<Self, DomainError> {
+    fn new(roots: RootCertStore, allowed_spiffe: Vec<String>, require_onion_san: bool) -> Result<Self, DomainError> {
         if allowed_spiffe.is_empty()
-            || allowed_spiffe
-                .iter()
-                .any(|id| id.trim().is_empty() || !id.starts_with("spiffe://"))
+            || allowed_spiffe.iter().any(|id| id.trim().is_empty() || !id.starts_with("spiffe://"))
         {
             return Err(DomainError::AuthRejected(
-                "VAULT_TLS_PEER_SPIFFE_ID must be one or more spiffe:// URIs for onion/SPIFFE verify"
-                    .into(),
+                "VAULT_TLS_PEER_SPIFFE_ID must be one or more spiffe:// URIs for onion/SPIFFE verify".into(),
             ));
         }
         let inner = WebPkiServerVerifier::builder(Arc::new(roots))
             .build()
             .map_err(|e| DomainError::AuthRejected(format!("peer TLS verifier: {e}")))?;
-        Ok(Self {
-            inner,
-            allowed_spiffe,
-            require_onion_san,
-        })
+        Ok(Self { inner, allowed_spiffe, require_onion_san })
     }
 
     fn spiffe_ok(&self, uris: &[String]) -> bool {
-        uris.iter()
-            .any(|u| self.allowed_spiffe.iter().any(|a| a == u))
+        uris.iter().any(|u| self.allowed_spiffe.iter().any(|a| a == u))
     }
 
     fn onion_san_ok(host: &str, dns_sans: &[String]) -> bool {
-        host.ends_with(".onion")
-            && dns_sans
-                .iter()
-                .any(|d| d.eq_ignore_ascii_case(host))
+        host.ends_with(".onion") && dns_sans.iter().any(|d| d.eq_ignore_ascii_case(host))
     }
 
     /// AND semantics: SPIFFE always required; onion host additionally needs matching DNS SAN.
-    fn identity_ok(
-        &self,
-        end_entity: &CertificateDer<'_>,
-        server_name: &ServerName<'_>,
-    ) -> Result<bool, RustlsError> {
+    fn identity_ok(&self, end_entity: &CertificateDer<'_>, server_name: &ServerName<'_>) -> Result<bool, RustlsError> {
         let (uris, dns) = extract_sans(end_entity.as_ref()).map_err(|e| {
-            RustlsError::InvalidCertificate(CertificateError::Other(rustls::OtherError(Arc::new(
-                std::io::Error::new(std::io::ErrorKind::InvalidData, e.to_string()),
-            ))))
+            RustlsError::InvalidCertificate(CertificateError::Other(rustls::OtherError(Arc::new(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                e.to_string(),
+            )))))
         })?;
         if !self.spiffe_ok(&uris) {
             return Ok(false);
@@ -294,20 +246,12 @@ impl ServerCertVerifier for OnionOrSpiffeVerifier {
         ocsp_response: &[u8],
         now: UnixTime,
     ) -> Result<ServerCertVerified, RustlsError> {
-        match self.inner.verify_server_cert(
-            end_entity,
-            intermediates,
-            server_name,
-            ocsp_response,
-            now,
-        ) {
+        match self.inner.verify_server_cert(end_entity, intermediates, server_name, ocsp_response, now) {
             Ok(v) => {
                 if self.identity_ok(end_entity, server_name)? {
                     Ok(v)
                 } else {
-                    Err(RustlsError::InvalidCertificate(
-                        CertificateError::NotValidForName,
-                    ))
+                    Err(RustlsError::InvalidCertificate(CertificateError::NotValidForName))
                 }
             }
             Err(err) if name_error(&err) => {
@@ -353,15 +297,10 @@ mod tests {
     fn parse_verify_modes() {
         let id = "spiffe://kerosene.lab/vault/server";
         let allowed = vec![id.to_string()];
-        assert_eq!(
-            TlsPeerVerifyPolicy::parse("hostname", &allowed),
-            Some(TlsPeerVerifyPolicy::Hostname)
-        );
+        assert_eq!(TlsPeerVerifyPolicy::parse("hostname", &allowed), Some(TlsPeerVerifyPolicy::Hostname));
         assert_eq!(
             TlsPeerVerifyPolicy::parse("spiffe", &allowed),
-            Some(TlsPeerVerifyPolicy::Spiffe {
-                allowed: allowed.clone()
-            })
+            Some(TlsPeerVerifyPolicy::Spiffe { allowed: allowed.clone() })
         );
         assert_eq!(
             TlsPeerVerifyPolicy::parse("onion_or_spiffe", &allowed),
@@ -378,27 +317,14 @@ mod tests {
         ];
         let uris_ok = ["spiffe://kerosene.ceremony/vault/vault-2".to_string()];
         let uris_bad = ["spiffe://kerosene.ceremony/vault/vault-9".to_string()];
-        assert!(uris_ok
-            .iter()
-            .any(|u| allowed.iter().any(|a| a == u)));
-        assert!(!uris_bad
-            .iter()
-            .any(|u| allowed.iter().any(|a| a == u)));
+        assert!(uris_ok.iter().any(|u| allowed.iter().any(|a| a == u)));
+        assert!(!uris_bad.iter().any(|u| allowed.iter().any(|a| a == u)));
     }
 
     #[test]
     fn onion_san_match_is_case_insensitive() {
-        assert!(OnionOrSpiffeVerifier::onion_san_ok(
-            "abc.onion",
-            &["ABC.onion".into(), "localhost".into()]
-        ));
-        assert!(!OnionOrSpiffeVerifier::onion_san_ok(
-            "abc.onion",
-            &["localhost".into()]
-        ));
-        assert!(!OnionOrSpiffeVerifier::onion_san_ok(
-            "vault-1",
-            &["vault-1".into()]
-        ));
+        assert!(OnionOrSpiffeVerifier::onion_san_ok("abc.onion", &["ABC.onion".into(), "localhost".into()]));
+        assert!(!OnionOrSpiffeVerifier::onion_san_ok("abc.onion", &["localhost".into()]));
+        assert!(!OnionOrSpiffeVerifier::onion_san_ok("vault-1", &["vault-1".into()]));
     }
 }

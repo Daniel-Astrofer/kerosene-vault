@@ -4,9 +4,9 @@ use std::sync::Arc;
 
 use crate::application::ports::{ClockPort, EconomyPort, LedgerPort};
 use crate::domain::{
-    assert_bank_issued_miner_payout, AttestationMode, DomainError, EconomyState, GovernanceAccrual,
-    GovernanceJobKind, GovernanceRewardConfig, LedgerEntry, LedgerEventKind, MinerOperator,
-    MinerPayoutCadence, MinerPayoutShare, NodeId, SettlementIntent, VaultNodeTier,
+    assert_bank_issued_miner_payout, AttestationMode, DomainError, EconomyState, GovernanceAccrual, GovernanceJobKind,
+    GovernanceRewardConfig, LedgerEntry, LedgerEventKind, MinerOperator, MinerPayoutCadence, MinerPayoutShare, NodeId,
+    SettlementIntent, VaultNodeTier,
 };
 
 pub struct GetEconomyStatus {
@@ -29,15 +29,7 @@ impl GetEconomyStatus {
         attestation_mode: AttestationMode,
         tee_available: bool,
     ) -> Self {
-        Self {
-            economy,
-            ledger,
-            governance_reward,
-            payout_cadence,
-            node_tier,
-            attestation_mode,
-            tee_available,
-        }
+        Self { economy, ledger, governance_reward, payout_cadence, node_tier, attestation_mode, tee_available }
     }
 
     pub fn execute(&self) -> Result<EconomyStatusView, DomainError> {
@@ -102,10 +94,7 @@ pub struct EconomyStatusView {
 
 impl EconomyStatusView {
     pub fn to_json(&self) -> String {
-        let last = self
-            .last_miner_payout_at_secs
-            .map(|n| n.to_string())
-            .unwrap_or_else(|| "null".into());
+        let last = self.last_miner_payout_at_secs.map(|n| n.to_string()).unwrap_or_else(|| "null".into());
         format!(
             r#"{{"miner_pool_sats":{},"channels_pool_sats":{},"infra_pool_sats":{},"accrued_profit_sats":{},"pending_governance_reward_sats":{},"governance_reward_sats":{},"governance_reward_bps":{},"p_reward_bps":{},"channels_bps":{},"infra_bps":{},"miner_payout_cadence":"{}","last_miner_payout_at_secs":{},"eligible_miners":{},"waiting_miners":{},"crypto_suite_id":"{}","crypto_suite_id_pq":"{}","survivability_ok":{},"open_economy":{},"node_tier":"{}","attestation_mode":"{}","tee_available":{},"tier_governance_weight_bps":{}}}"#,
             self.miner_pool_sats,
@@ -155,23 +144,13 @@ pub struct AccrueMinerRewards {
 }
 
 impl AccrueMinerRewards {
-    pub fn new(
-        economy: Arc<dyn EconomyPort>,
-        ledger: Arc<dyn LedgerPort>,
-        writer: NodeId,
-    ) -> Self {
-        Self {
-            economy,
-            ledger,
-            writer,
-        }
+    pub fn new(economy: Arc<dyn EconomyPort>, ledger: Arc<dyn LedgerPort>, writer: NodeId) -> Self {
+        Self { economy, ledger, writer }
     }
 
     pub fn execute(&self, profit_sats: u64) -> Result<AccrueReceipt, DomainError> {
         let constitution = self.ledger.constitution()?;
-        let split = self
-            .economy
-            .accrue_profit_splits(profit_sats, &constitution.profit_splits)?;
+        let split = self.economy.accrue_profit_splits(profit_sats, &constitution.profit_splits)?;
         let eco = self.economy.snapshot()?;
 
         let payload = format!(
@@ -185,11 +164,7 @@ impl AccrueMinerRewards {
             constitution.profit_splits.infra_bps
         );
         let epoch = self.ledger.epoch()?.number;
-        let prev = self
-            .ledger
-            .head()?
-            .map(|e| e.entry_hash)
-            .unwrap_or_else(|| "genesis-prev".into());
+        let prev = self.ledger.head()?.map(|e| e.entry_hash).unwrap_or_else(|| "genesis-prev".into());
         let next_index = self.ledger.entries()?.len() as u64;
         let entry = LedgerEntry::chain(
             next_index,
@@ -257,12 +232,7 @@ impl AccrueGovernanceWork {
         writer: NodeId,
         config: GovernanceRewardConfig,
     ) -> Self {
-        Self {
-            economy,
-            ledger,
-            writer,
-            config,
-        }
+        Self { economy, ledger, writer, config }
     }
 
     pub fn config(&self) -> GovernanceRewardConfig {
@@ -285,9 +255,7 @@ impl AccrueGovernanceWork {
                 eligible_credited: 0,
             });
         }
-        let accrual = self
-            .economy
-            .accrue_governance_job(job, participants, &self.config)?;
+        let accrual = self.economy.accrue_governance_job(job, participants, &self.config)?;
         if accrual.accrued_to_pool_sats == 0 && accrual.bounty_sats == 0 {
             return Ok(accrual);
         }
@@ -298,12 +266,7 @@ impl AccrueGovernanceWork {
             .map(|(id, sats)| format!(r#"{{"node_id":"{}","sats":{}}}"#, id.as_str(), sats))
             .collect::<Vec<_>>()
             .join(",");
-        let parts = accrual
-            .participants
-            .iter()
-            .map(|id| format!("\"{}\"", id.as_str()))
-            .collect::<Vec<_>>()
-            .join(",");
+        let parts = accrual.participants.iter().map(|id| format!("\"{}\"", id.as_str())).collect::<Vec<_>>().join(",");
         let payload = format!(
             r#"{{"job":"{}","context":"{}","bounty_sats":{},"accrued_to_pool_sats":{},"eligible_credited":{},"participants":[{}],"credited":[{}]}}"#,
             job.as_str(),
@@ -315,11 +278,7 @@ impl AccrueGovernanceWork {
             credited
         );
         let epoch = self.ledger.epoch()?.number;
-        let prev = self
-            .ledger
-            .head()?
-            .map(|e| e.entry_hash)
-            .unwrap_or_else(|| "genesis-prev".into());
+        let prev = self.ledger.head()?.map(|e| e.entry_hash).unwrap_or_else(|| "genesis-prev".into());
         let next_index = self.ledger.entries()?.len() as u64;
         let entry = LedgerEntry::chain(
             next_index,
@@ -353,22 +312,13 @@ impl ProposeMinerPayouts {
         clock: Arc<dyn ClockPort>,
         payout_cadence: MinerPayoutCadence,
     ) -> Self {
-        Self {
-            economy,
-            ledger,
-            clock,
-            payout_cadence,
-        }
+        Self { economy, ledger, clock, payout_cadence }
     }
 
     pub fn execute(&self, amount: u64, intent_prefix: &str) -> Result<PayoutProposal, DomainError> {
         let constitution = self.ledger.constitution()?;
         let now = self.clock.unix_now_secs();
-        self.economy.snapshot()?.assert_payout_cadence_ok(
-            self.payout_cadence,
-            now,
-            None,
-        )?;
+        self.economy.snapshot()?.assert_payout_cadence_ok(self.payout_cadence, now, None)?;
         let shares = self.economy.propose_equal_payouts(amount)?;
         let mut intents = Vec::with_capacity(shares.len());
         for (i, share) in shares.iter().enumerate() {
@@ -379,11 +329,7 @@ impl ProposeMinerPayouts {
         }
         self.economy.debit_pool(amount)?;
         self.economy.record_miner_payout(now, None)?;
-        Ok(PayoutProposal {
-            total_sats: amount,
-            shares,
-            intents,
-        })
+        Ok(PayoutProposal { total_sats: amount, shares, intents })
     }
 }
 

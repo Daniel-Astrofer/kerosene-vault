@@ -34,19 +34,13 @@ impl PersistedAntiNonce {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self, DomainError> {
         let path = path.into();
         if let Some(parent) = path.parent() {
-            fs::create_dir_all(parent).map_err(|e| {
-                DomainError::ThresholdError(format!("anti-nonce mkdir: {e}"))
-            })?;
+            fs::create_dir_all(parent).map_err(|e| DomainError::ThresholdError(format!("anti-nonce mkdir: {e}")))?;
         }
         let mut set = HashSet::new();
         if path.exists() {
             load_ids_into(&path, &mut set)?;
         }
-        Ok(Self {
-            path,
-            inner: Mutex::new(set),
-            soft: Mutex::new(HashMap::new()),
-        })
+        Ok(Self { path, inner: Mutex::new(set), soft: Mutex::new(HashMap::new()) })
     }
 
     fn append_id(&self, session_id: &str) -> Result<(), DomainError> {
@@ -55,10 +49,8 @@ impl PersistedAntiNonce {
             .append(true)
             .open(&self.path)
             .map_err(|e| DomainError::ThresholdError(format!("anti-nonce append: {e}")))?;
-        writeln!(file, "{session_id}")
-            .map_err(|e| DomainError::ThresholdError(format!("anti-nonce write: {e}")))?;
-        file.sync_all()
-            .map_err(|e| DomainError::ThresholdError(format!("anti-nonce sync: {e}")))?;
+        writeln!(file, "{session_id}").map_err(|e| DomainError::ThresholdError(format!("anti-nonce write: {e}")))?;
+        file.sync_all().map_err(|e| DomainError::ThresholdError(format!("anti-nonce sync: {e}")))?;
         Ok(())
     }
 
@@ -100,9 +92,7 @@ impl PersistedAntiNonce {
 impl AntiNoncePort for PersistedAntiNonce {
     fn claim_session(&self, session_id: &str) -> Result<(), DomainError> {
         if self.prepare(session_id)? {
-            return Err(DomainError::NonceReuse(format!(
-                "session_id already used: {session_id}"
-            )));
+            return Err(DomainError::NonceReuse(format!("session_id already used: {session_id}")));
         }
         Ok(())
     }
@@ -148,11 +138,7 @@ pub struct HttpAntiNonceTransport {
 }
 
 impl HttpAntiNonceTransport {
-    pub fn new(
-        peer_prepare_urls: Vec<String>,
-        auth_token: Option<String>,
-        timeout: Duration,
-    ) -> Self {
+    pub fn new(peer_prepare_urls: Vec<String>, auth_token: Option<String>, timeout: Duration) -> Self {
         let mut peer_http = PeerHttpSettings::clearnet_defaults();
         peer_http.timeout = timeout;
         peer_http.connect_timeout = timeout;
@@ -165,12 +151,7 @@ impl HttpAntiNonceTransport {
         auth_token: Option<String>,
         peer_http: PeerHttpSettings,
     ) -> Self {
-        Self {
-            peer_prepare_urls,
-            auth_token,
-            peer_http,
-            tls: None,
-        }
+        Self { peer_prepare_urls, auth_token, peer_http, tls: None }
     }
 
     pub fn with_mtls(
@@ -181,18 +162,8 @@ impl HttpAntiNonceTransport {
         ca_path: &Path,
         verify: &TlsPeerVerifyPolicy,
     ) -> Result<Self, DomainError> {
-        let tls = build_mtls_rustls_client_config(
-            client_cert_path,
-            client_key_path,
-            ca_path,
-            verify,
-        )?;
-        Ok(Self {
-            peer_prepare_urls,
-            auth_token: None,
-            peer_http,
-            tls: Some(tls),
-        })
+        let tls = build_mtls_rustls_client_config(client_cert_path, client_key_path, ca_path, verify)?;
+        Ok(Self { peer_prepare_urls, auth_token: None, peer_http, tls: Some(tls) })
     }
 
     fn build_blocking_client(&self) -> Result<reqwest::blocking::Client, DomainError> {
@@ -200,9 +171,7 @@ impl HttpAntiNonceTransport {
         if let Some(tls) = self.tls.clone() {
             builder = builder.use_preconfigured_tls(tls);
         }
-        builder
-            .build()
-            .map_err(|e| DomainError::ThresholdError(format!("anti-nonce http client: {e}")))
+        builder.build().map_err(|e| DomainError::ThresholdError(format!("anti-nonce http client: {e}")))
     }
 }
 
@@ -223,25 +192,18 @@ impl AntiNonceQuorumTransport for HttpAntiNonceTransport {
             let attempts = self.peer_http.max_retries.max(1);
             let mut ack = None;
             for attempt in 0..attempts {
-                let mut req = client
-                    .post(url)
-                    .header("Content-Type", "application/json")
-                    .body(body.clone());
+                let mut req = client.post(url).header("Content-Type", "application/json").body(body.clone());
                 if let Some(token) = self.auth_token.as_deref() {
                     req = req.header("X-Vault-Token", token);
                 }
                 match req.send() {
                     Ok(resp) if resp.status().is_success() => {
                         let text = resp.text().unwrap_or_default();
-                        ack = Some(PrepareAck {
-                            already_seen: parse_already_seen(&text)?,
-                        });
+                        ack = Some(PrepareAck { already_seen: parse_already_seen(&text)? });
                         break;
                     }
                     Ok(resp) => {
-                        if !PeerHttpSettings::should_retry_status(resp.status())
-                            || attempt + 1 >= attempts
-                        {
+                        if !PeerHttpSettings::should_retry_status(resp.status()) || attempt + 1 >= attempts {
                             break;
                         }
                         std::thread::sleep(self.peer_http.backoff_delay(attempt));
@@ -269,11 +231,7 @@ fn parse_already_seen(body: &str) -> Result<bool, DomainError> {
     }
     serde_json::from_str::<PrepResp>(body)
         .map(|r| r.already_seen)
-        .map_err(|_| {
-            DomainError::ThresholdError(
-                "anti-nonce peer response missing already_seen (fail-closed)".into(),
-            )
-        })
+        .map_err(|_| DomainError::ThresholdError("anti-nonce peer response missing already_seen (fail-closed)".into()))
 }
 
 /// In-memory multi-node transport for tests / simulation.
@@ -291,9 +249,7 @@ impl AntiNonceQuorumTransport for MemoryAntiNonceTransport {
     fn prepare_on_peers(&self, session_id: &str) -> Result<Vec<PrepareAck>, DomainError> {
         let mut out = Vec::with_capacity(self.peers.len());
         for peer in &self.peers {
-            out.push(PrepareAck {
-                already_seen: peer.prepare(session_id)?,
-            });
+            out.push(PrepareAck { already_seen: peer.prepare(session_id)? });
         }
         Ok(out)
     }
@@ -316,11 +272,7 @@ impl QuorumAntiNonce {
         transport: Arc<dyn AntiNonceQuorumTransport>,
         peer_count: usize,
     ) -> Result<Self, DomainError> {
-        Self::from_local(
-            Arc::new(PersistedAntiNonce::open(local_path)?),
-            transport,
-            peer_count,
-        )
+        Self::from_local(Arc::new(PersistedAntiNonce::open(local_path)?), transport, peer_count)
     }
 
     pub fn from_local(
@@ -329,17 +281,8 @@ impl QuorumAntiNonce {
         peer_count: usize,
     ) -> Result<Self, DomainError> {
         let n = peer_count.saturating_add(1).max(1);
-        let quorum_t = if peer_count == 0 {
-            1
-        } else {
-            quorum_two_thirds(n).max(1)
-        };
-        Ok(Self {
-            local,
-            transport,
-            peer_count,
-            quorum_t,
-        })
+        let quorum_t = if peer_count == 0 { 1 } else { quorum_two_thirds(n).max(1) };
+        Ok(Self { local, transport, peer_count, quorum_t })
     }
 
     pub fn local_store(&self) -> Arc<PersistedAntiNonce> {
@@ -359,25 +302,18 @@ impl AntiNoncePort for QuorumAntiNonce {
     fn claim_session(&self, session_id: &str) -> Result<(), DomainError> {
         // 1) Local durable burn first — crash mid-flight never reuses this id here.
         if self.local.prepare(session_id)? {
-            return Err(DomainError::NonceReuse(format!(
-                "session_id already used: {session_id}"
-            )));
+            return Err(DomainError::NonceReuse(format!("session_id already used: {session_id}")));
         }
 
         // 2) Quorum prepare among peers (fail-closed).
         let acks = self.transport.prepare_on_peers(session_id)?;
         if acks.iter().any(|a| a.already_seen) {
-            return Err(DomainError::NonceReuse(format!(
-                "session_id seen on ≥1 peer: {session_id}"
-            )));
+            return Err(DomainError::NonceReuse(format!("session_id seen on ≥1 peer: {session_id}")));
         }
 
         let have = 1 + acks.len(); // self + successful durable peer prepares
         if have < self.quorum_t {
-            return Err(DomainError::QuorumNotMet {
-                have,
-                need: self.quorum_t,
-            });
+            return Err(DomainError::QuorumNotMet { have, need: self.quorum_t });
         }
         Ok(())
     }
@@ -417,13 +353,10 @@ impl AntiNoncePort for SharedAntiNonce {
 }
 
 fn load_ids_into(path: &Path, set: &mut HashSet<String>) -> Result<(), DomainError> {
-    let file = fs::File::open(path).map_err(|e| {
-        DomainError::ThresholdError(format!("anti-nonce open {}: {e}", path.display()))
-    })?;
+    let file = fs::File::open(path)
+        .map_err(|e| DomainError::ThresholdError(format!("anti-nonce open {}: {e}", path.display())))?;
     for line in BufReader::new(file).lines() {
-        let line = line.map_err(|e| {
-            DomainError::ThresholdError(format!("anti-nonce read: {e}"))
-        })?;
+        let line = line.map_err(|e| DomainError::ThresholdError(format!("anti-nonce read: {e}")))?;
         let id = line.trim();
         if !id.is_empty() {
             set.insert(id.to_string());
@@ -439,10 +372,7 @@ mod tests {
     struct TempDir(PathBuf);
     impl TempDir {
         fn new(name: &str) -> Self {
-            let p = std::env::temp_dir().join(format!(
-                "kv-anti-{name}-{}",
-                std::process::id()
-            ));
+            let p = std::env::temp_dir().join(format!("kv-anti-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&p);
             std::fs::create_dir_all(&p).unwrap();
             Self(p)
@@ -472,12 +402,7 @@ mod tests {
             2,
         )
         .unwrap();
-        let q3 = QuorumAntiNonce::from_local(
-            n3,
-            Arc::new(MemoryAntiNonceTransport::new(vec![n1, n2])),
-            2,
-        )
-        .unwrap();
+        let q3 = QuorumAntiNonce::from_local(n3, Arc::new(MemoryAntiNonceTransport::new(vec![n1, n2])), 2).unwrap();
         [Arc::new(q1), Arc::new(q2), Arc::new(q3)]
     }
 
@@ -489,18 +414,9 @@ mod tests {
 
         a.claim_session("sess-1").unwrap();
         // Peers already prepared during A's claim → local already_seen on claim.
-        assert!(matches!(
-            b.claim_session("sess-1"),
-            Err(DomainError::NonceReuse(_))
-        ));
-        assert!(matches!(
-            c.claim_session("sess-1"),
-            Err(DomainError::NonceReuse(_))
-        ));
-        assert!(matches!(
-            a.claim_session("sess-1"),
-            Err(DomainError::NonceReuse(_))
-        ));
+        assert!(matches!(b.claim_session("sess-1"), Err(DomainError::NonceReuse(_))));
+        assert!(matches!(c.claim_session("sess-1"), Err(DomainError::NonceReuse(_))));
+        assert!(matches!(a.claim_session("sess-1"), Err(DomainError::NonceReuse(_))));
     }
 
     #[test]
@@ -510,10 +426,7 @@ mod tests {
 
         // Partial race: A burned locally before B's quorum round completes.
         assert!(!a.local_store().prepare("race-1").unwrap());
-        assert!(matches!(
-            b.claim_session("race-1"),
-            Err(DomainError::NonceReuse(_))
-        ));
+        assert!(matches!(b.claim_session("race-1"), Err(DomainError::NonceReuse(_))));
     }
 
     #[test]
@@ -521,42 +434,22 @@ mod tests {
         let tmp = TempDir::new("restart");
         let path = tmp.0.join("sess.log");
         {
-            let q = QuorumAntiNonce::open(
-                &path,
-                Arc::new(MemoryAntiNonceTransport::new(vec![])),
-                0,
-            )
-            .unwrap();
+            let q = QuorumAntiNonce::open(&path, Arc::new(MemoryAntiNonceTransport::new(vec![])), 0).unwrap();
             q.claim_session("sess-persist").unwrap();
         }
-        let q2 = QuorumAntiNonce::open(
-            &path,
-            Arc::new(MemoryAntiNonceTransport::new(vec![])),
-            0,
-        )
-        .unwrap();
+        let q2 = QuorumAntiNonce::open(&path, Arc::new(MemoryAntiNonceTransport::new(vec![])), 0).unwrap();
         assert!(q2.is_consumed("sess-persist").unwrap());
-        assert!(matches!(
-            q2.claim_session("sess-persist"),
-            Err(DomainError::NonceReuse(_))
-        ));
+        assert!(matches!(q2.claim_session("sess-persist"), Err(DomainError::NonceReuse(_))));
     }
 
     #[test]
     fn refuses_before_quorum_when_peers_unreachable() {
         let tmp = TempDir::new("no-quorum");
         // peer_count=2 ⇒ t=2, but transport returns no ACKs.
-        let q = QuorumAntiNonce::open(
-            tmp.0.join("solo.log"),
-            Arc::new(MemoryAntiNonceTransport::new(vec![])),
-            2,
-        )
-        .unwrap();
+        let q =
+            QuorumAntiNonce::open(tmp.0.join("solo.log"), Arc::new(MemoryAntiNonceTransport::new(vec![])), 2).unwrap();
         assert_eq!(q.quorum_t(), 2);
-        assert!(matches!(
-            q.claim_session("need-peers"),
-            Err(DomainError::QuorumNotMet { have: 1, need: 2 })
-        ));
+        assert!(matches!(q.claim_session("need-peers"), Err(DomainError::QuorumNotMet { have: 1, need: 2 })));
         // Local burn still happened — session cannot be reused on this node.
         assert!(q.is_consumed("need-peers").unwrap());
     }

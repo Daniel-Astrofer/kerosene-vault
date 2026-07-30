@@ -17,11 +17,7 @@ impl Epoch {
                 constitution.signing_n
             )));
         }
-        Ok(Self {
-            number: 0,
-            constitution_hash: constitution.hash.clone(),
-            active_set,
-        })
+        Ok(Self { number: 0, constitution_hash: constitution.hash.clone(), active_set })
     }
 
     pub fn contains(&self, node: &NodeId) -> bool {
@@ -29,12 +25,7 @@ impl Epoch {
     }
 
     pub fn to_json(&self) -> String {
-        let set = self
-            .active_set
-            .iter()
-            .map(|n| format!("\"{}\"", n.as_str()))
-            .collect::<Vec<_>>()
-            .join(",");
+        let set = self.active_set.iter().map(|n| format!("\"{}\"", n.as_str())).collect::<Vec<_>>().join(",");
         format!(
             r#"{{"number":{},"constitution_hash":"{}","active_set":[{}]}}"#,
             self.number, self.constitution_hash, set
@@ -77,22 +68,10 @@ impl LedgerEntry {
         writer: NodeId,
         prev_hash: &str,
     ) -> Self {
-        let payload_hash = crate::domain::attestation::Measurement::from_bytes(payload.as_bytes())
-            .as_hex()
-            .to_string();
+        let payload_hash = crate::domain::attestation::Measurement::from_bytes(payload.as_bytes()).as_hex().to_string();
         let material = format!("{index}|{epoch}|{kind:?}|{payload_hash}|{writer}|{prev_hash}");
-        let entry_hash = crate::domain::attestation::Measurement::from_bytes(material.as_bytes())
-            .as_hex()
-            .to_string();
-        Self {
-            index,
-            epoch,
-            kind,
-            payload_hash,
-            writer,
-            prev_hash: prev_hash.to_string(),
-            entry_hash,
-        }
+        let entry_hash = crate::domain::attestation::Measurement::from_bytes(material.as_bytes()).as_hex().to_string();
+        Self { index, epoch, kind, payload_hash, writer, prev_hash: prev_hash.to_string(), entry_hash }
     }
 
     pub fn to_json(&self) -> String {
@@ -133,12 +112,7 @@ pub struct EpochAdvanceProposal {
 }
 
 impl EpochAdvanceProposal {
-    pub fn new(
-        id: String,
-        from_epoch: u64,
-        constitution_hash: String,
-        proposer: NodeId,
-    ) -> Self {
+    pub fn new(id: String, from_epoch: u64, constitution_hash: String, proposer: NodeId) -> Self {
         Self {
             id,
             from_epoch,
@@ -161,21 +135,10 @@ impl EpochAdvanceProposal {
     }
 
     pub fn to_json(&self) -> String {
-        let votes = self
-            .votes
-            .iter()
-            .map(|n| format!("\"{}\"", n.as_str()))
-            .collect::<Vec<_>>()
-            .join(",");
+        let votes = self.votes.iter().map(|n| format!("\"{}\"", n.as_str())).collect::<Vec<_>>().join(",");
         format!(
             r#"{{"id":"{}","from_epoch":{},"to_epoch":{},"constitution_hash":"{}","proposer":"{}","votes":[{}],"closed":{}}}"#,
-            self.id,
-            self.from_epoch,
-            self.to_epoch,
-            self.constitution_hash,
-            self.proposer,
-            votes,
-            self.closed
+            self.id, self.from_epoch, self.to_epoch, self.constitution_hash, self.proposer, votes, self.closed
         )
     }
 }

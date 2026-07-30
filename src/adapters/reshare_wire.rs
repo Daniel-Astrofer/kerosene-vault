@@ -46,12 +46,7 @@ impl WireResharePhase {
 #[derive(Debug, Clone)]
 pub enum WireResharePeerAuth {
     StaticToken(String),
-    MutualTls {
-        client_cert_path: PathBuf,
-        client_key_path: PathBuf,
-        ca_path: PathBuf,
-        verify: TlsPeerVerifyPolicy,
-    },
+    MutualTls { client_cert_path: PathBuf, client_key_path: PathBuf, ca_path: PathBuf, verify: TlsPeerVerifyPolicy },
 }
 
 impl WireResharePeerAuth {
@@ -140,13 +135,8 @@ struct ReshareSessionInner {
 
 impl ReshareSessionInner {
     fn status(&self) -> WireReshareStatus {
-        let verifying_key_hex = self.new_pubkey_package.as_ref().map(|pk| {
-            hex::encode(
-                pk.verifying_key()
-                    .serialize()
-                    .unwrap_or_default(),
-            )
-        });
+        let verifying_key_hex =
+            self.new_pubkey_package.as_ref().map(|pk| hex::encode(pk.verifying_key().serialize().unwrap_or_default()));
         WireReshareStatus {
             session_id: self.session_id.clone(),
             phase: self.phase.as_str().to_string(),
@@ -166,9 +156,7 @@ impl ReshareSessionInner {
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
 fn identifier_from_u16(v: u16) -> Result<Identifier, DomainError> {
-    Identifier::try_from(v).map_err(|e| {
-        DomainError::ThresholdError(format!("invalid identifier {v}: {e}"))
-    })
+    Identifier::try_from(v).map_err(|e| DomainError::ThresholdError(format!("invalid identifier {v}: {e}")))
 }
 
 fn identifier_to_u16(roster: &BTreeMap<String, Identifier>, id: Identifier) -> u16 {
@@ -213,11 +201,7 @@ fn reshare_transcript(
     hex::encode(h.finalize())
 }
 
-fn assert_vk_preserved(
-    old: &PublicKeyPackage,
-    new: &PublicKeyPackage,
-    suite: &str,
-) -> Result<(), DomainError> {
+fn assert_vk_preserved(old: &PublicKeyPackage, new: &PublicKeyPackage, suite: &str) -> Result<(), DomainError> {
     if *old.verifying_key() != *new.verifying_key() {
         return Err(DomainError::ThresholdError(format!(
             "{suite} reshare changed group verifying key (deposit address would change)"
@@ -236,21 +220,11 @@ fn build_reshare_http_client(
         .timeout(peer_http.backoff_delay(0).saturating_mul(3))
         .connect_timeout(std::time::Duration::from_secs(10));
     match auth {
-        WireResharePeerAuth::StaticToken(_) => builder.build().map_err(|e| {
-            DomainError::ThresholdError(format!("reshare http client: {e}"))
-        }),
-        WireResharePeerAuth::MutualTls {
-            client_cert_path,
-            client_key_path,
-            ca_path,
-            verify,
-        } => {
-            let tls = build_mtls_rustls_client_config(
-                client_cert_path,
-                client_key_path,
-                ca_path,
-                verify,
-            )?;
+        WireResharePeerAuth::StaticToken(_) => {
+            builder.build().map_err(|e| DomainError::ThresholdError(format!("reshare http client: {e}")))
+        }
+        WireResharePeerAuth::MutualTls { client_cert_path, client_key_path, ca_path, verify } => {
+            let tls = build_mtls_rustls_client_config(client_cert_path, client_key_path, ca_path, verify)?;
             builder
                 .use_preconfigured_tls(tls)
                 .build()
@@ -313,9 +287,9 @@ impl WireReshareHub {
 
     pub fn status(&self, session_id: &str) -> Result<WireReshareStatus, DomainError> {
         let g = self.sessions.lock().expect("reshare sessions");
-        let s = g.get(session_id).ok_or_else(|| {
-            DomainError::ThresholdError(format!("unknown reshare session: {session_id}"))
-        })?;
+        let s = g
+            .get(session_id)
+            .ok_or_else(|| DomainError::ThresholdError(format!("unknown reshare session: {session_id}")))?;
         Ok(s.status())
     }
 
@@ -325,9 +299,8 @@ impl WireReshareHub {
         old_pubkey_package: PublicKeyPackage,
         old_key_package: Option<KeyPackage>,
     ) -> Result<(WireReshareStatus, ReshareRound1WireMessage), DomainError> {
-        let day_epoch = DayEpoch::parse(&req.day_epoch).map_err(|e| {
-            DomainError::ThresholdError(format!("invalid day_epoch: {e}"))
-        })?;
+        let day_epoch = DayEpoch::parse(&req.day_epoch)
+            .map_err(|e| DomainError::ThresholdError(format!("invalid day_epoch: {e}")))?;
         let roster = build_reshare_roster(&req.roster)?;
         if roster.len() as u16 != req.max_signers {
             return Err(DomainError::ThresholdError(format!(
@@ -361,9 +334,7 @@ impl WireReshareHub {
                 let package = existing
                     .round1_packages
                     .get(&local_identifier)
-                    .ok_or_else(|| {
-                        DomainError::ThresholdError("missing local reshare round1 package".into())
-                    })?;
+                    .ok_or_else(|| DomainError::ThresholdError("missing local reshare round1 package".into()))?;
                 let package_hex = hex::encode(
                     package
                         .serialize()
@@ -385,21 +356,15 @@ impl WireReshareHub {
         }
 
         let local_identifier = *roster.get(&self.local_node_id).ok_or_else(|| {
-            DomainError::ThresholdError(format!(
-                "local node {} missing from reshare roster",
-                self.local_node_id
-            ))
+            DomainError::ThresholdError(format!("local node {} missing from reshare roster", self.local_node_id))
         })?;
 
         let mut rng = OsRng;
-        let (secret, package) =
-            refresh_dkg_part1(local_identifier, req.max_signers, req.min_signers, &mut rng)
-                .map_err(|e| DomainError::ThresholdError(format!("frost refresh part1: {e}")))?;
+        let (secret, package) = refresh_dkg_part1(local_identifier, req.max_signers, req.min_signers, &mut rng)
+            .map_err(|e| DomainError::ThresholdError(format!("frost refresh part1: {e}")))?;
 
         let package_hex = hex::encode(
-            package
-                .serialize()
-                .map_err(|e| DomainError::ThresholdError(format!("reshare r1 serialize: {e}")))?,
+            package.serialize().map_err(|e| DomainError::ThresholdError(format!("reshare r1 serialize: {e}")))?,
         );
 
         let mut round1_packages = BTreeMap::new();
@@ -445,29 +410,20 @@ impl WireReshareHub {
 
     pub fn ingest_round1(&self, msg: ReshareRound1WireMessage) -> Result<WireReshareStatus, DomainError> {
         if let Some(ref env) = msg.envelope {
-            env.validate_header().map_err(|e| {
-                DomainError::ThresholdError(format!("reshare r1 envelope: {e}"))
-            })?;
+            env.validate_header().map_err(|e| DomainError::ThresholdError(format!("reshare r1 envelope: {e}")))?;
         }
         let mut g = self.sessions.lock().expect("reshare sessions");
         let session = g.get_mut(&msg.session_id).ok_or_else(|| {
-            DomainError::ThresholdError(format!(
-                "unknown reshare session {} (start locally first)",
-                msg.session_id
-            ))
+            DomainError::ThresholdError(format!("unknown reshare session {} (start locally first)", msg.session_id))
         })?;
         if session.phase == WireResharePhase::Complete {
             return Ok(session.status());
         }
         if msg.max_signers != session.max_signers || msg.min_signers != session.min_signers {
-            return Err(DomainError::ThresholdError(
-                "reshare round1 threshold drift rejected".into(),
-            ));
+            return Err(DomainError::ThresholdError("reshare round1 threshold drift rejected".into()));
         }
         if msg.transcript_hex != session.transcript_hex {
-            return Err(DomainError::ThresholdError(
-                "reshare round1 transcript binding mismatch".into(),
-            ));
+            return Err(DomainError::ThresholdError("reshare round1 transcript binding mismatch".into()));
         }
         let sender_id = identifier_from_u16(msg.sender_identifier)?;
         let expected = session.roster.get(&msg.sender_node_id).copied();
@@ -483,8 +439,8 @@ impl WireReshareHub {
                 msg.sender_node_id
             )));
         }
-        let bytes = hex::decode(&msg.package_hex)
-            .map_err(|e| DomainError::ThresholdError(format!("reshare r1 hex: {e}")))?;
+        let bytes =
+            hex::decode(&msg.package_hex).map_err(|e| DomainError::ThresholdError(format!("reshare r1 hex: {e}")))?;
         let package = frost::keys::dkg::round1::Package::deserialize(&bytes)
             .map_err(|e| DomainError::ThresholdError(format!("reshare r1 deserialize: {e}")))?;
         session.round1_packages.insert(sender_id, package);
@@ -501,9 +457,10 @@ impl WireReshareHub {
     fn advance_to_round2(session: &mut ReshareSessionInner) -> Result<(), DomainError> {
         let mut r1_received = session.round1_packages.clone();
         r1_received.remove(&session.local_identifier);
-        let r1_secret = session.round1_secret.take().ok_or_else(|| {
-            DomainError::ThresholdError("missing reshare round1 secret".into())
-        })?;
+        let r1_secret = session
+            .round1_secret
+            .take()
+            .ok_or_else(|| DomainError::ThresholdError("missing reshare round1 secret".into()))?;
         let (r2_secret, outbound) = refresh_dkg_part2(r1_secret, &r1_received)
             .map_err(|e| DomainError::ThresholdError(format!("frost refresh part2: {e}")))?;
         session.round2_secret = Some(r2_secret);
@@ -512,31 +469,20 @@ impl WireReshareHub {
         Ok(())
     }
 
-    pub fn take_round2_outbound(
-        &self,
-        session_id: &str,
-    ) -> Result<Vec<ReshareRound2WireMessage>, DomainError> {
+    pub fn take_round2_outbound(&self, session_id: &str) -> Result<Vec<ReshareRound2WireMessage>, DomainError> {
         let mut g = self.sessions.lock().expect("reshare sessions");
-        let session = g.get_mut(session_id).ok_or_else(|| {
-            DomainError::ThresholdError(format!("unknown reshare session: {session_id}"))
-        })?;
+        let session = g
+            .get_mut(session_id)
+            .ok_or_else(|| DomainError::ThresholdError(format!("unknown reshare session: {session_id}")))?;
         let mut out = Vec::new();
         let outbound = std::mem::take(&mut session.round2_outbound);
         for (recipient_id, package) in outbound {
-            let recipient_node_id = session
-                .roster
-                .iter()
-                .find(|(_, id)| **id == recipient_id)
-                .map(|(n, _)| n.clone())
-                .ok_or_else(|| {
-                    DomainError::ThresholdError(format!(
-                        "unknown reshare recipient id {recipient_id:?}"
-                    ))
-                })?;
+            let recipient_node_id =
+                session.roster.iter().find(|(_, id)| **id == recipient_id).map(|(n, _)| n.clone()).ok_or_else(
+                    || DomainError::ThresholdError(format!("unknown reshare recipient id {recipient_id:?}")),
+                )?;
             let package_hex = hex::encode(
-                package
-                    .serialize()
-                    .map_err(|e| DomainError::ThresholdError(format!("reshare r2 serialize: {e}")))?,
+                package.serialize().map_err(|e| DomainError::ThresholdError(format!("reshare r2 serialize: {e}")))?,
             );
             out.push(ReshareRound2WireMessage {
                 session_id: session_id.to_string(),
@@ -554,26 +500,20 @@ impl WireReshareHub {
 
     pub fn ingest_round2(&self, msg: ReshareRound2WireMessage) -> Result<WireReshareStatus, DomainError> {
         if let Some(ref env) = msg.envelope {
-            env.validate_header().map_err(|e| {
-                DomainError::ThresholdError(format!("reshare r2 envelope: {e}"))
-            })?;
+            env.validate_header().map_err(|e| DomainError::ThresholdError(format!("reshare r2 envelope: {e}")))?;
         }
         let mut g = self.sessions.lock().expect("reshare sessions");
-        let session = g.get_mut(&msg.session_id).ok_or_else(|| {
-            DomainError::ThresholdError(format!("unknown reshare session: {}", msg.session_id))
-        })?;
+        let session = g
+            .get_mut(&msg.session_id)
+            .ok_or_else(|| DomainError::ThresholdError(format!("unknown reshare session: {}", msg.session_id)))?;
         if session.phase == WireResharePhase::Complete {
             return Ok(session.status());
         }
         if msg.transcript_hex != session.transcript_hex {
-            return Err(DomainError::ThresholdError(
-                "reshare round2 transcript binding mismatch".into(),
-            ));
+            return Err(DomainError::ThresholdError("reshare round2 transcript binding mismatch".into()));
         }
         if msg.recipient_node_id != session.local_node_id {
-            return Err(DomainError::ThresholdError(
-                "reshare round2 package not addressed to this vault".into(),
-            ));
+            return Err(DomainError::ThresholdError("reshare round2 package not addressed to this vault".into()));
         }
         let sender_id = identifier_from_u16(msg.sender_identifier)?;
         let expected = session.roster.get(&msg.sender_node_id).copied();
@@ -589,8 +529,8 @@ impl WireReshareHub {
                 msg.sender_node_id
             )));
         }
-        let bytes = hex::decode(&msg.package_hex)
-            .map_err(|e| DomainError::ThresholdError(format!("reshare r2 hex: {e}")))?;
+        let bytes =
+            hex::decode(&msg.package_hex).map_err(|e| DomainError::ThresholdError(format!("reshare r2 hex: {e}")))?;
         let package = frost::keys::dkg::round2::Package::deserialize(&bytes)
             .map_err(|e| DomainError::ThresholdError(format!("reshare r2 deserialize: {e}")))?;
         session.round2_inbox.insert(sender_id, package);
@@ -603,9 +543,9 @@ impl WireReshareHub {
         share_store: &dyn ShareStorePort,
     ) -> Result<WireReshareStatus, DomainError> {
         let mut g = self.sessions.lock().expect("reshare sessions");
-        let session = g.get_mut(session_id).ok_or_else(|| {
-            DomainError::ThresholdError(format!("unknown reshare session: {session_id}"))
-        })?;
+        let session = g
+            .get_mut(session_id)
+            .ok_or_else(|| DomainError::ThresholdError(format!("unknown reshare session: {session_id}")))?;
         if session.phase == WireResharePhase::Complete {
             return Ok(session.status());
         }
@@ -616,27 +556,21 @@ impl WireReshareHub {
                 session.round2_inbox.len()
             )));
         }
-        let r2_secret = session.round2_secret.as_ref().ok_or_else(|| {
-            DomainError::ThresholdError("missing reshare round2 secret".into())
-        })?;
+        let r2_secret = session
+            .round2_secret
+            .as_ref()
+            .ok_or_else(|| DomainError::ThresholdError("missing reshare round2 secret".into()))?;
         let mut r1_received = session.round1_packages.clone();
         r1_received.remove(&session.local_identifier);
 
         let old_pk = session.old_pubkey_package.clone();
-        let old_kp = session.old_key_package.clone().ok_or_else(|| {
-            DomainError::ThresholdError(
-                "missing old key package for reshare finalize".into(),
-            )
-        })?;
+        let old_kp = session
+            .old_key_package
+            .clone()
+            .ok_or_else(|| DomainError::ThresholdError("missing old key package for reshare finalize".into()))?;
 
-        let (kp, pk) = refresh_dkg_shares(
-            r2_secret,
-            &r1_received,
-            &session.round2_inbox,
-            old_pk.clone(),
-            old_kp,
-        )
-        .map_err(|e| DomainError::ThresholdError(format!("frost refresh part3: {e}")))?;
+        let (kp, pk) = refresh_dkg_shares(r2_secret, &r1_received, &session.round2_inbox, old_pk.clone(), old_kp)
+            .map_err(|e| DomainError::ThresholdError(format!("frost refresh part3: {e}")))?;
 
         if *kp.min_signers() != session.min_signers {
             return Err(DomainError::ThresholdError(format!(
@@ -647,17 +581,12 @@ impl WireReshareHub {
         }
         assert_vk_preserved(&old_pk, &pk, "tr")?;
 
-        let bytes = kp.serialize().map_err(|e| {
-            DomainError::ThresholdError(format!("reshare key package serialize: {e}"))
-        })?;
-        let share_id = format!(
-            "frost-tr-reshare-id-{}",
-            hex::encode(session.local_identifier.serialize())
-        );
+        let bytes =
+            kp.serialize().map_err(|e| DomainError::ThresholdError(format!("reshare key package serialize: {e}")))?;
+        let share_id = format!("frost-tr-reshare-id-{}", hex::encode(session.local_identifier.serialize()));
         share_store.put_share(&share_id, &bytes)?;
-        let pk_bytes = pk.serialize().map_err(|e| {
-            DomainError::ThresholdError(format!("reshare pubkey serialize: {e}"))
-        })?;
+        let pk_bytes =
+            pk.serialize().map_err(|e| DomainError::ThresholdError(format!("reshare pubkey serialize: {e}")))?;
         share_store.put_share("frost-tr-reshare-pubkey", &pk_bytes)?;
 
         session.new_key_package = Some(kp.clone());
@@ -682,26 +611,15 @@ impl WireReshareHub {
             if peer_id == &self.local_node_id {
                 continue;
             }
-            let base = if mtls {
-                format!("https://{addr}")
-            } else {
-                format!("http://{addr}")
-            };
+            let base = if mtls { format!("https://{addr}") } else { format!("http://{addr}") };
             let url = format!("{base}/v1/reshare/tr/round1");
-            let res = post_json_with_retry(
-                &self.http,
-                &self.peer_http,
-                &url,
-                |req| self.apply_peer_auth_headers(req),
-                msg,
-            )
-            .await
-            .map_err(|e| DomainError::ThresholdError(format!("reshare r1 fanout to {peer_id}: {e}")))?;
+            let res =
+                post_json_with_retry(&self.http, &self.peer_http, &url, |req| self.apply_peer_auth_headers(req), msg)
+                    .await
+                    .map_err(|e| DomainError::ThresholdError(format!("reshare r1 fanout to {peer_id}: {e}")))?;
             if !res.status().is_success() {
                 let body = res.text().await.unwrap_or_default();
-                return Err(DomainError::ThresholdError(format!(
-                    "reshare r1 fanout to {peer_id} failed: {body}"
-                )));
+                return Err(DomainError::ThresholdError(format!("reshare r1 fanout to {peer_id} failed: {body}")));
             }
         }
         Ok(())
@@ -713,24 +631,14 @@ impl WireReshareHub {
             let addr = self.peer_addrs.get(&msg.recipient_node_id).ok_or_else(|| {
                 DomainError::ThresholdError(format!("unknown reshare peer: {}", msg.recipient_node_id))
             })?;
-            let base = if mtls {
-                format!("https://{addr}")
-            } else {
-                format!("http://{addr}")
-            };
+            let base = if mtls { format!("https://{addr}") } else { format!("http://{addr}") };
             let url = format!("{base}/v1/reshare/tr/round2");
-            let res = post_json_with_retry(
-                &self.http,
-                &self.peer_http,
-                &url,
-                |req| self.apply_peer_auth_headers(req),
-                msg,
-            )
-            .await
-            .map_err(|e| DomainError::ThresholdError(format!(
-                "reshare r2 fanout to {}: {e}",
-                msg.recipient_node_id
-            )))?;
+            let res =
+                post_json_with_retry(&self.http, &self.peer_http, &url, |req| self.apply_peer_auth_headers(req), msg)
+                    .await
+                    .map_err(|e| {
+                        DomainError::ThresholdError(format!("reshare r2 fanout to {}: {e}", msg.recipient_node_id))
+                    })?;
             if !res.status().is_success() {
                 let body = res.text().await.unwrap_or_default();
                 return Err(DomainError::ThresholdError(format!(

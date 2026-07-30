@@ -29,14 +29,7 @@ impl ProbedOnlineCount {
         auth_token: Option<String>,
         max_online: Option<usize>,
     ) -> Self {
-        Self {
-            peers,
-            peer_health_urls,
-            peer_http,
-            auth_token,
-            max_online,
-            lab_static: None,
-        }
+        Self { peers, peer_health_urls, peer_http, auth_token, max_online, lab_static: None }
     }
 
     /// Lab / unit harness: fixed count without probing (never used in hardened boot).
@@ -52,16 +45,11 @@ impl ProbedOnlineCount {
     }
 
     fn probe_url(&self, url: &str) -> bool {
-        let mut builder = match self
-            .peer_http
-            .apply_blocking_builder(reqwest::blocking::Client::builder())
-        {
+        let mut builder = match self.peer_http.apply_blocking_builder(reqwest::blocking::Client::builder()) {
             Ok(b) => b,
             Err(_) => return false,
         };
-        builder = builder.timeout(Duration::from_millis(
-            self.peer_http.connect_timeout.as_millis().min(500) as u64,
-        ));
+        builder = builder.timeout(Duration::from_millis(self.peer_http.connect_timeout.as_millis().min(500) as u64));
         let Ok(client) = builder.build() else {
             return false;
         };
@@ -81,19 +69,14 @@ impl ProbedOnlineCount {
         if trimmed.is_empty() || trimmed.contains(".onion") {
             return false;
         }
-        let candidate = if trimmed.contains(':') {
-            trimmed.to_string()
-        } else {
-            format!("{trimmed}:7701")
-        };
+        let candidate = if trimmed.contains(':') { trimmed.to_string() } else { format!("{trimmed}:7701") };
         let Ok(mut iter) = candidate.to_socket_addrs() else {
             return false;
         };
         let Some(sa) = iter.next() else {
             return false;
         };
-        std::net::TcpStream::connect_timeout(&SocketAddr::from(sa), Duration::from_millis(80))
-            .is_ok()
+        std::net::TcpStream::connect_timeout(&SocketAddr::from(sa), Duration::from_millis(80)).is_ok()
     }
 }
 

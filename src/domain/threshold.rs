@@ -82,12 +82,7 @@ pub struct CombinedSignature {
 
 impl CombinedSignature {
     pub fn to_json(&self) -> String {
-        let parts = self
-            .participants
-            .iter()
-            .map(|p| p.to_string())
-            .collect::<Vec<_>>()
-            .join(",");
+        let parts = self.participants.iter().map(|p| p.to_string()).collect::<Vec<_>>().join(",");
         format!(
             r#"{{"session_id":"{}","message_hash":"{}","value":{},"participants":[{}],"scheme":"lab-shamir-threshold-v1"}}"#,
             self.session_id, self.message_hash, self.value, parts
@@ -159,17 +154,13 @@ pub fn lab_random_u64(seed: &[u8]) -> u64 {
 
 /// Deterministic nonce for session — must never be reused across different messages.
 pub fn derive_nonce(session_id: &str, message_hash: &str, share_value: u64) -> u64 {
-    lab_random_u64(
-        format!("nonce|{session_id}|{message_hash}|{share_value}").as_bytes(),
-    )
+    lab_random_u64(format!("nonce|{session_id}|{message_hash}|{share_value}").as_bytes())
 }
 
 pub fn nonce_commitment(nonce: u64, index: u8) -> String {
-    crate::domain::attestation::Measurement::from_bytes(
-        format!("nonce-commit:{index}:{nonce}").as_bytes(),
-    )
-    .as_hex()
-    .to_string()
+    crate::domain::attestation::Measurement::from_bytes(format!("nonce-commit:{index}:{nonce}").as_bytes())
+        .as_hex()
+        .to_string()
 }
 
 /// Lagrange interpolate secret at x=0 from `t` shares.

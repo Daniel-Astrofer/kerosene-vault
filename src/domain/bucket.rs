@@ -88,20 +88,12 @@ pub struct ProfitSplits {
 impl ProfitSplits {
     /// Lab dry-run: miners payout `p%=0`; channels/infra split the rest evenly.
     pub fn lab_dry_run() -> Self {
-        Self {
-            miners_bps: 0,
-            channels_bps: 5_000,
-            infra_bps: 5_000,
-        }
+        Self { miners_bps: 0, channels_bps: 5_000, infra_bps: 5_000 }
     }
 
     /// Explicit splits (must sum to 10_000 bps).
     pub fn explicit(miners_bps: u32, channels_bps: u32, infra_bps: u32) -> Result<Self, DomainError> {
-        let s = Self {
-            miners_bps,
-            channels_bps,
-            infra_bps,
-        };
+        let s = Self { miners_bps, channels_bps, infra_bps };
         s.validate()?;
         Ok(s)
     }
@@ -109,9 +101,7 @@ impl ProfitSplits {
     /// Open economy: miners get `p_reward_bps` of PROFIT; remainder split channels/infra.
     pub fn open_with_reward(p_reward_bps: u32) -> Result<Self, DomainError> {
         if p_reward_bps > 10_000 {
-            return Err(DomainError::InvalidConstitution(
-                "p_reward_bps > 10000".into(),
-            ));
+            return Err(DomainError::InvalidConstitution("p_reward_bps > 10000".into()));
         }
         let rest = 10_000 - p_reward_bps;
         let channels = rest / 2;
@@ -120,14 +110,9 @@ impl ProfitSplits {
     }
 
     pub fn validate(&self) -> Result<(), DomainError> {
-        let sum = self
-            .miners_bps
-            .saturating_add(self.channels_bps)
-            .saturating_add(self.infra_bps);
+        let sum = self.miners_bps.saturating_add(self.channels_bps).saturating_add(self.infra_bps);
         if sum != 10_000 {
-            return Err(DomainError::InvalidConstitution(format!(
-                "profit splits must sum to 10000 bps, got {sum}"
-            )));
+            return Err(DomainError::InvalidConstitution(format!("profit splits must sum to 10000 bps, got {sum}")));
         }
         Ok(())
     }
@@ -170,12 +155,7 @@ impl BucketPolicy {
                 destination_allowlist.insert("tb1q-infra-ops".into());
             }
         }
-        Self {
-            kind,
-            max_per_tx_sats: max_tx,
-            max_per_day_sats: max_day,
-            destination_allowlist,
-        }
+        Self { kind, max_per_tx_sats: max_tx, max_per_day_sats: max_day, destination_allowlist }
     }
 
     pub fn allows_destination(&self, dest: &str) -> bool {
@@ -184,11 +164,7 @@ impl BucketPolicy {
 
     /// CHANNELS policy-exception: allowlisted opaque tags **or** any valid Bitcoin
     /// address on `network` (LND funding inject). USERS stays strict allowlist-only.
-    pub fn allows_destination_for_network(
-        &self,
-        dest: &str,
-        network: crate::domain::BitcoinNetwork,
-    ) -> bool {
+    pub fn allows_destination_for_network(&self, dest: &str, network: crate::domain::BitcoinNetwork) -> bool {
         if self.allows_destination(dest) {
             return true;
         }
@@ -196,8 +172,7 @@ impl BucketPolicy {
             return false;
         }
         crate::domain::validate_destination(network, dest).is_ok()
-            && dest.parse::<bitcoin::address::Address<bitcoin::address::NetworkUnchecked>>()
-                .is_ok()
+            && dest.parse::<bitcoin::address::Address<bitcoin::address::NetworkUnchecked>>().is_ok()
     }
 
     /// Admit an explicit destination into this bucket's allowlist (config / Intent registry).
@@ -254,9 +229,7 @@ impl SettlementIntent {
             return Err(DomainError::InvalidIntent("intent_id too long".into()));
         }
         if intent_id.chars().any(|c| c.is_control() || c == '/' || c == '\\') {
-            return Err(DomainError::InvalidIntent(
-                "intent_id contains illegal characters".into(),
-            ));
+            return Err(DomainError::InvalidIntent("intent_id contains illegal characters".into()));
         }
         if destination.trim().is_empty() {
             return Err(DomainError::InvalidIntent("empty destination".into()));
@@ -265,21 +238,12 @@ impl SettlementIntent {
             return Err(DomainError::InvalidIntent("destination too long".into()));
         }
         if destination.contains("..") || destination.contains('/') || destination.contains('\\') {
-            return Err(DomainError::InvalidIntent(
-                "destination path traversal rejected".into(),
-            ));
+            return Err(DomainError::InvalidIntent("destination path traversal rejected".into()));
         }
         if policy_hash.len() > 128 {
             return Err(DomainError::InvalidIntent("policy_hash too long".into()));
         }
-        Ok(Self {
-            intent_id,
-            bucket,
-            destination,
-            amount_sats,
-            policy_hash,
-            signature: None,
-        })
+        Ok(Self { intent_id, bucket, destination, amount_sats, policy_hash, signature: None })
     }
 
     /// Attach a hybrid intent signature. Consumers validate it via
@@ -301,9 +265,7 @@ pub fn evaluate_intent(
         return Err(DomainError::InvalidIntent("bucket/policy mismatch".into()));
     }
     if intent.policy_hash != active_policy_hash {
-        return Err(DomainError::InvalidIntent(
-            "policy_hash mismatch with active constitution".into(),
-        ));
+        return Err(DomainError::InvalidIntent("policy_hash mismatch with active constitution".into()));
     }
     if !intent.bucket.may_debit_users() && intent.bucket == BucketKind::Users {
         unreachable!();
@@ -336,17 +298,12 @@ pub fn evaluate_intent(
     let dest_ok = if policy.allows_destination(&intent.destination) {
         true
     } else if policy.kind == BucketKind::Channels {
-        intent
-            .destination
-            .parse::<bitcoin::address::Address<bitcoin::address::NetworkUnchecked>>()
-            .is_ok()
+        intent.destination.parse::<bitcoin::address::Address<bitcoin::address::NetworkUnchecked>>().is_ok()
     } else {
         false
     };
     if !dest_ok {
-        return Err(DomainError::DestinationNotAllowed(
-            intent.destination.clone(),
-        ));
+        return Err(DomainError::DestinationNotAllowed(intent.destination.clone()));
     }
     Ok(())
 }
@@ -358,14 +315,7 @@ mod tests {
     #[test]
     fn users_cap_rejects_oversize_tx() {
         let policy = BucketPolicy::lab_defaults(BucketKind::Users, 100, 1_000);
-        let intent = SettlementIntent::new(
-            "i1",
-            BucketKind::Users,
-            "tb1q-users-withdraw",
-            101,
-            "ph",
-        )
-        .unwrap();
+        let intent = SettlementIntent::new("i1", BucketKind::Users, "tb1q-users-withdraw", 101, "ph").unwrap();
         assert!(evaluate_intent(&intent, &policy, 0, "ph").is_err());
     }
 
@@ -411,14 +361,9 @@ mod tests {
     #[test]
     fn evaluate_rejects_users_destination_off_allowlist() {
         let policy = BucketPolicy::lab_defaults(BucketKind::Users, 100, 1_000);
-        let intent = SettlementIntent::new(
-            "i-off",
-            BucketKind::Users,
-            "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx",
-            50,
-            "ph",
-        )
-        .unwrap();
+        let intent =
+            SettlementIntent::new("i-off", BucketKind::Users, "tb1qw508d6qejxtdg4y5r3zarvary0c5xw7kxpjzsx", 50, "ph")
+                .unwrap();
         let err = evaluate_intent(&intent, &policy, 0, "ph").unwrap_err();
         assert!(matches!(err, DomainError::DestinationNotAllowed(_)));
     }

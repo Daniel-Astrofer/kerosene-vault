@@ -15,11 +15,7 @@ pub struct SlidingWindowLimiter {
 
 impl SlidingWindowLimiter {
     pub fn new(limit: u32, window: Duration) -> Self {
-        Self {
-            limit: limit.max(1),
-            window,
-            inner: Mutex::new(HashMap::new()),
-        }
+        Self { limit: limit.max(1), window, inner: Mutex::new(HashMap::new()) }
     }
 
     /// Defaults: 60 events / 60s per principal (auth routes + prepare).

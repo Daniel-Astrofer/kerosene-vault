@@ -10,9 +10,7 @@ pub struct InMemoryPeerDirectory {
 
 impl InMemoryPeerDirectory {
     pub fn new() -> Self {
-        Self {
-            peers: Mutex::new(HashMap::new()),
-        }
+        Self { peers: Mutex::new(HashMap::new()) }
     }
 
     pub fn upsert_sync(&self, peer: PeerInfo) -> Result<(), DomainError> {

@@ -1,9 +1,7 @@
 use std::sync::Arc;
 
 use crate::application::ports::{BucketLedgerPort, EconomyPort, LedgerPort};
-use crate::domain::{
-    assert_bank_issued_miner_payout, evaluate_intent, BucketKind, DomainError, SettlementIntent,
-};
+use crate::domain::{assert_bank_issued_miner_payout, evaluate_intent, BucketKind, DomainError, SettlementIntent};
 
 pub struct GateIntent {
     buckets: Arc<dyn BucketLedgerPort>,
@@ -12,16 +10,8 @@ pub struct GateIntent {
 }
 
 impl GateIntent {
-    pub fn new(
-        buckets: Arc<dyn BucketLedgerPort>,
-        ledger: Arc<dyn LedgerPort>,
-        economy: Arc<dyn EconomyPort>,
-    ) -> Self {
-        Self {
-            buckets,
-            ledger,
-            economy,
-        }
+    pub fn new(buckets: Arc<dyn BucketLedgerPort>, ledger: Arc<dyn LedgerPort>, economy: Arc<dyn EconomyPort>) -> Self {
+        Self { buckets, ledger, economy }
     }
 
     /// Soft-reserve Intent (two-phase High #9): evaluate + hold caps; do **not**
@@ -36,14 +26,8 @@ impl GateIntent {
     }
 
     /// Roll back soft reservation when sign fails.
-    pub fn release(
-        &self,
-        intent_id: &str,
-        bucket: BucketKind,
-        amount_sats: u64,
-    ) -> Result<(), DomainError> {
-        self.buckets
-            .release_reservation(intent_id, bucket, amount_sats)
+    pub fn release(&self, intent_id: &str, bucket: BucketKind, amount_sats: u64) -> Result<(), DomainError> {
+        self.buckets.release_reservation(intent_id, bucket, amount_sats)
     }
 
     /// Evaluate + consume intent id (atomic + durable). Prefer [`reserve`]/ [`commit`]
@@ -54,8 +38,7 @@ impl GateIntent {
 
     fn run(&self, intent: &SettlementIntent, phase: Phase) -> Result<GateReceipt, DomainError> {
         let constitution = self.ledger.constitution()?;
-        let miners_open =
-            constitution.profit_splits.miners_bps > 0 && intent.bucket == BucketKind::Miners;
+        let miners_open = constitution.profit_splits.miners_bps > 0 && intent.bucket == BucketKind::Miners;
         let economy = if miners_open {
             let snap = self.economy.snapshot()?;
             assert_bank_issued_miner_payout(&snap, intent)?;
@@ -74,9 +57,7 @@ impl GateIntent {
             if let Some(eco) = economy.as_ref() {
                 for op in eco.operators.values() {
                     if op.is_eligible(&eco.policy) {
-                        policy
-                            .destination_allowlist
-                            .insert(op.payout_destination.clone());
+                        policy.destination_allowlist.insert(op.payout_destination.clone());
                     }
                 }
             }
@@ -85,24 +66,12 @@ impl GateIntent {
 
         match phase {
             Phase::Reserve => {
-                self.buckets
-                    .reserve_spend(&intent_id, bucket, amount_sats, &validate)?;
-                Ok(GateReceipt {
-                    intent_id,
-                    bucket,
-                    amount_sats,
-                    status: "RESERVED",
-                })
+                self.buckets.reserve_spend(&intent_id, bucket, amount_sats, &validate)?;
+                Ok(GateReceipt { intent_id, bucket, amount_sats, status: "RESERVED" })
             }
             Phase::Consume => {
-                self.buckets
-                    .authorize_spend_and_consume(&intent_id, bucket, amount_sats, &validate)?;
-                Ok(GateReceipt {
-                    intent_id,
-                    bucket,
-                    amount_sats,
-                    status: "ACCEPTED",
-                })
+                self.buckets.authorize_spend_and_consume(&intent_id, bucket, amount_sats, &validate)?;
+                Ok(GateReceipt { intent_id, bucket, amount_sats, status: "ACCEPTED" })
             }
         }
     }
@@ -168,11 +137,7 @@ impl ProfitAllocation {
     pub fn to_json(&self) -> String {
         format!(
             r#"{{"profit_sats":{},"miners_sats":{},"channels_sats":{},"infra_sats":{},"dry_run_miners":{}}}"#,
-            self.profit_sats,
-            self.miners_sats,
-            self.channels_sats,
-            self.infra_sats,
-            self.dry_run_miners
+            self.profit_sats, self.miners_sats, self.channels_sats, self.infra_sats, self.dry_run_miners
         )
     }
 }

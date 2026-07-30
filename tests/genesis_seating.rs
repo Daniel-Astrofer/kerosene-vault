@@ -8,10 +8,7 @@ use std::fs;
 fn base_lab() -> VaultConfig {
     // The runtime persists a share-store to `data_dir`; ensure it exists to avoid
     // filesystem rename failures on fresh test runs.
-    let unique = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+    let unique = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     let data_dir = std::env::temp_dir().join(format!("kerosene-vault-test-data-{}-{}", std::process::id(), unique));
     let _ = fs::create_dir_all(&data_dir);
     VaultConfig {
@@ -94,10 +91,7 @@ fn runtime_seats_sev_before_domestic_for_genesis_roster() {
 fn all_domestic_genesis_seats_normally() {
     let mut cfg = base_lab();
     cfg.node_id = NodeId::new("vault-1").unwrap();
-    cfg.seed_peers = vec![
-        ("vault-2".into(), "127.0.0.1:7702".into()),
-        ("vault-3".into(), "127.0.0.1:7703".into()),
-    ];
+    cfg.seed_peers = vec![("vault-2".into(), "127.0.0.1:7702".into()), ("vault-3".into(), "127.0.0.1:7703".into())];
     cfg.peer_tiers.clear();
     cfg.genesis_n = Some(3);
     cfg.online_count = Some(3);
@@ -111,10 +105,8 @@ fn unseated_local_node_fails_closed() {
     let mut cfg = base_lab();
     // Local is lowest priority domestic; SEV + another domestic fill n=2.
     cfg.node_id = NodeId::new("vault-zzz").unwrap();
-    cfg.seed_peers = vec![
-        ("vault-epyc".into(), "127.0.0.1:7702".into()),
-        ("vault-aaa".into(), "127.0.0.1:7703".into()),
-    ];
+    cfg.seed_peers =
+        vec![("vault-epyc".into(), "127.0.0.1:7702".into()), ("vault-aaa".into(), "127.0.0.1:7703".into())];
     cfg.peer_tiers = BTreeMap::from([("vault-epyc".into(), VaultNodeTier::Sev)]);
     cfg.genesis_n = Some(2);
     let err = match VaultRuntime::build(cfg) {
@@ -122,8 +114,5 @@ fn unseated_local_node_fails_closed() {
         Err(e) => e,
     };
     let msg = err.to_string();
-    assert!(
-        msg.contains("not seated"),
-        "expected seating fail-closed, got {msg}"
-    );
+    assert!(msg.contains("not seated"), "expected seating fail-closed, got {msg}");
 }

@@ -2,8 +2,8 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 use crate::domain::{
-    derive_nonce, field_add, field_mul, interpolate_secret, nonce_commitment, CombinedSignature,
-    DomainError, GroupKey, KeyShare, PartialSignature, SigningPhase, SigningSession,
+    derive_nonce, field_add, field_mul, interpolate_secret, nonce_commitment, CombinedSignature, DomainError, GroupKey,
+    KeyShare, PartialSignature, SigningPhase, SigningSession,
 };
 
 pub struct ThresholdVaultState {
@@ -45,15 +45,10 @@ impl ThresholdVaultState {
     ) -> Result<SigningSession, DomainError> {
         let mut g = self.inner.lock().expect("threshold");
         if online < g.group.t {
-            return Err(DomainError::FailStop {
-                online,
-                need: g.group.t,
-            });
+            return Err(DomainError::FailStop { online, need: g.group.t });
         }
         if g.consumed_sessions.contains(session_id) || g.sessions.contains_key(session_id) {
-            return Err(DomainError::NonceReuse(format!(
-                "session_id already used: {session_id}"
-            )));
+            return Err(DomainError::NonceReuse(format!("session_id already used: {session_id}")));
         }
         let share_value = g.local_share.value;
         let share_index = g.local_share.index.0;
@@ -74,10 +69,7 @@ impl ThresholdVaultState {
         Ok(session)
     }
 
-    pub fn contribute_local_partial(
-        &self,
-        session_id: &str,
-    ) -> Result<PartialSignature, DomainError> {
+    pub fn contribute_local_partial(&self, session_id: &str) -> Result<PartialSignature, DomainError> {
         let mut g = self.inner.lock().expect("threshold");
         if g.consumed_sessions.contains(session_id) {
             return Err(DomainError::SessionConsumed(session_id.to_string()));
@@ -102,17 +94,10 @@ impl ThresholdVaultState {
         let commit = nonce_commitment(nonce, share_index.0);
         let msg_scalar = crate::domain::lab_random_u64(message_hash.as_bytes());
         let partial_value = field_add(field_mul(share_value, nonce), msg_scalar);
-        let partial = PartialSignature {
-            index: share_index,
-            node_id,
-            nonce_commitment: commit,
-            partial_value,
-        };
+        let partial = PartialSignature { index: share_index, node_id, nonce_commitment: commit, partial_value };
         let session = g.sessions.get_mut(session_id).unwrap();
         if session.partials.iter().any(|p| p.index == partial.index) {
-            return Err(DomainError::NonceReuse(
-                "duplicate partial for share index".into(),
-            ));
+            return Err(DomainError::NonceReuse("duplicate partial for share index".into()));
         }
         session.partials.push(partial.clone());
         Ok(partial)
@@ -125,10 +110,7 @@ impl ThresholdVaultState {
     ) -> Result<Vec<PartialSignature>, DomainError> {
         let mut g = self.inner.lock().expect("threshold");
         if online < g.group.t {
-            return Err(DomainError::FailStop {
-                online,
-                need: g.group.t,
-            });
+            return Err(DomainError::FailStop { online, need: g.group.t });
         }
         let message_hash = g
             .sessions
@@ -155,9 +137,7 @@ impl ThresholdVaultState {
         let session = g.sessions.get_mut(session_id).unwrap();
         for p in &out {
             if !session.bound_nonce_commitments.contains(&p.nonce_commitment) {
-                session
-                    .bound_nonce_commitments
-                    .push(p.nonce_commitment.clone());
+                session.bound_nonce_commitments.push(p.nonce_commitment.clone());
             }
         }
         session.partials = out.clone();
@@ -165,18 +145,11 @@ impl ThresholdVaultState {
         Ok(out)
     }
 
-    pub fn combine(
-        &self,
-        session_id: &str,
-        online: usize,
-    ) -> Result<CombinedSignature, DomainError> {
+    pub fn combine(&self, session_id: &str, online: usize) -> Result<CombinedSignature, DomainError> {
         let mut g = self.inner.lock().expect("threshold");
         let need = g.group.t;
         if online < need {
-            return Err(DomainError::FailStop {
-                online,
-                need,
-            });
+            return Err(DomainError::FailStop { online, need });
         }
         if g.consumed_sessions.contains(session_id) {
             return Err(DomainError::SessionConsumed(session_id.to_string()));
@@ -189,27 +162,15 @@ impl ThresholdVaultState {
             .clone();
         let message_hash = g.sessions.get(session_id).unwrap().message_hash.clone();
         if partials.len() < need {
-            return Err(DomainError::QuorumNotMet {
-                have: partials.len(),
-                need,
-            });
+            return Err(DomainError::QuorumNotMet { have: partials.len(), need });
         }
-        let points: Vec<(u8, u64)> = partials
-            .iter()
-            .take(need)
-            .map(|p| (p.index.0, p.partial_value))
-            .collect();
+        let points: Vec<(u8, u64)> = partials.iter().take(need).map(|p| (p.index.0, p.partial_value)).collect();
         let value = interpolate_secret(&points)?;
         let participants: Vec<u8> = points.iter().map(|(i, _)| *i).collect();
         let session = g.sessions.get_mut(session_id).unwrap();
         session.phase = SigningPhase::Consumed;
         session.partials.clear();
         g.consumed_sessions.insert(session_id.to_string());
-        Ok(CombinedSignature {
-            session_id: session_id.to_string(),
-            message_hash,
-            value,
-            participants,
-        })
+        Ok(CombinedSignature { session_id: session_id.to_string(), message_hash, value, participants })
     }
 }

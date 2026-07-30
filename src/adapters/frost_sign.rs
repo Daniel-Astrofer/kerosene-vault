@@ -37,16 +37,8 @@ impl FrostSignOrchestrator {
         rotation: Arc<dyn DailyRotationPort>,
     ) -> Self {
         let shares = Arc::new(FrostShareSlot::new());
-        shares.install(FrostShareState {
-            key_packages,
-            pubkey_package,
-            min_signers,
-        });
-        Self {
-            shares,
-            anti_nonce,
-            rotation,
-        }
+        shares.install(FrostShareState { key_packages, pubkey_package, min_signers });
+        Self { shares, anti_nonce, rotation }
     }
 
     pub fn from_share_slot(
@@ -54,11 +46,7 @@ impl FrostSignOrchestrator {
         anti_nonce: Box<dyn AntiNoncePort>,
         rotation: Arc<dyn DailyRotationPort>,
     ) -> Self {
-        Self {
-            shares,
-            anti_nonce,
-            rotation,
-        }
+        Self { shares, anti_nonce, rotation }
     }
 
     pub fn share_slot(&self) -> Arc<FrostShareSlot> {
@@ -66,11 +54,7 @@ impl FrostSignOrchestrator {
     }
 
     /// Lab helper: run round1+round2+aggregate for `min_signers` participants in-process.
-    pub fn sign_lab_quorum(
-        &self,
-        session_id: &str,
-        message: &[u8],
-    ) -> Result<FrostAggregateResult, DomainError> {
+    pub fn sign_lab_quorum(&self, session_id: &str, message: &[u8]) -> Result<FrostAggregateResult, DomainError> {
         self.anti_nonce.claim_session(session_id)?;
         let day_epoch = self.rotation.current_day_epoch()?;
         self.rotation.require_epoch(&day_epoch)?;
@@ -87,16 +71,11 @@ impl FrostSignOrchestrator {
 
         let identifiers: Vec<Identifier> = key_packages.keys().copied().collect();
         if identifiers.len() < min_signers {
-            return Err(DomainError::FailStop {
-                online: identifiers.len(),
-                need: min_signers,
-            });
+            return Err(DomainError::FailStop { online: identifiers.len(), need: min_signers });
         }
 
         for id in identifiers.iter().take(min_signers) {
-            let kp = key_packages
-                .get(id)
-                .ok_or_else(|| DomainError::ThresholdError("missing key package".into()))?;
+            let kp = key_packages.get(id).ok_or_else(|| DomainError::ThresholdError("missing key package".into()))?;
             let (nonces, commitments) = frost::round1::commit(kp.signing_share(), &mut rng);
             nonces_map.insert(*id, nonces);
             commitments_map.insert(*id, commitments);
@@ -115,9 +94,7 @@ impl FrostSignOrchestrator {
                     for (_, n) in nonces_map.iter_mut() {
                         n.zeroize();
                     }
-                    return Err(DomainError::ThresholdError(format!(
-                        "frost round2: {e}"
-                    )));
+                    return Err(DomainError::ThresholdError(format!("frost round2: {e}")));
                 }
             };
             signature_shares.insert(id, share);
@@ -127,9 +104,8 @@ impl FrostSignOrchestrator {
             n.zeroize();
         }
 
-        let signature: Signature =
-            frost::aggregate(&signing_package, &signature_shares, pubkey_package)
-                .map_err(|e| DomainError::ThresholdError(format!("frost aggregate: {e}")))?;
+        let signature: Signature = frost::aggregate(&signing_package, &signature_shares, pubkey_package)
+            .map_err(|e| DomainError::ThresholdError(format!("frost aggregate: {e}")))?;
 
         pubkey_package
             .verifying_key()
@@ -138,9 +114,8 @@ impl FrostSignOrchestrator {
 
         bound_message.zeroize();
 
-        let sig_bytes = signature
-            .serialize()
-            .map_err(|e| DomainError::ThresholdError(format!("sig serialize: {e}")))?;
+        let sig_bytes =
+            signature.serialize().map_err(|e| DomainError::ThresholdError(format!("sig serialize: {e}")))?;
 
         Ok(FrostAggregateResult {
             session_id: session_id.to_string(),
@@ -172,21 +147,18 @@ fn bind_message(message: &[u8], session_id: &str, day_epoch: &str) -> Vec<u8> {
 #[cfg(all(test, feature = "dealer_lab"))]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU64, Ordering};
     use crate::adapters::{
-        DealerLabAdapter, LedgerDayEpochStub, PersistedAntiNonce, QuorumDailyRotation,
-        RecordingReshareHook, SystemClock,
+        DealerLabAdapter, LedgerDayEpochStub, PersistedAntiNonce, QuorumDailyRotation, RecordingReshareHook,
+        SystemClock,
     };
     use crate::application::ClockPort;
     use crate::domain::DomainError;
+    use std::sync::atomic::{AtomicU64, Ordering};
 
     struct TempProbe(std::path::PathBuf);
     impl TempProbe {
         fn new(name: &str) -> Self {
-            let p = std::env::temp_dir().join(format!(
-                "kv-frost-{name}-{}",
-                std::process::id()
-            ));
+            let p = std::env::temp_dir().join(format!("kv-frost-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&p);
             std::fs::create_dir_all(&p).unwrap();
             Self(p)
@@ -210,15 +182,8 @@ mod tests {
         let bundle = DealerLabAdapter::generate(3, 2).unwrap();
         let tmp = TempProbe::new("sign");
         let anti = PersistedAntiNonce::open(tmp.0.join("sessions.log")).unwrap();
-        let rotation: Arc<dyn DailyRotationPort> =
-            Arc::new(LedgerDayEpochStub::new(Arc::new(SystemClock)));
-        let orch = FrostSignOrchestrator::new(
-            bundle.key_packages,
-            bundle.pubkey_package,
-            2,
-            Box::new(anti),
-            rotation,
-        );
+        let rotation: Arc<dyn DailyRotationPort> = Arc::new(LedgerDayEpochStub::new(Arc::new(SystemClock)));
+        let orch = FrostSignOrchestrator::new(bundle.key_packages, bundle.pubkey_package, 2, Box::new(anti), rotation);
         let r = orch.sign_lab_quorum("sess-a", b"hello").unwrap();
         assert_eq!(r.participants, 2);
         assert!(!r.signature_hex.is_empty());
@@ -232,19 +197,9 @@ mod tests {
         let tmp = TempProbe::new("stale");
         let anti = PersistedAntiNonce::open(tmp.0.join("sessions.log")).unwrap();
         let clock = Arc::new(FakeClock(AtomicU64::new(1_704_067_200)));
-        let rotation: Arc<dyn DailyRotationPort> = Arc::new(QuorumDailyRotation::new(
-            clock.clone(),
-            1,
-            "local",
-            Arc::new(RecordingReshareHook::new()),
-        ));
-        let orch = FrostSignOrchestrator::new(
-            bundle.key_packages,
-            bundle.pubkey_package,
-            2,
-            Box::new(anti),
-            rotation,
-        );
+        let rotation: Arc<dyn DailyRotationPort> =
+            Arc::new(QuorumDailyRotation::new(clock.clone(), 1, "local", Arc::new(RecordingReshareHook::new())));
+        let orch = FrostSignOrchestrator::new(bundle.key_packages, bundle.pubkey_package, 2, Box::new(anti), rotation);
         orch.sign_lab_quorum("sess-ok", b"hello").unwrap();
         clock.0.store(1_704_067_200 + 86_400, Ordering::SeqCst);
         let err = orch.sign_lab_quorum("sess-stale", b"hello").unwrap_err();

@@ -12,9 +12,8 @@ use crate::domain::DomainError;
 /// Write `data` to `path` via tmp + fsync + rename + parent fsync.
 pub fn atomic_write_fsync(path: &Path, data: &[u8]) -> Result<(), DomainError> {
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(|e| {
-            DomainError::ShareStoreForbidden(format!("mkdir {}: {e}", parent.display()))
-        })?;
+        fs::create_dir_all(parent)
+            .map_err(|e| DomainError::ShareStoreForbidden(format!("mkdir {}: {e}", parent.display())))?;
     }
     let tmp = path.with_extension("tmp");
     {
@@ -24,13 +23,10 @@ pub fn atomic_write_fsync(path: &Path, data: &[u8]) -> Result<(), DomainError> {
             .truncate(true)
             .open(&tmp)
             .map_err(|e| DomainError::ShareStoreForbidden(format!("open tmp: {e}")))?;
-        f.write_all(data)
-            .map_err(|e| DomainError::ShareStoreForbidden(format!("write tmp: {e}")))?;
-        f.sync_all()
-            .map_err(|e| DomainError::ShareStoreForbidden(format!("fsync tmp: {e}")))?;
+        f.write_all(data).map_err(|e| DomainError::ShareStoreForbidden(format!("write tmp: {e}")))?;
+        f.sync_all().map_err(|e| DomainError::ShareStoreForbidden(format!("fsync tmp: {e}")))?;
     }
-    fs::rename(&tmp, path)
-        .map_err(|e| DomainError::ShareStoreForbidden(format!("rename: {e}")))?;
+    fs::rename(&tmp, path).map_err(|e| DomainError::ShareStoreForbidden(format!("rename: {e}")))?;
     fsync_parent(path)?;
     Ok(())
 }
@@ -43,10 +39,8 @@ pub fn fsync_parent(path: &Path) -> Result<(), DomainError> {
     if parent.as_os_str().is_empty() {
         return Ok(());
     }
-    let dir = File::open(parent).map_err(|e| {
-        DomainError::ShareStoreForbidden(format!("open parent {}: {e}", parent.display()))
-    })?;
-    dir.sync_all()
-        .map_err(|e| DomainError::ShareStoreForbidden(format!("fsync parent: {e}")))?;
+    let dir = File::open(parent)
+        .map_err(|e| DomainError::ShareStoreForbidden(format!("open parent {}: {e}", parent.display())))?;
+    dir.sync_all().map_err(|e| DomainError::ShareStoreForbidden(format!("fsync parent: {e}")))?;
     Ok(())
 }

@@ -17,11 +17,7 @@ pub struct GetMetrics {
 }
 
 impl GetMetrics {
-    pub fn new(
-        node_id: NodeId,
-        ledger: Arc<dyn LedgerPort>,
-        buckets: Option<Arc<dyn BucketLedgerPort>>,
-    ) -> Self {
+    pub fn new(node_id: NodeId, ledger: Arc<dyn LedgerPort>, buckets: Option<Arc<dyn BucketLedgerPort>>) -> Self {
         Self {
             node_id,
             ledger,
@@ -47,20 +43,13 @@ impl GetMetrics {
 
     pub fn execute(&self) -> Result<String, crate::domain::DomainError> {
         let epoch = self.ledger.epoch()?;
-        let buckets = self
-            .buckets
-            .as_ref()
-            .map(|b| b.count_pending_intents())
-            .transpose()?
-            .unwrap_or(0);
+        let buckets = self.buckets.as_ref().map(|b| b.count_pending_intents()).transpose()?.unwrap_or(0);
 
         let node = &self.node_id;
         let mut buf = String::with_capacity(1024);
         buf.push_str("# HELP vault_mesh_health Vault mesh health gauge (1=ready)\n");
         buf.push_str("# TYPE vault_mesh_health gauge\n");
-        buf.push_str(&format!(
-            "vault_mesh_health{{node_id=\"{node}\"}} 1\n"
-        ));
+        buf.push_str(&format!("vault_mesh_health{{node_id=\"{node}\"}} 1\n"));
         buf.push_str("# HELP vault_frost_sign_total Total FROST sign operations\n");
         buf.push_str("# TYPE vault_frost_sign_total counter\n");
         buf.push_str(&format!(
@@ -73,9 +62,7 @@ impl GetMetrics {
         ));
         buf.push_str("# HELP vault_frost_sign_duration_seconds FROST sign duration histogram placeholder\n");
         buf.push_str("# TYPE vault_frost_sign_duration_seconds gauge\n");
-        buf.push_str(&format!(
-            "vault_frost_sign_duration_seconds{{node_id=\"{node}\"}} 0.0\n"
-        ));
+        buf.push_str(&format!("vault_frost_sign_duration_seconds{{node_id=\"{node}\"}} 0.0\n"));
         buf.push_str("# HELP vault_reshare_total Total reshare events\n");
         buf.push_str("# TYPE vault_reshare_total counter\n");
         buf.push_str(&format!(
@@ -93,10 +80,7 @@ impl GetMetrics {
         ));
         buf.push_str("# HELP vault_intent_consumed_total Intents consumed\n");
         buf.push_str("# TYPE vault_intent_consumed_total counter\n");
-        buf.push_str(&format!(
-            "vault_intent_consumed_total{{node_id=\"{node}\",bucket=\"all\"}} {b}\n",
-            b = buckets
-        ));
+        buf.push_str(&format!("vault_intent_consumed_total{{node_id=\"{node}\",bucket=\"all\"}} {b}\n", b = buckets));
         buf.push_str("# HELP vault_psbt_policy_rejected_total PSBT rejections by reason\n");
         buf.push_str("# TYPE vault_psbt_policy_rejected_total counter\n");
         buf.push_str(&format!(

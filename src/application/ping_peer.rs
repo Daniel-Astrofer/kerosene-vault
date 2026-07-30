@@ -25,12 +25,7 @@ impl PingPeer {
         clock: Arc<dyn ClockPort>,
         local_measurement: Measurement,
     ) -> Self {
-        Self {
-            peers,
-            attestation,
-            clock,
-            local_measurement,
-        }
+        Self { peers, attestation, clock, local_measurement }
     }
 
     pub fn execute(&self, peer_id: &NodeId) -> Result<PingReport, DomainError> {

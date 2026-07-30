@@ -13,14 +13,8 @@ fn epoch_advances_with_governance_quorum() {
     assert_eq!(constitution.signing_t, 2);
     assert_eq!(constitution.governance_t, 3); // signing_t+1 capped at n
 
-    let ledger = Arc::new(
-        InMemoryLedger::genesis(
-            constitution,
-            vec![n1.clone(), n2.clone(), n3.clone()],
-            n1.clone(),
-        )
-        .unwrap(),
-    );
+    let ledger =
+        Arc::new(InMemoryLedger::genesis(constitution, vec![n1.clone(), n2.clone(), n3.clone()], n1.clone()).unwrap());
 
     let propose = ProposeEpochAdvance::new(ledger.clone(), n1.clone());
     let p = propose.execute("prop-1").unwrap();
@@ -44,9 +38,7 @@ fn outsider_cannot_propose() {
     let n2 = NodeId::new("vault-2").unwrap();
     let outsider = NodeId::new("evil").unwrap();
     let constitution = Constitution::v1_lab(2).unwrap();
-    let ledger = Arc::new(
-        InMemoryLedger::genesis(constitution, vec![n1.clone(), n2], n1).unwrap(),
-    );
+    let ledger = Arc::new(InMemoryLedger::genesis(constitution, vec![n1.clone(), n2], n1).unwrap());
     let propose = ProposeEpochAdvance::new(ledger, outsider);
     assert!(propose.execute("x").is_err());
 }

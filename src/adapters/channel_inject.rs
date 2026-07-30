@@ -35,18 +35,10 @@ impl ChannelInjectPort for StubChannelInject {
         _funding_amount_sats: u64,
         _push_sats: u64,
     ) -> Result<String, DomainError> {
-        Err(DomainError::RequestRejected(
-            "channel_inject: not implemented (LND REST stub)".into(),
-        ))
+        Err(DomainError::RequestRejected("channel_inject: not implemented (LND REST stub)".into()))
     }
 
-    fn close_channel(
-        &self,
-        _channel_point: &str,
-        _force: bool,
-    ) -> Result<String, DomainError> {
-        Err(DomainError::RequestRejected(
-            "channel_inject: close not implemented (LND REST stub)".into(),
-        ))
+    fn close_channel(&self, _channel_point: &str, _force: bool) -> Result<String, DomainError> {
+        Err(DomainError::RequestRejected("channel_inject: close not implemented (LND REST stub)".into()))
     }
 }

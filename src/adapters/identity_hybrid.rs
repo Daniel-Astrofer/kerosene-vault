@@ -74,7 +74,8 @@ impl HybridIdentity {
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|e| DomainError::ThresholdError(format!("system clock: {e}"))).unwrap_or_default()
+            .map_err(|e| DomainError::ThresholdError(format!("system clock: {e}")))
+            .unwrap_or_default()
             .as_secs();
 
         Ok(Self {
@@ -133,11 +134,7 @@ impl HybridIdentity {
     ///
     /// Public keys are also persisted with `-pub` suffix so load_seeds
     /// can reconstruct the full identity without recomputing public keys.
-    pub fn persist_seeds(
-        &self,
-        store: &dyn ShareStorePort,
-        key_epoch: u64,
-    ) -> Result<(), DomainError> {
+    pub fn persist_seeds(&self, store: &dyn ShareStorePort, key_epoch: u64) -> Result<(), DomainError> {
         let nid = self.node_id.as_str();
         // Store secrets
         let secrets: &[(&str, &[u8])] = &[
@@ -151,10 +148,7 @@ impl HybridIdentity {
             store.put_share(&sid, data)?;
         }
         // Store public keys (non-secret, but needed for reconstruction)
-        let publics: &[(&str, &[u8])] = &[
-            ("ed25519-pub", &self.ed25519_public),
-            ("x25519-pub", &self.x25519_public),
-        ];
+        let publics: &[(&str, &[u8])] = &[("ed25519-pub", &self.ed25519_public), ("x25519-pub", &self.x25519_public)];
         for (label, data) in publics {
             let sid = Self::seed_share_id(nid, label);
             store.put_share(&sid, data)?;
@@ -196,28 +190,33 @@ impl HybridIdentity {
 
         // Reconstruct public keys from persisted blobs (x25519 2.x doesn't expose StaticSecret)
         let ed25519_public: [u8; 32] = match Self::load_seed(store, nid, "ed25519-pub", key_epoch) {
-            Ok(Some(v)) => v[..32].try_into()
-                .map_err(|_| DomainError::ShareStoreForbidden("ed25519 pub wrong length".into()))?,
+            Ok(Some(v)) => {
+                v[..32].try_into().map_err(|_| DomainError::ShareStoreForbidden("ed25519 pub wrong length".into()))?
+            }
             Ok(None) => return Ok(None),
             Err(e) => return Err(e),
         };
 
         let x25519_public: [u8; 32] = match Self::load_seed(store, nid, "x25519-pub", key_epoch) {
-            Ok(Some(v)) => v[..32].try_into()
-                .map_err(|_| DomainError::ShareStoreForbidden("x25519 pub wrong length".into()))?,
+            Ok(Some(v)) => {
+                v[..32].try_into().map_err(|_| DomainError::ShareStoreForbidden("x25519 pub wrong length".into()))?
+            }
             Ok(None) => return Ok(None),
             Err(e) => return Err(e),
         };
 
         // Convert secret Vec<u8> → [u8; 32]
-        let ed25519_secret_arr: [u8; 32] = ed25519_secret[..32].try_into()
+        let ed25519_secret_arr: [u8; 32] = ed25519_secret[..32]
+            .try_into()
             .map_err(|_| DomainError::ShareStoreForbidden("ed25519 seed wrong length".into()))?;
-        let x25519_secret_arr: [u8; 32] = x25519_secret[..32].try_into()
+        let x25519_secret_arr: [u8; 32] = x25519_secret[..32]
+            .try_into()
             .map_err(|_| DomainError::ShareStoreForbidden("x25519 seed wrong length".into()))?;
 
         let now = SystemTime::now()
             .duration_since(UNIX_EPOCH)
-            .map_err(|e| DomainError::ThresholdError(format!("system clock: {e}"))).unwrap_or_default()
+            .map_err(|e| DomainError::ThresholdError(format!("system clock: {e}")))
+            .unwrap_or_default()
             .as_secs();
 
         Ok(Some(Self {
@@ -290,7 +289,9 @@ mod tests {
         }
     }
     impl Drop for TempDir {
-        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
     }
 
     #[test]
@@ -333,9 +334,7 @@ mod tests {
         id.persist_seeds(&store, 0).expect("persist");
 
         // Load seeds
-        let loaded = HybridIdentity::load_seeds(nid, &store, 0)
-            .expect("load")
-            .expect("seeds present");
+        let loaded = HybridIdentity::load_seeds(nid, &store, 0).expect("load").expect("seeds present");
 
         // Ed25519 secret must match
         assert_eq!(loaded.ed25519_secret, id.ed25519_secret);
@@ -349,11 +348,7 @@ mod tests {
     fn load_seeds_returns_none_when_missing() {
         let tmp = TempDir::new("missing");
         let store = AeadDiskShareStore::new(&tmp.0, "test-pass");
-        let result = HybridIdentity::load_seeds(
-            NodeId::new("nonexistent").unwrap(),
-            &store,
-            0,
-        );
+        let result = HybridIdentity::load_seeds(NodeId::new("nonexistent").unwrap(), &store, 0);
         assert!(matches!(result, Ok(None)));
     }
 

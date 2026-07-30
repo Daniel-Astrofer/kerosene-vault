@@ -49,9 +49,7 @@ pub fn validate_destination(network: BitcoinNetwork, destination: &str) -> Resul
     }
 
     // Fast-path reject: explicit mainnet bech32 HRP on testnet3.
-    if network == BitcoinNetwork::Testnet3
-        && (dest.starts_with("bc1") || dest.starts_with("BC1"))
-    {
+    if network == BitcoinNetwork::Testnet3 && (dest.starts_with("bc1") || dest.starts_with("BC1")) {
         return Err(DomainError::BitcoinNetworkMismatch(
             "mainnet bc1 address rejected on BITCOIN_NETWORK=testnet3".into(),
         ));
@@ -60,10 +58,7 @@ pub fn validate_destination(network: BitcoinNetwork, destination: &str) -> Resul
     match dest.parse::<Address<NetworkUnchecked>>() {
         Ok(unchecked) => {
             let checked = unchecked.require_network(network.to_bitcoin()).map_err(|_| {
-                DomainError::BitcoinNetworkMismatch(format!(
-                    "address not valid for {}",
-                    network.as_str()
-                ))
+                DomainError::BitcoinNetworkMismatch(format!("address not valid for {}", network.as_str()))
             })?;
             let _ = checked;
             Ok(())
@@ -75,7 +70,6 @@ pub fn validate_destination(network: BitcoinNetwork, destination: &str) -> Resul
     }
 }
 
-
 /// Resolve Intent destination to a scriptPubKey for PSBT binding.
 /// Opaque lab tags cannot bind on-chain — callers must use a real address.
 pub fn destination_script_pubkey(
@@ -86,18 +80,12 @@ pub fn destination_script_pubkey(
     let dest = destination.trim();
     let unchecked = dest.parse::<Address<NetworkUnchecked>>().map_err(|_| {
         DomainError::InvalidIntent(
-            "PSBT Intent bind requires a Bitcoin address destination (opaque lab tags cannot bind outputs)"
-                .into(),
+            "PSBT Intent bind requires a Bitcoin address destination (opaque lab tags cannot bind outputs)".into(),
         )
     })?;
     let checked = unchecked
         .require_network(network.to_bitcoin())
-        .map_err(|_| {
-            DomainError::BitcoinNetworkMismatch(format!(
-                "address not valid for {}",
-                network.as_str()
-            ))
-        })?;
+        .map_err(|_| DomainError::BitcoinNetworkMismatch(format!("address not valid for {}", network.as_str())))?;
     Ok(checked.script_pubkey())
 }
 
@@ -107,8 +95,8 @@ mod tests {
 
     #[test]
     fn testnet3_rejects_bc1_prefix() {
-        let err = validate_destination(BitcoinNetwork::Testnet3, "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4")
-            .unwrap_err();
+        let err =
+            validate_destination(BitcoinNetwork::Testnet3, "bc1qw508d6qejxtdg4y5r3zarvary0c5xw7kv8f3t4").unwrap_err();
         assert!(matches!(err, DomainError::BitcoinNetworkMismatch(_)));
     }
 

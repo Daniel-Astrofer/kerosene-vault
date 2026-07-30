@@ -38,12 +38,7 @@ pub struct MeshPrincipal {
 
 impl MeshPrincipal {
     pub fn lab_omnipotent(local_node_id: &str) -> Self {
-        Self {
-            role: MeshRole::Vault,
-            node_id: local_node_id.to_string(),
-            spiffe_id: None,
-            lab_omnipotent: true,
-        }
+        Self { role: MeshRole::Vault, node_id: local_node_id.to_string(), spiffe_id: None, lab_omnipotent: true }
     }
 
     pub fn allows_route(&self, class: RouteClass) -> bool {
@@ -119,9 +114,7 @@ pub fn route_class_for_path(path: &str) -> Option<RouteClass> {
 pub fn parse_spiffe_principal(uri: &str) -> Result<(MeshRole, Option<String>), DomainError> {
     let uri = uri.trim();
     if !uri.starts_with("spiffe://") {
-        return Err(DomainError::AuthRejected(format!(
-            "not a SPIFFE URI: {uri}"
-        )));
+        return Err(DomainError::AuthRejected(format!("not a SPIFFE URI: {uri}")));
     }
     let rest = &uri["spiffe://".len()..];
     let mut parts = rest.split('/');
@@ -132,9 +125,7 @@ pub fn parse_spiffe_principal(uri: &str) -> Result<(MeshRole, Option<String>), D
         "vault" => {
             let leaf = parts.next().unwrap_or("");
             if leaf.is_empty() {
-                return Err(DomainError::AuthRejected(
-                    "SPIFFE vault path missing node segment".into(),
-                ));
+                return Err(DomainError::AuthRejected("SPIFFE vault path missing node segment".into()));
             }
             if leaf == "server" {
                 Ok((MeshRole::Vault, None))
@@ -142,9 +133,7 @@ pub fn parse_spiffe_principal(uri: &str) -> Result<(MeshRole, Option<String>), D
                 Ok((MeshRole::Vault, Some(leaf.to_string())))
             }
         }
-        _ => Err(DomainError::AuthRejected(format!(
-            "unknown SPIFFE workload path: {uri}"
-        ))),
+        _ => Err(DomainError::AuthRejected(format!("unknown SPIFFE workload path: {uri}"))),
     }
 }
 
@@ -158,24 +147,16 @@ pub fn principal_from_cert_sans(
     local_node_id: &str,
     allowed_vault_ids: &HashSet<String>,
 ) -> Result<MeshPrincipal, DomainError> {
-    let spiffe = uri_sans
-        .iter()
-        .find(|u| u.starts_with("spiffe://"))
-        .cloned()
-        .ok_or_else(|| {
-            DomainError::AuthRejected(
-                "client cert missing SPIFFE URI SAN (required for mesh principal)".into(),
-            )
-        })?;
+    let spiffe = uri_sans.iter().find(|u| u.starts_with("spiffe://")).cloned().ok_or_else(|| {
+        DomainError::AuthRejected("client cert missing SPIFFE URI SAN (required for mesh principal)".into())
+    })?;
     let (role, path_node) = parse_spiffe_principal(&spiffe)?;
     let node_id = match role {
         MeshRole::Kfe => path_node.unwrap_or_else(|| "kfe".into()),
         MeshRole::Vault => {
             if let Some(id) = path_node {
                 if !allowed_vault_ids.contains(&id) && id != local_node_id {
-                    return Err(DomainError::AuthRejected(format!(
-                        "SPIFFE vault node {id} is not a known mesh node"
-                    )));
+                    return Err(DomainError::AuthRejected(format!("SPIFFE vault node {id} is not a known mesh node")));
                 }
                 id
             } else {
@@ -189,8 +170,7 @@ pub fn principal_from_cert_sans(
                     [one] => one.clone(),
                     [] => {
                         return Err(DomainError::AuthRejected(
-                            "vault/server SVID has no DNS SAN matching a known VAULT_NODE_ID"
-                                .into(),
+                            "vault/server SVID has no DNS SAN matching a known VAULT_NODE_ID".into(),
                         ));
                     }
                     _ => {
@@ -202,12 +182,7 @@ pub fn principal_from_cert_sans(
             }
         }
     };
-    Ok(MeshPrincipal {
-        role,
-        node_id,
-        spiffe_id: Some(spiffe),
-        lab_omnipotent: false,
-    })
+    Ok(MeshPrincipal { role, node_id, spiffe_id: Some(spiffe), lab_omnipotent: false })
 }
 
 /// Resolve the authenticated caller for mesh vote / gossip endpoints.
@@ -246,32 +221,20 @@ pub fn resolve_mesh_caller_identity_with_principal(
 ) -> Result<String, DomainError> {
     let identity = if let Some(p) = principal.filter(|p| !p.lab_omnipotent) {
         if p.role != MeshRole::Vault {
-            return Err(DomainError::AuthRejected(
-                "day/vote requires vault peer principal (not kfe)".into(),
-            ));
+            return Err(DomainError::AuthRejected("day/vote requires vault peer principal (not kfe)".into()));
         }
         if !allowed_node_ids.contains(&p.node_id) && p.node_id != local_node_id {
-            return Err(DomainError::AuthRejected(format!(
-                "mTLS principal {} is not a known mesh node",
-                p.node_id
-            )));
+            return Err(DomainError::AuthRejected(format!("mTLS principal {} is not a known mesh node", p.node_id)));
         }
         p.node_id.clone()
-    } else if let Some(peer) = mtls_peer_node_id
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
+    } else if let Some(peer) = mtls_peer_node_id.map(str::trim).filter(|s| !s.is_empty()) {
         if !allowed_node_ids.contains(peer) && peer != local_node_id {
-            return Err(DomainError::AuthRejected(format!(
-                "mTLS peer identity {peer} is not a known mesh node"
-            )));
+            return Err(DomainError::AuthRejected(format!("mTLS peer identity {peer} is not a known mesh node")));
         }
         peer.to_string()
     } else if let Some(hdr) = header_node_id.map(str::trim).filter(|s| !s.is_empty()) {
         if !allowed_node_ids.contains(hdr) && hdr != local_node_id {
-            return Err(DomainError::AuthRejected(format!(
-                "X-Vault-Node-Id {hdr} is not a known mesh node"
-            )));
+            return Err(DomainError::AuthRejected(format!("X-Vault-Node-Id {hdr} is not a known mesh node")));
         }
         hdr.to_string()
     } else {
@@ -296,25 +259,19 @@ pub fn bind_dkg_sender_to_peer(
 ) -> Result<(), DomainError> {
     let sender = sender_node_id.trim();
     if sender.is_empty() {
-        return Err(DomainError::AuthRejected(
-            "DKG sender_node_id required".into(),
-        ));
+        return Err(DomainError::AuthRejected("DKG sender_node_id required".into()));
     }
     if lab_static_token {
         return Ok(());
     }
     let Some(p) = principal else {
-        return Err(DomainError::AuthRejected(
-            "DKG ingest requires authenticated mTLS vault principal".into(),
-        ));
+        return Err(DomainError::AuthRejected("DKG ingest requires authenticated mTLS vault principal".into()));
     };
     if p.lab_omnipotent {
         return Ok(());
     }
     if p.role != MeshRole::Vault {
-        return Err(DomainError::AuthRejected(
-            "DKG peer rounds require vault role (not kfe)".into(),
-        ));
+        return Err(DomainError::AuthRejected("DKG peer rounds require vault role (not kfe)".into()));
     }
     if p.node_id != sender {
         return Err(DomainError::AuthRejected(format!(
@@ -351,77 +308,46 @@ mod tests {
 
     #[test]
     fn defaults_to_local_without_hooks() {
-        assert_eq!(
-            resolve_mesh_caller_identity("vault-1", &allowed(), None, None, None).unwrap(),
-            "vault-1"
-        );
+        assert_eq!(resolve_mesh_caller_identity("vault-1", &allowed(), None, None, None).unwrap(), "vault-1");
     }
 
     #[test]
     fn accepts_known_peer_header() {
         assert_eq!(
-            resolve_mesh_caller_identity("vault-1", &allowed(), Some("vault-2"), None, None)
-                .unwrap(),
+            resolve_mesh_caller_identity("vault-1", &allowed(), Some("vault-2"), None, None).unwrap(),
             "vault-2"
         );
     }
 
     #[test]
     fn rejects_unknown_header_spoof() {
-        let err = resolve_mesh_caller_identity(
-            "vault-1",
-            &allowed(),
-            Some("vault-evil"),
-            None,
-            None,
-        )
-        .unwrap_err();
+        let err = resolve_mesh_caller_identity("vault-1", &allowed(), Some("vault-evil"), None, None).unwrap_err();
         assert!(matches!(err, DomainError::AuthRejected(_)));
     }
 
     #[test]
     fn mtls_hook_wins_over_header() {
         assert_eq!(
-            resolve_mesh_caller_identity(
-                "vault-1",
-                &allowed(),
-                Some("vault-2"),
-                None,
-                Some("vault-3"),
-            )
-            .unwrap(),
+            resolve_mesh_caller_identity("vault-1", &allowed(), Some("vault-2"), None, Some("vault-3"),).unwrap(),
             "vault-3"
         );
     }
 
     #[test]
     fn rejects_claimed_mismatch() {
-        let err = resolve_mesh_caller_identity(
-            "vault-1",
-            &allowed(),
-            None,
-            Some("vault-2"),
-            None,
-        )
-        .unwrap_err();
+        let err = resolve_mesh_caller_identity("vault-1", &allowed(), None, Some("vault-2"), None).unwrap_err();
         assert!(matches!(err, DomainError::AuthRejected(_)));
         assert!(err.to_string().contains("does not match"));
     }
 
     #[test]
     fn parses_kfe_and_vault_spiffe() {
-        assert_eq!(
-            parse_spiffe_principal("spiffe://kerosene.lab/kfe").unwrap(),
-            (MeshRole::Kfe, Some("kfe".into()))
-        );
+        assert_eq!(parse_spiffe_principal("spiffe://kerosene.lab/kfe").unwrap(), (MeshRole::Kfe, Some("kfe".into())));
         assert_eq!(
             parse_spiffe_principal("spiffe://kerosene.lab/vault/vault-2").unwrap(),
             (MeshRole::Vault, Some("vault-2".into()))
         );
-        assert_eq!(
-            parse_spiffe_principal("spiffe://kerosene.lab/vault/server").unwrap(),
-            (MeshRole::Vault, None)
-        );
+        assert_eq!(parse_spiffe_principal("spiffe://kerosene.lab/vault/server").unwrap(), (MeshRole::Vault, None));
     }
 
     #[test]
@@ -469,21 +395,9 @@ mod tests {
 
     #[test]
     fn route_class_maps_settlement_and_peer() {
-        assert_eq!(
-            route_class_for_path("/v1/bitcoin/sign-psbt"),
-            Some(RouteClass::KfeSettlement)
-        );
-        assert_eq!(
-            route_class_for_path("/v1/dkg/round1"),
-            Some(RouteClass::VaultPeer)
-        );
-        assert_eq!(
-            route_class_for_path("/v1/day/advance"),
-            Some(RouteClass::SharedOps)
-        );
-        assert_eq!(
-            route_class_for_path("/v1/admin/status"),
-            Some(RouteClass::AdminRead)
-        );
+        assert_eq!(route_class_for_path("/v1/bitcoin/sign-psbt"), Some(RouteClass::KfeSettlement));
+        assert_eq!(route_class_for_path("/v1/dkg/round1"), Some(RouteClass::VaultPeer));
+        assert_eq!(route_class_for_path("/v1/day/advance"), Some(RouteClass::SharedOps));
+        assert_eq!(route_class_for_path("/v1/admin/status"), Some(RouteClass::AdminRead));
     }
 }

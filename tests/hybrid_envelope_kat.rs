@@ -8,10 +8,7 @@
 
 use kerosene_vault::adapters::HybridEnvelopeAdapter;
 use kerosene_vault::application::ports::HybridEnvelopePort;
-use kerosene_vault::domain::{
-    DayEpoch, DomainError, HybridContext, HybridEnvelope,
-    NodeId,
-};
+use kerosene_vault::domain::{DayEpoch, DomainError, HybridContext, HybridEnvelope, NodeId};
 
 // ═══════════════════════════════════════════════════════════════════
 // Helpers
@@ -168,9 +165,7 @@ fn tampered_ciphertext_domain_validation() {
     }
 
     // Domain validation still passes (checks non-empty, not integrity).
-    assert!(envelope.validate_header().is_ok(),
-        "Domain validation checks structure, not crypto integrity"
-    );
+    assert!(envelope.validate_header().is_ok(), "Domain validation checks structure, not crypto integrity");
 }
 
 /// Tampered kem_ciphertext: modify the ML-KEM ciphertext.
@@ -184,9 +179,7 @@ fn tampered_kem_ciphertext_domain_validation() {
     envelope.kem_ciphertext[0] ^= 0xFF;
 
     // Domain validation still passes
-    assert!(envelope.validate_header().is_ok(),
-        "Domain validation checks structure, not crypto integrity"
-    );
+    assert!(envelope.validate_header().is_ok(), "Domain validation checks structure, not crypto integrity");
 }
 
 /// Tampered classical_signature: modify Ed25519 signature bytes.
@@ -199,9 +192,7 @@ fn tampered_classical_signature_domain_validation() {
     // Tamper
     envelope.classical_signature[0] ^= 0xFF;
 
-    assert!(envelope.validate_header().is_ok(),
-        "Domain validation checks structure, not crypto integrity"
-    );
+    assert!(envelope.validate_header().is_ok(), "Domain validation checks structure, not crypto integrity");
 }
 
 /// Tampered pq_signature: modify ML-DSA signature bytes.
@@ -214,9 +205,7 @@ fn tampered_pq_signature_domain_validation() {
     // Tamper
     envelope.pq_signature[0] ^= 0xFF;
 
-    assert!(envelope.validate_header().is_ok(),
-        "Domain validation checks structure, not crypto integrity"
-    );
+    assert!(envelope.validate_header().is_ok(), "Domain validation checks structure, not crypto integrity");
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -309,12 +298,8 @@ fn seal_unseal_roundtrip_known_keys() {
     let ctx = make_context("vault-1", "vault-2", "2026-01-01");
     let plaintext = b"sensitive share data for round-trip test";
 
-    let envelope = adapter.seal(plaintext, &ctx)
-        .expect("seal should succeed with known receiver keys");
-    let decrypted = adapter.open(&envelope, &ctx)
-        .expect("open should succeed with known keys");
+    let envelope = adapter.seal(plaintext, &ctx).expect("seal should succeed with known receiver keys");
+    let decrypted = adapter.open(&envelope, &ctx).expect("open should succeed with known keys");
 
-    assert_eq!(plaintext.as_slice(), decrypted.as_slice(),
-        "Round-trip decryption must return original plaintext"
-    );
+    assert_eq!(plaintext.as_slice(), decrypted.as_slice(), "Round-trip decryption must return original plaintext");
 }

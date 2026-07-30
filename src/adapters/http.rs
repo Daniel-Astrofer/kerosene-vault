@@ -16,15 +16,12 @@ use axum::routing::{get, post};
 use axum::Router;
 
 use crate::adapters::SlidingWindowLimiter;
-use crate::application::{
-    bind_session_to_intent, BlobStorePort, BucketLedgerPort, LedgerPort, ReleaseStorePort,
-};
+use crate::application::{bind_session_to_intent, BlobStorePort, BucketLedgerPort, LedgerPort, ReleaseStorePort};
 use crate::bootstrap::{AuthMode, CeremonyMode, VaultRuntime};
 use crate::domain::{
-    assert_channels_taproot_bucket, assert_shared_taproot_bucket, validate_destination, BucketKind,
-    ContentHash, NodeId, SettlementIntent,
+    assert_channels_taproot_bucket, assert_shared_taproot_bucket, validate_destination, BucketKind, ContentHash,
+    NodeId, SettlementIntent,
 };
-
 
 fn json_err(e: impl std::fmt::Display) -> String {
     serde_json::json!({ "error": e.to_string() }).to_string()
@@ -78,18 +75,18 @@ pub fn build_router(runtime: Arc<VaultRuntime>) -> Router {
         // Over-wire FROST DKG round exchange (auth via token or mTLS). No dealer.
         .route("/v1/dkg/round1", post(v1_dkg_round1))
         .route("/v1/dkg/round2", post(v1_dkg_round2))
-            .route("/v1/dkg/round3", post(v1_dkg_round3))
-            .route("/v1/dkg/status", get(v1_dkg_status))
-            .route("/v1/dkg/tr/round1", post(v1_dkg_tr_round1))
-            .route("/v1/dkg/tr/round2", post(v1_dkg_tr_round2))
-            .route("/v1/dkg/tr/round3", post(v1_dkg_tr_round3))
-            .route("/v1/dkg/tr/status", get(v1_dkg_tr_status))
-            // Item 1.5: Wire-based Taproot FROST reshare routes
-            .route("/v1/reshare/tr/round1", post(v1_reshare_tr_round1))
-            .route("/v1/reshare/tr/round2", post(v1_reshare_tr_round2))
-            .route("/v1/reshare/tr/finalize", post(v1_reshare_tr_finalize))
-            .route("/v1/reshare/tr/status", get(v1_reshare_tr_status))
-            .route("/v1/anti-nonce/prepare", post(v1_anti_nonce_prepare))
+        .route("/v1/dkg/round3", post(v1_dkg_round3))
+        .route("/v1/dkg/status", get(v1_dkg_status))
+        .route("/v1/dkg/tr/round1", post(v1_dkg_tr_round1))
+        .route("/v1/dkg/tr/round2", post(v1_dkg_tr_round2))
+        .route("/v1/dkg/tr/round3", post(v1_dkg_tr_round3))
+        .route("/v1/dkg/tr/status", get(v1_dkg_tr_status))
+        // Item 1.5: Wire-based Taproot FROST reshare routes
+        .route("/v1/reshare/tr/round1", post(v1_reshare_tr_round1))
+        .route("/v1/reshare/tr/round2", post(v1_reshare_tr_round2))
+        .route("/v1/reshare/tr/finalize", post(v1_reshare_tr_finalize))
+        .route("/v1/reshare/tr/status", get(v1_reshare_tr_status))
+        .route("/v1/anti-nonce/prepare", post(v1_anti_nonce_prepare))
         // Legacy alias — same durable prepare semantics as `/prepare`.
         .route("/v1/anti-nonce/ingest", post(v1_anti_nonce_prepare))
         .route("/v1/intent/consume/prepare", post(v1_intent_consume_prepare))
@@ -130,29 +127,15 @@ async fn require_token_mw(
     next: Next,
 ) -> Result<Response, (StatusCode, String)> {
     let token = headers.get("X-Vault-Token").and_then(|v| v.to_str().ok());
-    state
-        .runtime
-        .auth
-        .authorize(token)
-        .map_err(|e| (StatusCode::UNAUTHORIZED, json_err(e)))?;
+    state.runtime.auth.authorize(token).map_err(|e| (StatusCode::UNAUTHORIZED, json_err(e)))?;
 
-    let rate_key = headers
-        .get("X-Vault-Node-Id")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or(state.runtime.config.node_id.as_str());
-    state
-        .auth_limiter
-        .check(rate_key)
-        .map_err(|e| (StatusCode::TOO_MANY_REQUESTS, json_err(e)))?;
+    let rate_key =
+        headers.get("X-Vault-Node-Id").and_then(|v| v.to_str().ok()).unwrap_or(state.runtime.config.node_id.as_str());
+    state.auth_limiter.check(rate_key).map_err(|e| (StatusCode::TOO_MANY_REQUESTS, json_err(e)))?;
 
     let allowed = crate::adapters::mesh_allowed_node_ids(
         state.runtime.config.node_id.as_str(),
-        state
-            .runtime
-            .config
-            .seed_peers
-            .iter()
-            .map(|(id, _)| id.as_str()),
+        state.runtime.config.seed_peers.iter().map(|(id, _)| id.as_str()),
     );
     let peer_cert = peer_cert.and_then(|Extension(c)| c);
     let principal = if matches!(state.runtime.config.auth_mode, AuthMode::StaticToken) {
@@ -204,10 +187,7 @@ async fn v1_metrics(State(state): State<AppState>) -> impl IntoResponse {
     }
 }
 
-async fn v1_admin_status(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+async fn v1_admin_status(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let request_id = admin_request_id(&headers);
     match state.runtime.get_health.execute() {
         Ok(health) => (
@@ -227,10 +207,7 @@ async fn v1_admin_status(
     }
 }
 
-async fn v1_admin_ceremony(
-    State(state): State<AppState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+async fn v1_admin_ceremony(State(state): State<AppState>, headers: HeaderMap) -> impl IntoResponse {
     let request_id = admin_request_id(&headers);
     (
         StatusCode::OK,
@@ -270,18 +247,9 @@ async fn v1_sign(State(state): State<AppState>, body: Bytes) -> impl IntoRespons
     }
     let req: SignBody = match serde_json::from_slice(&body) {
         Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                json_err(format!("invalid json: {e}")),
-            )
-        }
+        Err(e) => return (StatusCode::BAD_REQUEST, json_err(format!("invalid json: {e}"))),
     };
-    match state
-        .runtime
-        .sign_message
-        .run_lab_quorum_sign(&req.session_id, &req.message_hash)
-    {
+    match state.runtime.sign_message.run_lab_quorum_sign(&req.session_id, &req.message_hash) {
         Ok(sig) => (StatusCode::OK, sig.to_json()),
         Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
@@ -324,23 +292,13 @@ async fn v1_financial_quorum(State(state): State<AppState>, body: Bytes) -> impl
     }
     let req: FinancialQuorumBody = match serde_json::from_slice(&body) {
         Ok(value) => value,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                json_err(format!("invalid financial quorum json: {e}")),
-            )
-        }
+        Err(e) => return (StatusCode::BAD_REQUEST, json_err(format!("invalid financial quorum json: {e}"))),
     };
     if req.proposal_hash.len() != 64 || hex::decode(&req.proposal_hash).is_err() {
-        return (
-            StatusCode::BAD_REQUEST,
-            json_err("proposal_hash must be 32-byte lowercase/uppercase hex"),
-        );
+        return (StatusCode::BAD_REQUEST, json_err("proposal_hash must be 32-byte lowercase/uppercase hex"));
     }
-    let now_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis() as i64)
-        .unwrap_or_default();
+    let now_ms =
+        SystemTime::now().duration_since(UNIX_EPOCH).map(|duration| duration.as_millis() as i64).unwrap_or_default();
     if req.submitted_at_epoch_ms > now_ms + 30_000
         || req.expires_at_epoch_ms <= now_ms
         || req.expires_at_epoch_ms <= req.submitted_at_epoch_ms
@@ -354,13 +312,8 @@ async fn v1_financial_quorum(State(state): State<AppState>, body: Bytes) -> impl
         Ok(value) => value,
         Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, json_err(e)),
     };
-    if req.constitution_hash != epoch.constitution_hash
-        || req.constitution_epoch != epoch.number
-    {
-        return (
-            StatusCode::CONFLICT,
-            json_err("financial quorum constitution hash/epoch mismatch"),
-        );
+    if req.constitution_hash != epoch.constitution_hash || req.constitution_epoch != epoch.number {
+        return (StatusCode::CONFLICT, json_err("financial quorum constitution hash/epoch mismatch"));
     }
     let canonical = format!(
         "kerosene-financial-quorum-v1|{}|{}|{}|{}|{}",
@@ -373,28 +326,15 @@ async fn v1_financial_quorum(State(state): State<AppState>, body: Bytes) -> impl
     let digest: [u8; 32] = Sha256::digest(canonical.as_bytes()).into();
     let signer = match state.runtime.frost_tr.as_ref() {
         Some(value) => value,
-        None => {
-            return (
-                StatusCode::SERVICE_UNAVAILABLE,
-                json_err("USERS distributed FROST signer is unavailable"),
-            )
-        }
+        None => return (StatusCode::SERVICE_UNAVAILABLE, json_err("USERS distributed FROST signer is unavailable")),
     };
     let proof = match signer.sign_financial_quorum_proof(&digest) {
         Ok(value) => value,
         Err(e) => return (StatusCode::SERVICE_UNAVAILABLE, json_err(e)),
     };
-    let accepted: std::collections::HashSet<&str> = proof
-        .participant_node_ids
-        .iter()
-        .map(String::as_str)
-        .collect();
-    let unavailable = epoch
-        .active_set
-        .iter()
-        .map(|node| node.as_str())
-        .filter(|node| !accepted.contains(node))
-        .collect::<Vec<_>>();
+    let accepted: std::collections::HashSet<&str> = proof.participant_node_ids.iter().map(String::as_str).collect();
+    let unavailable =
+        epoch.active_set.iter().map(|node| node.as_str()).filter(|node| !accepted.contains(node)).collect::<Vec<_>>();
     let response = serde_json::json!({
         "decision": "ACCEPTED",
         "proposal_hash": req.proposal_hash,
@@ -413,10 +353,7 @@ async fn v1_financial_quorum(State(state): State<AppState>, body: Bytes) -> impl
     (StatusCode::OK, response.to_string())
 }
 
-async fn v1_bitcoin_deposit(
-    State(state): State<AppState>,
-    Query(q): Query<DepositQuery>,
-) -> impl IntoResponse {
+async fn v1_bitcoin_deposit(State(state): State<AppState>, Query(q): Query<DepositQuery>) -> impl IntoResponse {
     let bucket_raw = q.bucket.as_deref().unwrap_or("USERS");
     let bucket = match BucketKind::parse(bucket_raw) {
         Ok(b) => b,
@@ -428,10 +365,7 @@ async fn v1_bitcoin_deposit(
         other => {
             return (
                 StatusCode::BAD_REQUEST,
-                json_err(format!(
-                    "bitcoin deposit Taproot key not available for bucket {}",
-                    other.as_str()
-                )),
+                json_err(format!("bitcoin deposit Taproot key not available for bucket {}", other.as_str())),
             );
         }
     };
@@ -484,12 +418,7 @@ async fn v1_bitcoin_sign_sighash(State(state): State<AppState>, body: Bytes) -> 
     }
     let req: BitcoinSighashBody = match serde_json::from_slice(&body) {
         Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                json_err(format!("invalid json: {e}")),
-            )
-        }
+        Err(e) => return (StatusCode::BAD_REQUEST, json_err(format!("invalid json: {e}"))),
     };
     // Full Intent fields required even in lab (still cannot bind outputs to sighash).
     if req.intent_id.as_deref().unwrap_or("").is_empty()
@@ -515,19 +444,11 @@ async fn v1_bitcoin_sign_sighash(State(state): State<AppState>, body: Bytes) -> 
         return (StatusCode::BAD_REQUEST, json_err(e));
     }
     let Some(tr) = state.runtime.frost_tr.as_ref() else {
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            r#"{"error":"taproot FROST not installed"}"#.into(),
-        );
+        return (StatusCode::SERVICE_UNAVAILABLE, r#"{"error":"taproot FROST not installed"}"#.into());
     };
     let sighash = match hex::decode(req.sighash_hex.trim()) {
         Ok(b) => b,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                json_err(format!("sighash_hex: {e}")),
-            )
-        }
+        Err(e) => return (StatusCode::BAD_REQUEST, json_err(format!("sighash_hex: {e}"))),
     };
     match tr.sign_sighash(&req.session_id, &sighash) {
         Ok(sig) => (StatusCode::OK, sig.to_json()),
@@ -560,18 +481,9 @@ async fn v1_bitcoin_sign_psbt(State(state): State<AppState>, body: Bytes) -> imp
     }
     let req: BitcoinPsbtBody = match serde_json::from_slice(&body) {
         Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                json_err(format!("invalid json: {e}")),
-            )
-        }
+        Err(e) => return (StatusCode::BAD_REQUEST, json_err(format!("invalid json: {e}"))),
     };
-    let intent_id = req
-        .intent_id
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .unwrap_or(req.session_id.as_str());
+    let intent_id = req.intent_id.as_deref().filter(|s| !s.is_empty()).unwrap_or(req.session_id.as_str());
     let destination = req.destination.as_deref().unwrap_or("");
     let amount = req.amount_sats.unwrap_or(0);
     let bucket_raw = req.bucket.as_deref().unwrap_or("USERS");
@@ -631,18 +543,13 @@ async fn v1_bitcoin_sign_psbt(State(state): State<AppState>, body: Bytes) -> imp
             Ok(false) => {
                 return (
                     StatusCode::BAD_REQUEST,
-                    json_err(format!(
-                        "commit_intent=false requires existing reservation for {intent_id}"
-                    )),
+                    json_err(format!("commit_intent=false requires existing reservation for {intent_id}")),
                 );
             }
             Err(e) => return (StatusCode::BAD_REQUEST, json_err(e)),
         }
         if destination.is_empty() || amount == 0 {
-            return (
-                StatusCode::BAD_REQUEST,
-                json_err("destination and amount_sats required for PSBT bind"),
-            );
+            return (StatusCode::BAD_REQUEST, json_err("destination and amount_sats required for PSBT bind"));
         }
         if let Err(e) = validate_destination(state.runtime.config.bitcoin_network, destination) {
             return (StatusCode::BAD_REQUEST, json_err(e));
@@ -654,32 +561,18 @@ async fn v1_bitcoin_sign_psbt(State(state): State<AppState>, body: Bytes) -> imp
 
     let Some(tr) = tr else {
         if req.commit_intent {
-            let _ = state.runtime.gate_intent.release(
-                &receipt_intent_id,
-                receipt_bucket,
-                receipt_amount,
-            );
+            let _ = state.runtime.gate_intent.release(&receipt_intent_id, receipt_bucket, receipt_amount);
         }
-        return (
-            StatusCode::SERVICE_UNAVAILABLE,
-            r#"{"error":"taproot FROST not installed for bucket"}"#.into(),
-        );
+        return (StatusCode::SERVICE_UNAVAILABLE, r#"{"error":"taproot FROST not installed for bucket"}"#.into());
     };
     // Fail-stop if online < t (probed liveness — High #7).
     let online = state.runtime.online.online_count();
     let need = state.runtime.threshold.group().t;
     if online < need {
         if req.commit_intent {
-            let _ = state.runtime.gate_intent.release(
-                &receipt_intent_id,
-                receipt_bucket,
-                receipt_amount,
-            );
+            let _ = state.runtime.gate_intent.release(&receipt_intent_id, receipt_bucket, receipt_amount);
         }
-        return (
-            StatusCode::BAD_REQUEST,
-            json_err(format!("fail-stop: online {online} < t {need}")),
-        );
+        return (StatusCode::BAD_REQUEST, json_err(format!("fail-stop: online {online} < t {need}")));
     }
     match tr.sign_psbt(&req.session_id, &req.psbt, destination, amount) {
         Ok(signed) => {
@@ -692,11 +585,7 @@ async fn v1_bitcoin_sign_psbt(State(state): State<AppState>, body: Bytes) -> imp
         }
         Err(e) => {
             if req.commit_intent {
-                let _ = state.runtime.gate_intent.release(
-                    &receipt_intent_id,
-                    receipt_bucket,
-                    receipt_amount,
-                );
+                let _ = state.runtime.gate_intent.release(&receipt_intent_id, receipt_bucket, receipt_amount);
             }
             (StatusCode::BAD_REQUEST, json_err(e))
         }
@@ -712,9 +601,7 @@ fn build_settlement_intent(
     require_shared_tr: bool,
 ) -> Result<SettlementIntent, crate::domain::DomainError> {
     let Some(id) = intent_id.filter(|s| !s.is_empty()) else {
-        return Err(crate::domain::DomainError::InvalidIntent(
-            "intent_id required before bitcoin sign".into(),
-        ));
+        return Err(crate::domain::DomainError::InvalidIntent("intent_id required before bitcoin sign".into()));
     };
     let bucket_raw = bucket.unwrap_or("USERS");
     let destination = destination.unwrap_or("");
@@ -742,14 +629,7 @@ fn maybe_reserve_intent(
     amount_sats: Option<u64>,
     require_shared_tr: bool,
 ) -> Result<crate::application::GateReceipt, crate::domain::DomainError> {
-    let intent = build_settlement_intent(
-        state,
-        intent_id,
-        bucket,
-        destination,
-        amount_sats,
-        require_shared_tr,
-    )?;
+    let intent = build_settlement_intent(state, intent_id, bucket, destination, amount_sats, require_shared_tr)?;
     state.runtime.gate_intent.reserve(intent)
 }
 
@@ -761,14 +641,7 @@ fn maybe_gate_intent(
     amount_sats: Option<u64>,
     require_shared_tr: bool,
 ) -> Result<(), crate::domain::DomainError> {
-    let intent = build_settlement_intent(
-        state,
-        intent_id,
-        bucket,
-        destination,
-        amount_sats,
-        require_shared_tr,
-    )?;
+    let intent = build_settlement_intent(state, intent_id, bucket, destination, amount_sats, require_shared_tr)?;
     let _ = state.runtime.gate_intent.execute(intent)?;
     Ok(())
 }
@@ -784,12 +657,7 @@ async fn v1_anti_nonce_prepare(State(state): State<AppState>, body: Bytes) -> im
     }
     let req: PrepareBody = match serde_json::from_slice(&body) {
         Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                json_err(format!("invalid json: {e}")),
-            )
-        }
+        Err(e) => return (StatusCode::BAD_REQUEST, json_err(format!("invalid json: {e}"))),
     };
     let principal = state.runtime.config.node_id.as_str();
     if let Err(e) = state.prepare_limiter.check(principal) {
@@ -801,16 +669,10 @@ async fn v1_anti_nonce_prepare(State(state): State<AppState>, body: Bytes) -> im
     let result = if req.durable {
         state.runtime.anti_nonce.prepare_remote_durable(&req.session_id)
     } else {
-        state
-            .runtime
-            .anti_nonce
-            .prepare_remote_bound(&req.session_id, &req.intent_id)
+        state.runtime.anti_nonce.prepare_remote_bound(&req.session_id, &req.intent_id)
     };
     match result {
-        Ok(already_seen) => (
-            StatusCode::OK,
-            format!(r#"{{"ok":true,"already_seen":{already_seen}}}"#),
-        ),
+        Ok(already_seen) => (StatusCode::OK, format!(r#"{{"ok":true,"already_seen":{already_seen}}}"#)),
         Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }
@@ -824,12 +686,7 @@ async fn v1_intent_consume_prepare(State(state): State<AppState>, body: Bytes) -
     }
     let req: PrepareBody = match serde_json::from_slice(&body) {
         Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                json_err(format!("invalid json: {e}")),
-            )
-        }
+        Err(e) => return (StatusCode::BAD_REQUEST, json_err(format!("invalid json: {e}"))),
     };
     let principal = state.runtime.config.node_id.as_str();
     if let Err(e) = state.prepare_limiter.check(principal) {
@@ -841,20 +698,14 @@ async fn v1_intent_consume_prepare(State(state): State<AppState>, body: Bytes) -
         state.runtime.buckets.prepare_remote(&req.intent_id)
     };
     match result {
-        Ok(already_seen) => (
-            StatusCode::OK,
-            format!(r#"{{"ok":true,"already_seen":{already_seen}}}"#),
-        ),
+        Ok(already_seen) => (StatusCode::OK, format!(r#"{{"ok":true,"already_seen":{already_seen}}}"#)),
         Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }
 
 async fn v1_day_current(State(state): State<AppState>) -> impl IntoResponse {
     match state.runtime.daily_rotation.current_day_epoch() {
-        Ok(d) => (
-            StatusCode::OK,
-            format!(r#"{{"day_epoch":"{}"}}"#, d.as_str()),
-        ),
+        Ok(d) => (StatusCode::OK, format!(r#"{{"day_epoch":"{}"}}"#, d.as_str())),
         Err(e) => (StatusCode::CONFLICT, json_err(e)),
     }
 }
@@ -874,33 +725,17 @@ async fn v1_day_vote(
     }
     let req: VoteBody = match serde_json::from_slice(&body) {
         Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                json_err(format!("invalid json: {e}")),
-            )
-        }
+        Err(e) => return (StatusCode::BAD_REQUEST, json_err(format!("invalid json: {e}"))),
     };
     let target = match crate::domain::DayEpoch::parse(req.day_epoch) {
         Ok(d) => d,
-        Err(e) => {
-            return (StatusCode::BAD_REQUEST, json_err(e))
-        }
+        Err(e) => return (StatusCode::BAD_REQUEST, json_err(e)),
     };
-    let header_node = headers
-        .get("X-Vault-Node-Id")
-        .and_then(|v| v.to_str().ok());
-    let mtls_peer_hook = headers
-        .get("X-Vault-Mtls-Peer-Node")
-        .and_then(|v| v.to_str().ok());
+    let header_node = headers.get("X-Vault-Node-Id").and_then(|v| v.to_str().ok());
+    let mtls_peer_hook = headers.get("X-Vault-Mtls-Peer-Node").and_then(|v| v.to_str().ok());
     let allowed = crate::adapters::mesh_allowed_node_ids(
         state.runtime.config.node_id.as_str(),
-        state
-            .runtime
-            .config
-            .seed_peers
-            .iter()
-            .map(|(id, _)| id.as_str()),
+        state.runtime.config.seed_peers.iter().map(|(id, _)| id.as_str()),
     );
     let voter = match crate::adapters::resolve_mesh_caller_identity_with_principal(
         state.runtime.config.node_id.as_str(),
@@ -911,9 +746,7 @@ async fn v1_day_vote(
         Some(&principal),
     ) {
         Ok(v) => v,
-        Err(e) => {
-            return (StatusCode::BAD_REQUEST, json_err(e))
-        }
+        Err(e) => return (StatusCode::BAD_REQUEST, json_err(e)),
     };
     match state.runtime.daily_rotation.record_vote(&voter, &target) {
         Ok(()) => (
@@ -931,10 +764,7 @@ async fn v1_day_vote(
 
 async fn v1_day_advance(State(state): State<AppState>) -> impl IntoResponse {
     match state.runtime.daily_rotation.advance() {
-        Ok(d) => (
-            StatusCode::OK,
-            format!(r#"{{"day_epoch":"{}","advanced":true}}"#, d.as_str()),
-        ),
+        Ok(d) => (StatusCode::OK, format!(r#"{{"day_epoch":"{}","advanced":true}}"#, d.as_str())),
         Err(e) => (StatusCode::CONFLICT, json_err(e)),
     }
 }
@@ -969,18 +799,10 @@ async fn v1_reshare_trigger(State(state): State<AppState>, body: Bytes) -> impl 
 async fn v1_frost_tr_commit(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
     let req: crate::adapters::TrCommitRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                json_err(format!("invalid json: {e}")),
-            )
-        }
+        Err(e) => return (StatusCode::BAD_REQUEST, json_err(format!("invalid json: {e}"))),
     };
     match state.runtime.tr_cosign_peer.handle_commit(&req) {
-        Ok(resp) => (
-            StatusCode::OK,
-            serde_json::to_string(&resp).unwrap_or_else(|e| json_err(e)),
-        ),
+        Ok(resp) => (StatusCode::OK, serde_json::to_string(&resp).unwrap_or_else(|e| json_err(e))),
         Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }
@@ -988,22 +810,11 @@ async fn v1_frost_tr_commit(State(state): State<AppState>, body: Bytes) -> impl 
 async fn v1_frost_tr_sign_share(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
     let req: crate::adapters::TrSignShareRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                json_err(format!("invalid json: {e}")),
-            )
-        }
+        Err(e) => return (StatusCode::BAD_REQUEST, json_err(format!("invalid json: {e}"))),
     };
     match state.runtime.tr_cosign_peer.handle_sign_share(&req) {
-        Ok(Some(resp)) => (
-            StatusCode::OK,
-            serde_json::to_string(&resp).unwrap_or_else(|e| json_err(e)),
-        ),
-        Ok(None) => (
-            StatusCode::OK,
-            r#"{"skipped":true,"reason":"not in signing set"}"#.into(),
-        ),
+        Ok(Some(resp)) => (StatusCode::OK, serde_json::to_string(&resp).unwrap_or_else(|e| json_err(e))),
+        Ok(None) => (StatusCode::OK, r#"{"skipped":true,"reason":"not in signing set"}"#.into()),
         Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }
@@ -1055,22 +866,12 @@ async fn dkg_round1_impl(
     }
     let req: Round1Body = match serde_json::from_slice(&body) {
         Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                json_err(format!("invalid json: {e}")),
-            )
-        }
+        Err(e) => return (StatusCode::BAD_REQUEST, json_err(format!("invalid json: {e}"))),
     };
 
     let is_start = req.roster.is_some() || req.package_hex.is_none();
     if is_start && req.package_hex.is_none() {
-        let seated: Vec<String> = state
-            .runtime
-            .genesis_roster
-            .iter()
-            .map(|n| n.as_str().to_string())
-            .collect();
+        let seated: Vec<String> = state.runtime.genesis_roster.iter().map(|n| n.as_str().to_string()).collect();
         let roster = match &req.roster {
             None => seated.clone(),
             Some(r) if r.is_empty() => seated.clone(),
@@ -1082,8 +883,7 @@ async fn dkg_round1_impl(
                 if provided != expected
                     && matches!(
                         state.runtime.config.ceremony_mode,
-                        crate::bootstrap::CeremonyMode::Staging
-                            | crate::bootstrap::CeremonyMode::Production
+                        crate::bootstrap::CeremonyMode::Staging | crate::bootstrap::CeremonyMode::Production
                     )
                 {
                     return (
@@ -1108,20 +908,15 @@ async fn dkg_round1_impl(
             );
         }
         let max = req.max_signers.unwrap_or(roster.len() as u16);
-        let min = req.min_signers.unwrap_or_else(|| {
-            ((max as usize * 2).div_ceil(3)).max(2).min(max as usize) as u16
-        });
+        let min = req.min_signers.unwrap_or_else(|| ((max as usize * 2).div_ceil(3)).max(2).min(max as usize) as u16);
         let start = crate::adapters::DkgStartRequest {
             session_id: req.session_id.clone(),
             max_signers: max,
             min_signers: min,
             roster,
         };
-        let start_result = if taproot {
-            state.runtime.tr_wire_dkg.start(start)
-        } else {
-            state.runtime.wire_dkg.start(start)
-        };
+        let start_result =
+            if taproot { state.runtime.tr_wire_dkg.start(start) } else { state.runtime.wire_dkg.start(start) };
         return match start_result {
             Ok((status, wire)) => {
                 if req.fanout {
@@ -1162,11 +957,7 @@ async fn dkg_round1_impl(
     };
     let sender_node_id = req.sender_node_id.unwrap_or_default();
     let lab_token = matches!(state.runtime.config.auth_mode, AuthMode::StaticToken);
-    if let Err(e) = crate::adapters::bind_dkg_sender_to_peer(
-        &sender_node_id,
-        Some(&principal),
-        lab_token,
-    ) {
+    if let Err(e) = crate::adapters::bind_dkg_sender_to_peer(&sender_node_id, Some(&principal), lab_token) {
         return (StatusCode::UNAUTHORIZED, json_err(e));
     }
     let msg = crate::adapters::Round1WireMessage {
@@ -1179,16 +970,10 @@ async fn dkg_round1_impl(
         package_hex,
         envelope: None,
     };
-    let result = if taproot {
-        state.runtime.tr_wire_dkg.ingest_round1(msg)
-    } else {
-        state.runtime.wire_dkg.ingest_round1(msg)
-    };
+    let result =
+        if taproot { state.runtime.tr_wire_dkg.ingest_round1(msg) } else { state.runtime.wire_dkg.ingest_round1(msg) };
     match result {
-        Ok(status) => (
-            StatusCode::OK,
-            serde_json::to_string(&status).unwrap_or_else(|e| json_err(e)),
-        ),
+        Ok(status) => (StatusCode::OK, serde_json::to_string(&status).unwrap_or_else(|e| json_err(e))),
         Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }
@@ -1238,12 +1023,7 @@ async fn dkg_round2_impl(
     }
     let req: Round2Body = match serde_json::from_slice(&body) {
         Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                json_err(format!("invalid json: {e}")),
-            )
-        }
+        Err(e) => return (StatusCode::BAD_REQUEST, json_err(format!("invalid json: {e}"))),
     };
 
     if req.deliver {
@@ -1264,10 +1044,7 @@ async fn dkg_round2_impl(
                         return (StatusCode::BAD_GATEWAY, json_err(e));
                     }
                 }
-                (
-                    StatusCode::OK,
-                    serde_json::json!({ "outbound": msgs }).to_string(),
-                )
+                (StatusCode::OK, serde_json::json!({ "outbound": msgs }).to_string())
             }
             Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
         }
@@ -1280,11 +1057,7 @@ async fn dkg_round2_impl(
         };
         let sender_node_id = req.sender_node_id.unwrap_or_default();
         let lab_token = matches!(state.runtime.config.auth_mode, AuthMode::StaticToken);
-        if let Err(e) = crate::adapters::bind_dkg_sender_to_peer(
-            &sender_node_id,
-            Some(&principal),
-            lab_token,
-        ) {
+        if let Err(e) = crate::adapters::bind_dkg_sender_to_peer(&sender_node_id, Some(&principal), lab_token) {
             return (StatusCode::UNAUTHORIZED, json_err(e));
         }
         let msg = crate::adapters::Round2WireMessage {
@@ -1303,10 +1076,7 @@ async fn dkg_round2_impl(
             state.runtime.wire_dkg.ingest_round2(msg)
         };
         match result {
-            Ok(status) => (
-                StatusCode::OK,
-                serde_json::to_string(&status).unwrap_or_else(|e| json_err(e)),
-            ),
+            Ok(status) => (StatusCode::OK, serde_json::to_string(&status).unwrap_or_else(|e| json_err(e))),
             Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
         }
     }
@@ -1321,19 +1091,10 @@ async fn v1_dkg_tr_round3(State(state): State<AppState>, body: Bytes) -> impl In
     dkg_round3_impl(state, body, true).await
 }
 
-async fn dkg_round3_impl(
-    state: AppState,
-    body: Bytes,
-    taproot: bool,
-) -> (StatusCode, String) {
+async fn dkg_round3_impl(state: AppState, body: Bytes, taproot: bool) -> (StatusCode, String) {
     let req: crate::adapters::Round3WireRequest = match serde_json::from_slice(&body) {
         Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                json_err(format!("invalid json: {e}")),
-            )
-        }
+        Err(e) => return (StatusCode::BAD_REQUEST, json_err(format!("invalid json: {e}"))),
     };
     if !req.finalize {
         let status = if taproot {
@@ -1342,29 +1103,17 @@ async fn dkg_round3_impl(
             state.runtime.wire_dkg.status(&req.session_id)
         };
         return match status {
-            Ok(status) => (
-                StatusCode::OK,
-                serde_json::to_string(&status).unwrap_or_else(|e| json_err(e)),
-            ),
+            Ok(status) => (StatusCode::OK, serde_json::to_string(&status).unwrap_or_else(|e| json_err(e))),
             Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
         };
     }
     let result = if taproot {
-        state.runtime.tr_wire_dkg.finalize_round3(
-            &req.session_id,
-            state.runtime.share_store.as_ref(),
-        )
+        state.runtime.tr_wire_dkg.finalize_round3(&req.session_id, state.runtime.share_store.as_ref())
     } else {
-        state.runtime.wire_dkg.finalize_round3(
-            &req.session_id,
-            state.runtime.share_store.as_ref(),
-        )
+        state.runtime.wire_dkg.finalize_round3(&req.session_id, state.runtime.share_store.as_ref())
     };
     match result {
-        Ok(status) => (
-            StatusCode::OK,
-            serde_json::to_string(&status).unwrap_or_else(|e| json_err(e)),
-        ),
+        Ok(status) => (StatusCode::OK, serde_json::to_string(&status).unwrap_or_else(|e| json_err(e))),
         Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }
@@ -1389,21 +1138,12 @@ async fn dkg_status_impl(
     taproot: bool,
 ) -> (StatusCode, String) {
     let Some(session_id) = q.get("session_id") else {
-        return (
-            StatusCode::BAD_REQUEST,
-            r#"{"error":"session_id query required"}"#.into(),
-        );
+        return (StatusCode::BAD_REQUEST, r#"{"error":"session_id query required"}"#.into());
     };
-    let status = if taproot {
-        state.runtime.tr_wire_dkg.status(session_id)
-    } else {
-        state.runtime.wire_dkg.status(session_id)
-    };
+    let status =
+        if taproot { state.runtime.tr_wire_dkg.status(session_id) } else { state.runtime.wire_dkg.status(session_id) };
     match status {
-        Ok(status) => (
-            StatusCode::OK,
-            serde_json::to_string(&status).unwrap_or_else(|e| json_err(e)),
-        ),
+        Ok(status) => (StatusCode::OK, serde_json::to_string(&status).unwrap_or_else(|e| json_err(e))),
         Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }
@@ -1454,22 +1194,13 @@ struct IntentReleaseBody {
 async fn v1_intent_release(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
     let req: IntentReleaseBody = match serde_json::from_slice(&body) {
         Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                json_err(format!("invalid json: {e}")),
-            )
-        }
+        Err(e) => return (StatusCode::BAD_REQUEST, json_err(format!("invalid json: {e}"))),
     };
     let bucket = match BucketKind::parse(&req.bucket) {
         Ok(b) => b,
         Err(e) => return (StatusCode::BAD_REQUEST, json_err(e)),
     };
-    match state
-        .runtime
-        .gate_intent
-        .release(&req.intent_id, bucket, req.amount_sats)
-    {
+    match state.runtime.gate_intent.release(&req.intent_id, bucket, req.amount_sats) {
         Ok(()) => (
             StatusCode::OK,
             format!(
@@ -1491,45 +1222,23 @@ struct IntentCommitBody {
 async fn v1_intent_commit(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
     let req: IntentCommitBody = match serde_json::from_slice(&body) {
         Ok(r) => r,
-        Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                json_err(format!("invalid json: {e}")),
-            )
-        }
+        Err(e) => return (StatusCode::BAD_REQUEST, json_err(format!("invalid json: {e}"))),
     };
     if req.intent_id.trim().is_empty() {
-        return (
-            StatusCode::BAD_REQUEST,
-            json_err("intent_id required"),
-        );
+        return (StatusCode::BAD_REQUEST, json_err("intent_id required"));
     }
     match state.runtime.gate_intent.commit(req.intent_id.trim()) {
-        Ok(()) => (
-            StatusCode::OK,
-            format!(
-                r#"{{"intent_id":"{}","status":"COMMITTED"}}"#,
-                req.intent_id.trim()
-            ),
-        ),
+        Ok(()) => (StatusCode::OK, format!(r#"{{"intent_id":"{}","status":"COMMITTED"}}"#, req.intent_id.trim())),
         Err(e) => (StatusCode::BAD_REQUEST, json_err(e)),
     }
 }
 
-fn parse_settlement_intent(
-    state: &AppState,
-    body: &Bytes,
-) -> Result<SettlementIntent, (StatusCode, String)> {
+fn parse_settlement_intent(state: &AppState, body: &Bytes) -> Result<SettlementIntent, (StatusCode, String)> {
     use crate::domain::IntentSignature;
 
     let req: IntentBody = match serde_json::from_slice(body) {
         Ok(r) => r,
-        Err(e) => {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                json_err(format!("invalid json: {e}")),
-            ))
-        }
+        Err(e) => return Err((StatusCode::BAD_REQUEST, json_err(format!("invalid json: {e}")))),
     };
     if let Err(e) = validate_destination(state.runtime.config.bitcoin_network, &req.destination) {
         return Err((StatusCode::BAD_REQUEST, json_err(e)));
@@ -1540,22 +1249,14 @@ fn parse_settlement_intent(
     };
     let constitution = match state.runtime.ledger.constitution() {
         Ok(c) => c,
-        Err(e) => {
-            return Err((StatusCode::INTERNAL_SERVER_ERROR, json_err(e)))
-        }
+        Err(e) => return Err((StatusCode::INTERNAL_SERVER_ERROR, json_err(e))),
     };
     let policy_hash = constitution.hash;
-    let require_pq = constitution.downgrade_policy.require_pq_signatures
-        && constitution.downgrade_policy.hybrid_signature_required;
+    let require_pq =
+        constitution.downgrade_policy.require_pq_signatures && constitution.downgrade_policy.hybrid_signature_required;
 
-    let mut intent = SettlementIntent::new(
-        req.intent_id,
-        bucket,
-        req.destination,
-        req.amount_sats,
-        policy_hash,
-    )
-    .map_err(|e| (StatusCode::BAD_REQUEST, json_err(e)))?;
+    let mut intent = SettlementIntent::new(req.intent_id, bucket, req.destination, req.amount_sats, policy_hash)
+        .map_err(|e| (StatusCode::BAD_REQUEST, json_err(e)))?;
 
     // Hybrid signature validation: AND logic, both must verify.
     let has_sigs = req.ed25519_signature_hex.is_some() || req.ml_dsa65_signature_hex.is_some();
@@ -1573,23 +1274,18 @@ fn parse_settlement_intent(
         })
         .to_string();
 
-        let ed_sig_bytes = hex::decode(&ed_sig_hex).map_err(|e| {
-            (StatusCode::BAD_REQUEST, json_err(format!("ed25519_sig hex: {e}")))
-        })?;
+        let ed_sig_bytes = hex::decode(&ed_sig_hex)
+            .map_err(|e| (StatusCode::BAD_REQUEST, json_err(format!("ed25519_sig hex: {e}"))))?;
         let ml_sig_bytes = if ml_sig_hex.is_empty() {
             Vec::new()
         } else {
-            hex::decode(&ml_sig_hex).map_err(|e| {
-                (StatusCode::BAD_REQUEST, json_err(format!("ml_dsa65_sig hex: {e}")))
-            })?
+            hex::decode(&ml_sig_hex)
+                .map_err(|e| (StatusCode::BAD_REQUEST, json_err(format!("ml_dsa65_sig hex: {e}"))))?
         };
         let mut ed_arr = [0u8; 64];
         ed_arr.copy_from_slice(&ed_sig_bytes[..64.min(ed_sig_bytes.len())]);
         if ed_sig_bytes.len() != 64 {
-            return Err((
-                StatusCode::BAD_REQUEST,
-                json_err("ed25519_sig must be 64 bytes"),
-            ));
+            return Err((StatusCode::BAD_REQUEST, json_err("ed25519_sig must be 64 bytes")));
         }
 
         let sig = IntentSignature {
@@ -1609,50 +1305,27 @@ fn parse_settlement_intent(
     Ok(intent)
 }
 
-async fn v1_reshare_tr_round1(
-    State(state): State<AppState>,
-    body: Bytes,
-) -> impl IntoResponse {
+async fn v1_reshare_tr_round1(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
     let _ = state;
     let _ = body;
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        json_err("WireReshareHub not yet wired into VaultRuntime; see bootstrap/wiring.rs"),
-    )
+    (StatusCode::NOT_IMPLEMENTED, json_err("WireReshareHub not yet wired into VaultRuntime; see bootstrap/wiring.rs"))
 }
 
-async fn v1_reshare_tr_round2(
-    State(state): State<AppState>,
-    body: Bytes,
-) -> impl IntoResponse {
+async fn v1_reshare_tr_round2(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
     let _ = state;
     let _ = body;
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        json_err("WireReshareHub not yet wired"),
-    )
+    (StatusCode::NOT_IMPLEMENTED, json_err("WireReshareHub not yet wired"))
 }
 
-async fn v1_reshare_tr_finalize(
-    State(state): State<AppState>,
-    body: Bytes,
-) -> impl IntoResponse {
+async fn v1_reshare_tr_finalize(State(state): State<AppState>, body: Bytes) -> impl IntoResponse {
     let _ = state;
     let _ = body;
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        json_err("WireReshareHub not yet wired"),
-    )
+    (StatusCode::NOT_IMPLEMENTED, json_err("WireReshareHub not yet wired"))
 }
 
-async fn v1_reshare_tr_status(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+async fn v1_reshare_tr_status(State(state): State<AppState>) -> impl IntoResponse {
     let _ = state;
-    (
-        StatusCode::NOT_IMPLEMENTED,
-        json_err("WireReshareHub not yet wired"),
-    )
+    (StatusCode::NOT_IMPLEMENTED, json_err("WireReshareHub not yet wired"))
 }
 
 async fn legacy_dispatch(State(state): State<AppState>, req: Request) -> impl IntoResponse {
@@ -1676,25 +1349,17 @@ fn status_from_str(s: &str) -> StatusCode {
 /// Legacy path dispatcher (token already checked by middleware except public health).
 pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (StatusCode, String) {
     if path.len() > 512 {
-        return (
-            StatusCode::URI_TOO_LONG,
-            r#"{"error":"request rejected: path too long"}"#.into(),
-        );
+        return (StatusCode::URI_TOO_LONG, r#"{"error":"request rejected: path too long"}"#.into());
     }
     if path.contains("..") {
-        return (
-            StatusCode::BAD_REQUEST,
-            r#"{"error":"request rejected: path traversal"}"#.into(),
-        );
+        return (StatusCode::BAD_REQUEST, r#"{"error":"request rejected: path traversal"}"#.into());
     }
 
     let (code, body) = match (method, path) {
-        ("GET", "/") | ("GET", "/health") | ("GET", "/v1/health") => {
-            match runtime.get_health.execute() {
-                Ok(h) => ("200 OK", h.to_json()),
-                Err(e) => ("500 Internal Server Error", json_err(e)),
-            }
-        }
+        ("GET", "/") | ("GET", "/health") | ("GET", "/v1/health") => match runtime.get_health.execute() {
+            Ok(h) => ("200 OK", h.to_json()),
+            Err(e) => ("500 Internal Server Error", json_err(e)),
+        },
         ("GET", "/ledger") => match runtime.get_ledger.execute() {
             Ok(s) => ("200 OK", s.to_json()),
             Err(e) => ("500 Internal Server Error", json_err(e)),
@@ -1705,17 +1370,16 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
                 "200 OK",
                 format!(
                     r#"{{"n":{},"t":{},"commitment":"{}","scheme":"lab-shamir-threshold-v1","online":{}}}"#,
-                    g.n, g.t, g.commitment, runtime.online.online_count()
+                    g.n,
+                    g.t,
+                    g.commitment,
+                    runtime.online.online_count()
                 ),
             )
         }
         ("GET", "/release/allowlist") => match runtime.get_allowlist.execute() {
             Ok(entries) => {
-                let body = entries
-                    .iter()
-                    .map(|e| e.to_json())
-                    .collect::<Vec<_>>()
-                    .join(",");
+                let body = entries.iter().map(|e| e.to_json()).collect::<Vec<_>>().join(",");
                 ("200 OK", format!("[{body}]"))
             }
             Err(e) => ("500 Internal Server Error", json_err(e)),
@@ -1757,15 +1421,9 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
             let session_id = segs.next().unwrap_or("");
             let message_hash = segs.next().unwrap_or("");
             if session_id.is_empty() || message_hash.is_empty() {
-                (
-                    "400 Bad Request",
-                    r#"{"error":"usage /sign/{session_id}/{message_hash}"}"#.into(),
-                )
+                ("400 Bad Request", r#"{"error":"usage /sign/{session_id}/{message_hash}"}"#.into())
             } else {
-                match runtime
-                    .sign_message
-                    .run_lab_quorum_sign(session_id, message_hash)
-                {
+                match runtime.sign_message.run_lab_quorum_sign(session_id, message_hash) {
                     Ok(sig) => ("200 OK", sig.to_json()),
                     Err(e) => ("400 Bad Request", json_err(e)),
                 }
@@ -1773,10 +1431,7 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
         }
         ("POST", path) if path.starts_with("/release/propose-tampered/") => {
             if !runtime.config.lab_endpoints_enabled() {
-                (
-                    "403 Forbidden",
-                    r#"{"error":"lab flag forbidden outside lab: propose-tampered"}"#.into(),
-                )
+                ("403 Forbidden", r#"{"error":"lab flag forbidden outside lab: propose-tampered"}"#.into())
             } else {
                 let rest = path.trim_start_matches("/release/propose-tampered/");
                 let mut segs = rest.splitn(4, '/');
@@ -1784,15 +1439,10 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
                 let source_label = segs.next().unwrap_or("");
                 let evil_hb = segs.next().unwrap_or("");
                 let council_csv = segs.next().unwrap_or("");
-                if id.is_empty()
-                    || source_label.is_empty()
-                    || evil_hb.is_empty()
-                    || council_csv.is_empty()
-                {
+                if id.is_empty() || source_label.is_empty() || evil_hb.is_empty() || council_csv.is_empty() {
                     (
                         "400 Bad Request",
-                        r#"{"error":"usage /release/propose-tampered/{id}/{source}/{evil_hb}/{council}"}"#
-                            .into(),
+                        r#"{"error":"usage /release/propose-tampered/{id}/{source}/{evil_hb}/{council}"}"#.into(),
                     )
                 } else {
                     let hs = ContentHash::from_bytes(source_label.as_bytes());
@@ -1804,10 +1454,7 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
                                 .map(|s| s.trim().to_string())
                                 .filter(|s| !s.is_empty())
                                 .collect();
-                            match runtime
-                                .propose_release
-                                .execute_with_hashes(id, hs, hb, council)
-                            {
+                            match runtime.propose_release.execute_with_hashes(id, hs, hb, council) {
                                 Ok(c) => ("200 OK", c.to_json()),
                                 Err(e) => ("400 Bad Request", json_err(e)),
                             }
@@ -1824,20 +1471,10 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
             let source_label = segs.next().unwrap_or("");
             let council_csv = segs.next().unwrap_or("");
             if id.is_empty() || source_label.is_empty() || council_csv.is_empty() {
-                (
-                    "400 Bad Request",
-                    r#"{"error":"usage /release/propose/{id}/{source_label}/{council_csv}"}"#.into(),
-                )
+                ("400 Bad Request", r#"{"error":"usage /release/propose/{id}/{source_label}/{council_csv}"}"#.into())
             } else {
-                let council = council_csv
-                    .split(',')
-                    .map(|s| s.trim().to_string())
-                    .filter(|s| !s.is_empty())
-                    .collect();
-                match runtime
-                    .propose_release
-                    .execute(id, source_label.as_bytes(), council)
-                {
+                let council = council_csv.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+                match runtime.propose_release.execute(id, source_label.as_bytes(), council) {
                     Ok(c) => ("200 OK", c.to_json()),
                     Err(e) => ("400 Bad Request", json_err(e)),
                 }
@@ -1877,47 +1514,24 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
             let bucket_raw = segs.next().unwrap_or("");
             let destination = segs.next().unwrap_or("");
             let amount_raw = segs.next().unwrap_or("");
-            if id.is_empty()
-                || bucket_raw.is_empty()
-                || destination.is_empty()
-                || amount_raw.is_empty()
-            {
-                (
-                    "400 Bad Request",
-                    r#"{"error":"usage /intent/gate/{id}/{bucket}/{destination}/{amount}"}"#.into(),
-                )
-            } else if let Err(e) = validate_destination(runtime.config.bitcoin_network, destination)
-            {
+            if id.is_empty() || bucket_raw.is_empty() || destination.is_empty() || amount_raw.is_empty() {
+                ("400 Bad Request", r#"{"error":"usage /intent/gate/{id}/{bucket}/{destination}/{amount}"}"#.into())
+            } else if let Err(e) = validate_destination(runtime.config.bitcoin_network, destination) {
                 ("400 Bad Request", json_err(e))
             } else {
                 match BucketKind::parse(bucket_raw) {
                     Ok(bucket) => match amount_raw.parse::<u64>() {
                         Ok(amount) => match runtime.ledger.constitution() {
-                            Ok(c) => {
-                                match SettlementIntent::new(
-                                    id,
-                                    bucket,
-                                    destination,
-                                    amount,
-                                    c.hash,
-                                ) {
-                                    Ok(intent) => match runtime.gate_intent.execute(intent) {
-                                        Ok(r) => ("200 OK", r.to_json()),
-                                        Err(e) => {
-                                            ("400 Bad Request", json_err(e))
-                                        }
-                                    },
+                            Ok(c) => match SettlementIntent::new(id, bucket, destination, amount, c.hash) {
+                                Ok(intent) => match runtime.gate_intent.execute(intent) {
+                                    Ok(r) => ("200 OK", r.to_json()),
                                     Err(e) => ("400 Bad Request", json_err(e)),
-                                }
-                            }
-                            Err(e) => {
-                                ("500 Internal Server Error", json_err(e))
-                            }
+                                },
+                                Err(e) => ("400 Bad Request", json_err(e)),
+                            },
+                            Err(e) => ("500 Internal Server Error", json_err(e)),
                         },
-                        Err(_) => (
-                            "400 Bad Request",
-                            r#"{"error":"amount must be u64 sats"}"#.into(),
-                        ),
+                        Err(_) => ("400 Bad Request", r#"{"error":"amount must be u64 sats"}"#.into()),
                     },
                     Err(e) => ("400 Bad Request", json_err(e)),
                 }
@@ -1930,10 +1544,7 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
                     Ok(a) => ("200 OK", a.to_json()),
                     Err(e) => ("400 Bad Request", json_err(e)),
                 },
-                Err(_) => (
-                    "400 Bad Request",
-                    r#"{"error":"usage /profit/allocate/{profit_sats}"}"#.into(),
-                ),
+                Err(_) => ("400 Bad Request", r#"{"error":"usage /profit/allocate/{profit_sats}"}"#.into()),
             }
         }
         ("GET", "/economy/status") => match runtime.get_economy.execute() {
@@ -1947,10 +1558,7 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
                     Ok(a) => ("200 OK", a.to_json()),
                     Err(e) => ("400 Bad Request", json_err(e)),
                 },
-                Err(_) => (
-                    "400 Bad Request",
-                    r#"{"error":"usage /economy/accrue/{profit_sats}"}"#.into(),
-                ),
+                Err(_) => ("400 Bad Request", r#"{"error":"usage /economy/accrue/{profit_sats}"}"#.into()),
             }
         }
         ("POST", path) if path.starts_with("/economy/miner/upsert/") => {
@@ -2001,10 +1609,7 @@ pub fn dispatch_legacy(runtime: &VaultRuntime, method: &str, path: &str) -> (Sta
                     Ok(p) => ("200 OK", p.to_json()),
                     Err(e) => ("400 Bad Request", json_err(e)),
                 },
-                Err(_) => (
-                    "400 Bad Request",
-                    r#"{"error":"usage /economy/payout/propose/{amount}/{prefix}"}"#.into(),
-                ),
+                Err(_) => ("400 Bad Request", r#"{"error":"usage /economy/payout/propose/{amount}/{prefix}"}"#.into()),
             }
         }
         _ => ("404 Not Found", r#"{"error":"not found"}"#.to_string()),

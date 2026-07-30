@@ -42,19 +42,12 @@ impl DealerLabAdapter {
     }
 
     /// Trusted dealer keygen (single-process). Emits FATAL banner.
-    pub fn generate(
-        max_signers: u16,
-        min_signers: u16,
-    ) -> Result<FrostDealerBundle, DomainError> {
+    pub fn generate(max_signers: u16, min_signers: u16) -> Result<FrostDealerBundle, DomainError> {
         dealer_fatal_banner();
         let mut rng = OsRng;
-        let (shares, pubkey_package) = frost::keys::generate_with_dealer(
-            max_signers,
-            min_signers,
-            frost::keys::IdentifierList::Default,
-            &mut rng,
-        )
-        .map_err(|e| DomainError::ThresholdError(format!("frost dealer: {e}")))?;
+        let (shares, pubkey_package) =
+            frost::keys::generate_with_dealer(max_signers, min_signers, frost::keys::IdentifierList::Default, &mut rng)
+                .map_err(|e| DomainError::ThresholdError(format!("frost dealer: {e}")))?;
 
         let mut key_packages = BTreeMap::new();
         for (identifier, secret_share) in &shares {
@@ -63,13 +56,7 @@ impl DealerLabAdapter {
             key_packages.insert(*identifier, kp);
         }
 
-        Ok(FrostDealerBundle {
-            shares,
-            pubkey_package,
-            key_packages,
-            max_signers,
-            min_signers,
-        })
+        Ok(FrostDealerBundle { shares, pubkey_package, key_packages, max_signers, min_signers })
     }
 }
 

@@ -27,15 +27,8 @@ impl SimAttestationAdapter {
     }
 
     pub fn with_mode(mode: AttestationMode, lab_root_material: &[u8]) -> Self {
-        let mode = if mode.is_software_measurement() {
-            mode
-        } else {
-            AttestationMode::Sim
-        };
-        Self {
-            mode,
-            lab_root: lab_root_material.to_vec(),
-        }
+        let mode = if mode.is_software_measurement() { mode } else { AttestationMode::Sim };
+        Self { mode, lab_root: lab_root_material.to_vec() }
     }
 
     fn mac(&self, measurement: &Measurement) -> Vec<u8> {
@@ -57,11 +50,7 @@ impl AttestationPort for SimAttestationAdapter {
     }
 
     fn issue_quote(&self, measurement: &Measurement) -> Result<AttestationQuote, DomainError> {
-        Ok(AttestationQuote {
-            mode: self.mode,
-            measurement: measurement.clone(),
-            quote_blob: self.mac(measurement),
-        })
+        Ok(AttestationQuote { mode: self.mode, measurement: measurement.clone(), quote_blob: self.mac(measurement) })
     }
 
     fn verify_quote(&self, quote: &AttestationQuote) -> Result<(), DomainError> {
@@ -74,9 +63,7 @@ impl AttestationPort for SimAttestationAdapter {
         }
         let expected = self.mac(&quote.measurement);
         if expected != quote.quote_blob {
-            return Err(DomainError::AttestationRejected(
-                "software/sim quote mac mismatch".into(),
-            ));
+            return Err(DomainError::AttestationRejected("software/sim quote mac mismatch".into()));
         }
         Ok(())
     }

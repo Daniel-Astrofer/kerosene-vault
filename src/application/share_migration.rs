@@ -12,21 +12,13 @@ use crate::domain::DomainError;
 pub trait ShareMigrationPort: Send + Sync {
     /// Detect shares with stale `suite_id`. Returns the list of share IDs
     /// that need migration.
-    fn detect_stale_shares(
-        &self,
-        old_suite_id: &str,
-    ) -> Result<Vec<String>, DomainError>;
+    fn detect_stale_shares(&self, old_suite_id: &str) -> Result<Vec<String>, DomainError>;
 
     /// Unseal a share encrypted under the old suite, returning plaintext.
     fn unseal_old(&self, share_id: &str, old_suite_id: &str) -> Result<Vec<u8>, DomainError>;
 
     /// Re-seal plaintext under the new suite.
-    fn reseal_new(
-        &self,
-        share_id: &str,
-        plaintext: &[u8],
-        new_suite_id: &str,
-    ) -> Result<(), DomainError>;
+    fn reseal_new(&self, share_id: &str, plaintext: &[u8], new_suite_id: &str) -> Result<(), DomainError>;
 
     /// Delete a share from the old suite (only after new copy verified).
     fn delete_old(&self, share_id: &str, old_suite_id: &str) -> Result<(), DomainError>;
@@ -36,21 +28,16 @@ pub trait ShareMigrationPort: Send + Sync {
     /// 2. Re-seal with new suite (persist)
     /// 3. Verify new share can be read back
     /// 4. Delete old share
-    fn migrate_one(
-        &self,
-        share_id: &str,
-        old_suite_id: &str,
-        new_suite_id: &str,
-    ) -> Result<(), DomainError> {
+    fn migrate_one(&self, share_id: &str, old_suite_id: &str, new_suite_id: &str) -> Result<(), DomainError> {
         let plaintext = self.unseal_old(share_id, old_suite_id)?;
         self.reseal_new(share_id, &plaintext, new_suite_id)?;
 
         // Verify: read back under new suite and confirm plaintext matches.
         let verified = self.unseal_old(share_id, new_suite_id)?;
         if verified != plaintext {
-            return Err(DomainError::ShareStoreForbidden(
-                format!("migration verify failed for {share_id}: plaintext mismatch"),
-            ));
+            return Err(DomainError::ShareStoreForbidden(format!(
+                "migration verify failed for {share_id}: plaintext mismatch"
+            )));
         }
 
         self.delete_old(share_id, old_suite_id)?;
@@ -58,11 +45,7 @@ pub trait ShareMigrationPort: Send + Sync {
     }
 
     /// Migrate all stale shares in one batch.
-    fn migrate_all_stale(
-        &self,
-        old_suite_id: &str,
-        new_suite_id: &str,
-    ) -> Result<usize, DomainError> {
+    fn migrate_all_stale(&self, old_suite_id: &str, new_suite_id: &str) -> Result<usize, DomainError> {
         let stale = self.detect_stale_shares(old_suite_id)?;
         if stale.is_empty() {
             return Ok(0);
@@ -83,25 +66,14 @@ impl ShareMigrationPort for NoopShareMigration {
     }
 
     fn unseal_old(&self, share_id: &str, _old_suite_id: &str) -> Result<Vec<u8>, DomainError> {
-        Err(DomainError::ShareStoreForbidden(format!(
-            "noop migration cannot unseal {share_id}"
-        )))
+        Err(DomainError::ShareStoreForbidden(format!("noop migration cannot unseal {share_id}")))
     }
 
-    fn reseal_new(
-        &self,
-        share_id: &str,
-        _plaintext: &[u8],
-        _new_suite_id: &str,
-    ) -> Result<(), DomainError> {
-        Err(DomainError::ShareStoreForbidden(format!(
-            "noop migration cannot reseal {share_id}"
-        )))
+    fn reseal_new(&self, share_id: &str, _plaintext: &[u8], _new_suite_id: &str) -> Result<(), DomainError> {
+        Err(DomainError::ShareStoreForbidden(format!("noop migration cannot reseal {share_id}")))
     }
 
     fn delete_old(&self, share_id: &str, _old_suite_id: &str) -> Result<(), DomainError> {
-        Err(DomainError::ShareStoreForbidden(format!(
-            "noop migration cannot delete {share_id}"
-        )))
+        Err(DomainError::ShareStoreForbidden(format!("noop migration cannot delete {share_id}")))
     }
 }

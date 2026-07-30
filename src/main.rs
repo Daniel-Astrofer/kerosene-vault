@@ -57,8 +57,7 @@ async fn main() {
                     std::process::exit(1);
                 }
             };
-            let server_config = match build_mtls_server_config(Path::new(cert), Path::new(key), Path::new(ca))
-            {
+            let server_config = match build_mtls_server_config(Path::new(cert), Path::new(key), Path::new(ca)) {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("mTLS config error: {e}");
@@ -76,11 +75,7 @@ async fn main() {
                 }
             };
             eprintln!("tls=mtls (client cert required; SPIFFE principal binding on)");
-            if let Err(e) = axum_server::bind(addr)
-                .acceptor(acceptor)
-                .serve(app.into_make_service())
-                .await
-            {
+            if let Err(e) = axum_server::bind(addr).acceptor(acceptor).serve(app.into_make_service()).await {
                 eprintln!("server error: {e}");
                 std::process::exit(1);
             }

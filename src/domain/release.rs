@@ -131,11 +131,7 @@ impl ReleaseCandidate {
         })
     }
 
-    pub fn record_rebuild(
-        &mut self,
-        vault_id: &NodeId,
-        rebuilt_hb: ContentHash,
-    ) -> Result<(), DomainError> {
+    pub fn record_rebuild(&mut self, vault_id: &NodeId, rebuilt_hb: ContentHash) -> Result<(), DomainError> {
         if matches!(self.phase, ReleasePhase::Allowlisted | ReleasePhase::Rejected) {
             return Err(DomainError::ReleaseClosed(self.id.clone()));
         }
@@ -145,36 +141,29 @@ impl ReleaseCandidate {
                 got: rebuilt_hb.as_str().to_string(),
             });
         }
-        self.rebuilds
-            .insert(vault_id.as_str().to_string(), rebuilt_hb);
+        self.rebuilds.insert(vault_id.as_str().to_string(), rebuilt_hb);
         Ok(())
     }
 
-    pub fn predicates_ok(&self, policy: &ReleasePolicy, now_secs: u64, active_constitution_hash: &str) -> Result<(), DomainError> {
+    pub fn predicates_ok(
+        &self,
+        policy: &ReleasePolicy,
+        now_secs: u64,
+        active_constitution_hash: &str,
+    ) -> Result<(), DomainError> {
         if self.constitution_hash != active_constitution_hash {
-            return Err(DomainError::ReleasePredicate(
-                "constitution_hash mismatch".into(),
-            ));
+            return Err(DomainError::ReleasePredicate("constitution_hash mismatch".into()));
         }
         if self.council_sigs.len() < policy.council_quorum() {
-            return Err(DomainError::QuorumNotMet {
-                have: self.council_sigs.len(),
-                need: policy.council_quorum(),
-            });
+            return Err(DomainError::QuorumNotMet { have: self.council_sigs.len(), need: policy.council_quorum() });
         }
         if self.rebuilds.len() < policy.min_rebuilds {
-            return Err(DomainError::QuorumNotMet {
-                have: self.rebuilds.len(),
-                need: policy.min_rebuilds,
-            });
+            return Err(DomainError::QuorumNotMet { have: self.rebuilds.len(), need: policy.min_rebuilds });
         }
         let age = now_secs.saturating_sub(self.created_at_secs);
         let need_age = policy.effective_timelock_secs();
         if age < need_age {
-            return Err(DomainError::TimelockNotElapsed {
-                age_secs: age,
-                need_secs: need_age,
-            });
+            return Err(DomainError::TimelockNotElapsed { age_secs: age, need_secs: need_age });
         }
         Ok(())
     }
@@ -190,11 +179,8 @@ impl ReleaseCandidate {
 
     pub fn to_json(&self) -> String {
         let council: Vec<_> = self.council_sigs.iter().cloned().collect();
-        let rebuilds: Vec<_> = self
-            .rebuilds
-            .iter()
-            .map(|(k, v)| format!(r#"{{"vault":"{k}","hb":"{}"}}"#, v.as_str()))
-            .collect();
+        let rebuilds: Vec<_> =
+            self.rebuilds.iter().map(|(k, v)| format!(r#"{{"vault":"{k}","hb":"{}"}}"#, v.as_str())).collect();
         let cosigns: Vec<_> = self.cosigns.iter().cloned().collect();
         format!(
             r#"{{"id":"{}","hs":"{}","hb":"{}","constitution_hash":"{}","council_sigs":[{}],"rebuilds":[{}],"cosigns":[{}],"created_at_secs":{},"phase":"{}","reject_reason":{}}}"#,
@@ -202,17 +188,9 @@ impl ReleaseCandidate {
             self.hs.as_str(),
             self.hb.as_str(),
             self.constitution_hash,
-            council
-                .iter()
-                .map(|s| format!(r#""{s}""#))
-                .collect::<Vec<_>>()
-                .join(","),
+            council.iter().map(|s| format!(r#""{s}""#)).collect::<Vec<_>>().join(","),
             rebuilds.join(","),
-            cosigns
-                .iter()
-                .map(|s| format!(r#""{s}""#))
-                .collect::<Vec<_>>()
-                .join(","),
+            cosigns.iter().map(|s| format!(r#""{s}""#)).collect::<Vec<_>>().join(","),
             self.created_at_secs,
             self.phase.as_str(),
             match &self.reject_reason {
@@ -275,10 +253,7 @@ mod tests {
 
     #[test]
     fn lab_timelock_zero_is_immediate() {
-        let policy = ReleasePolicy {
-            lab_timelock_scale: 0,
-            ..ReleasePolicy::lab_default(3)
-        };
+        let policy = ReleasePolicy { lab_timelock_scale: 0, ..ReleasePolicy::lab_default(3) };
         assert_eq!(policy.effective_timelock_secs(), 0);
         assert_eq!(policy.council_quorum(), 2);
         assert_eq!(policy.vault_cosign_quorum(), 2);

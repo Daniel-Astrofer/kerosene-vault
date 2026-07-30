@@ -12,17 +12,9 @@ impl DayEpoch {
         let ok = s.len() == 10
             && s.as_bytes()[4] == b'-'
             && s.as_bytes()[7] == b'-'
-            && s.bytes().enumerate().all(|(i, b)| {
-                if i == 4 || i == 7 {
-                    true
-                } else {
-                    b.is_ascii_digit()
-                }
-            });
+            && s.bytes().enumerate().all(|(i, b)| if i == 4 || i == 7 { true } else { b.is_ascii_digit() });
         if !ok {
-            return Err(DomainError::InvalidIntent(format!(
-                "invalid day_epoch: {s}"
-            )));
+            return Err(DomainError::InvalidIntent(format!("invalid day_epoch: {s}")));
         }
         Ok(Self(s))
     }

@@ -38,42 +38,27 @@ impl HwQuoteEnvelope {
 
     pub fn decode(blob: &[u8]) -> Result<Self, DomainError> {
         if blob.len() < 8 + 1 + 1 + 64 + 4 {
-            return Err(DomainError::AttestationRejected(
-                "HW quote envelope too short".into(),
-            ));
+            return Err(DomainError::AttestationRejected("HW quote envelope too short".into()));
         }
         if &blob[..8] != QUOTE_MAGIC {
-            return Err(DomainError::AttestationRejected(
-                "HW quote magic mismatch".into(),
-            ));
+            return Err(DomainError::AttestationRejected("HW quote magic mismatch".into()));
         }
         let version = blob[8];
         if version != QUOTE_VERSION {
-            return Err(DomainError::AttestationRejected(format!(
-                "unsupported HW quote version {version}"
-            )));
+            return Err(DomainError::AttestationRejected(format!("unsupported HW quote version {version}")));
         }
         let platform = blob[9];
         if platform != PLATFORM_SEV && platform != PLATFORM_SGX {
-            return Err(DomainError::AttestationRejected(format!(
-                "unknown HW quote platform {platform}"
-            )));
+            return Err(DomainError::AttestationRejected(format!("unknown HW quote platform {platform}")));
         }
-        let meas_hex = std::str::from_utf8(&blob[10..74]).map_err(|_| {
-            DomainError::AttestationRejected("HW quote measurement not ascii hex".into())
-        })?;
+        let meas_hex = std::str::from_utf8(&blob[10..74])
+            .map_err(|_| DomainError::AttestationRejected("HW quote measurement not ascii hex".into()))?;
         let measurement = Measurement::from_hex(meas_hex)?;
         let report_len = u32::from_be_bytes([blob[74], blob[75], blob[76], blob[77]]) as usize;
         if blob.len() != 78 + report_len {
-            return Err(DomainError::AttestationRejected(
-                "HW quote report length mismatch".into(),
-            ));
+            return Err(DomainError::AttestationRejected("HW quote report length mismatch".into()));
         }
-        Ok(Self {
-            platform,
-            measurement,
-            report: blob[78..].to_vec(),
-        })
+        Ok(Self { platform, measurement, report: blob[78..].to_vec() })
     }
 }
 
@@ -84,11 +69,7 @@ mod tests {
     #[test]
     fn envelope_roundtrip() {
         let m = Measurement::from_bytes(b"m");
-        let env = HwQuoteEnvelope {
-            platform: PLATFORM_SEV,
-            measurement: m.clone(),
-            report: vec![1, 2, 3, 4],
-        };
+        let env = HwQuoteEnvelope { platform: PLATFORM_SEV, measurement: m.clone(), report: vec![1, 2, 3, 4] };
         let blob = env.encode();
         assert!(HwQuoteEnvelope::looks_like(&blob));
         let decoded = HwQuoteEnvelope::decode(&blob).unwrap();

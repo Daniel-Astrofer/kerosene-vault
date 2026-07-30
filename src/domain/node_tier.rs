@@ -87,10 +87,7 @@ pub fn seat_genesis_by_tier(candidates: &[SeatingCandidate], n: usize) -> Vec<No
         }
     }
     unique.sort_by(|a, b| {
-        b.tier
-            .seating_priority()
-            .cmp(&a.tier.seating_priority())
-            .then_with(|| a.id.as_str().cmp(b.id.as_str()))
+        b.tier.seating_priority().cmp(&a.tier.seating_priority()).then_with(|| a.id.as_str().cmp(b.id.as_str()))
     });
     unique.into_iter().map(|c| c.id).take(n).collect()
 }
@@ -111,17 +108,8 @@ pub fn detect_tee_at_paths(paths: &[&std::path::Path]) -> (bool, Option<VaultNod
     let mut sev = false;
     let mut sgx = false;
     for p in paths {
-        let name = p
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
-        let parent = p
-            .parent()
-            .and_then(|s| s.file_name())
-            .and_then(|s| s.to_str())
-            .unwrap_or("")
-            .to_ascii_lowercase();
+        let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
+        let parent = p.parent().and_then(|s| s.file_name()).and_then(|s| s.to_str()).unwrap_or("").to_ascii_lowercase();
         let exists = p.exists();
         if !exists {
             continue;
@@ -147,9 +135,8 @@ pub fn resolve_node_tier(raw: Option<&str>) -> Result<(VaultNodeTier, bool), Dom
     match raw.map(str::trim).filter(|s| !s.is_empty()) {
         None | Some("auto") => Ok((detected.unwrap_or(VaultNodeTier::Domestic), tee_available)),
         Some(other) => {
-            let tier = VaultNodeTier::parse(other).ok_or_else(|| {
-                DomainError::AttestationRejected(format!("unknown VAULT_NODE_TIER={other}"))
-            })?;
+            let tier = VaultNodeTier::parse(other)
+                .ok_or_else(|| DomainError::AttestationRejected(format!("unknown VAULT_NODE_TIER={other}")))?;
             Ok((tier, tee_available))
         }
     }
@@ -172,40 +159,19 @@ mod tests {
     #[test]
     fn seating_prefers_sev_then_sgx_then_domestic() {
         let cands = vec![
-            SeatingCandidate {
-                id: NodeId::new("vault-d2").unwrap(),
-                tier: VaultNodeTier::Domestic,
-            },
-            SeatingCandidate {
-                id: NodeId::new("vault-s1").unwrap(),
-                tier: VaultNodeTier::Sgx,
-            },
-            SeatingCandidate {
-                id: NodeId::new("vault-e1").unwrap(),
-                tier: VaultNodeTier::Sev,
-            },
-            SeatingCandidate {
-                id: NodeId::new("vault-d1").unwrap(),
-                tier: VaultNodeTier::Domestic,
-            },
+            SeatingCandidate { id: NodeId::new("vault-d2").unwrap(), tier: VaultNodeTier::Domestic },
+            SeatingCandidate { id: NodeId::new("vault-s1").unwrap(), tier: VaultNodeTier::Sgx },
+            SeatingCandidate { id: NodeId::new("vault-e1").unwrap(), tier: VaultNodeTier::Sev },
+            SeatingCandidate { id: NodeId::new("vault-d1").unwrap(), tier: VaultNodeTier::Domestic },
         ];
         let seats = seat_genesis_by_tier(&cands, 3);
-        assert_eq!(
-            seats
-                .iter()
-                .map(|n| n.as_str())
-                .collect::<Vec<_>>(),
-            vec!["vault-e1", "vault-s1", "vault-d1"]
-        );
+        assert_eq!(seats.iter().map(|n| n.as_str()).collect::<Vec<_>>(), vec!["vault-e1", "vault-s1", "vault-d1"]);
     }
 
     #[test]
     fn seating_all_domestic_ok() {
         let cands: Vec<_> = (1..=3)
-            .map(|i| SeatingCandidate {
-                id: NodeId::new(format!("vault-{i}")).unwrap(),
-                tier: VaultNodeTier::Domestic,
-            })
+            .map(|i| SeatingCandidate { id: NodeId::new(format!("vault-{i}")).unwrap(), tier: VaultNodeTier::Domestic })
             .collect();
         let seats = seat_genesis_by_tier(&cands, 3);
         assert_eq!(seats.len(), 3);
@@ -214,10 +180,7 @@ mod tests {
 
     #[test]
     fn detect_fallback_when_no_devices() {
-        let tmp = std::env::temp_dir().join(format!(
-            "kerosene-tee-detect-{}",
-            std::process::id()
-        ));
+        let tmp = std::env::temp_dir().join(format!("kerosene-tee-detect-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let missing = tmp.join("no-such-sev");
@@ -229,10 +192,7 @@ mod tests {
 
     #[test]
     fn detect_sev_path_when_present() {
-        let tmp = std::env::temp_dir().join(format!(
-            "kerosene-tee-sev-{}",
-            std::process::id()
-        ));
+        let tmp = std::env::temp_dir().join(format!("kerosene-tee-sev-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
         std::fs::create_dir_all(&tmp).unwrap();
         let sev = tmp.join("sev-guest");
@@ -278,18 +238,12 @@ mod admission_tests {
 
     #[test]
     fn domestic_admitted_immediately() {
-        assert_eq!(
-            admission_seating(VaultNodeTier::Domestic, None, 1000, 24).unwrap(),
-            VaultNodeTier::Domestic
-        );
+        assert_eq!(admission_seating(VaultNodeTier::Domestic, None, 1000, 24).unwrap(), VaultNodeTier::Domestic);
     }
 
     #[test]
     fn sev_admitted_within_timeout() {
-        assert_eq!(
-            admission_seating(VaultNodeTier::Sev, Some(100), 500, 24).unwrap(),
-            VaultNodeTier::Sev
-        );
+        assert_eq!(admission_seating(VaultNodeTier::Sev, Some(100), 500, 24).unwrap(), VaultNodeTier::Sev);
     }
 
     #[test]
@@ -302,9 +256,6 @@ mod admission_tests {
 
     #[test]
     fn sev_no_attestation_yet_admitted() {
-        assert_eq!(
-            admission_seating(VaultNodeTier::Sev, None, 1000, 24).unwrap(),
-            VaultNodeTier::Sev
-        );
+        assert_eq!(admission_seating(VaultNodeTier::Sev, None, 1000, 24).unwrap(), VaultNodeTier::Sev);
     }
 }

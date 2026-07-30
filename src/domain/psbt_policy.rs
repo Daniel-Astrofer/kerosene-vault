@@ -73,21 +73,15 @@ impl PsbtPolicy {
                 prev.output
                     .get(vout)
                     .map(|o| o.value.to_sat())
-                    .ok_or_else(|| {
-                        DomainError::InvalidIntent(format!("psbt input {i} missing prevout value"))
-                    })?
+                    .ok_or_else(|| DomainError::InvalidIntent(format!("psbt input {i} missing prevout value")))?
             } else {
-                return Err(DomainError::InvalidIntent(format!(
-                    "psbt input {i} missing witness_utxo for fee policy"
-                )));
+                return Err(DomainError::InvalidIntent(format!("psbt input {i} missing witness_utxo for fee policy")));
             };
             in_sats = in_sats.saturating_add(value);
         }
         let out_sats: u64 = tx.output.iter().map(|o| o.value.to_sat()).sum();
         if out_sats > in_sats {
-            return Err(DomainError::InvalidIntent(
-                "psbt outputs exceed inputs".into(),
-            ));
+            return Err(DomainError::InvalidIntent("psbt outputs exceed inputs".into()));
         }
         let fee = in_sats - out_sats;
         if fee > self.max_fee_sats {
@@ -132,14 +126,10 @@ impl PsbtPolicy {
             match self.rbf {
                 RbfPolicy::Allow => {}
                 RbfPolicy::Require if !signals_rbf => {
-                    return Err(DomainError::InvalidIntent(format!(
-                        "psbt input {i} must signal RBF (policy=require)"
-                    )));
+                    return Err(DomainError::InvalidIntent(format!("psbt input {i} must signal RBF (policy=require)")));
                 }
                 RbfPolicy::Forbid if signals_rbf => {
-                    return Err(DomainError::InvalidIntent(format!(
-                        "psbt input {i} RBF signalling forbidden"
-                    )));
+                    return Err(DomainError::InvalidIntent(format!("psbt input {i} RBF signalling forbidden")));
                 }
                 _ => {}
             }
@@ -162,12 +152,8 @@ impl PsbtPolicy {
         // 1. Fee cap, locktime, RBF checks
         self.validate(psbt)?;
         // 2. Output bind: PSBT outputs must match intent outputs
-        let outputs: Vec<(Vec<u8>, u64)> = psbt
-            .unsigned_tx
-            .output
-            .iter()
-            .map(|o| (o.script_pubkey.as_bytes().to_vec(), o.value.to_sat()))
-            .collect();
+        let outputs: Vec<(Vec<u8>, u64)> =
+            psbt.unsigned_tx.output.iter().map(|o| (o.script_pubkey.as_bytes().to_vec(), o.value.to_sat())).collect();
         assert_outputs_match_intent(&outputs, payment_script, amount_sats, change_script)
     }
 }
@@ -188,70 +174,42 @@ mod tests {
             version: bitcoin::transaction::Version::TWO,
             lock_time: LockTime::ZERO,
             input: vec![],
-            output: vec![TxOut {
-                value: Amount::from_sat(10_000),
-                script_pubkey: ScriptBuf::new(),
-            }],
+            output: vec![TxOut { value: Amount::from_sat(10_000), script_pubkey: ScriptBuf::new() }],
         };
         let spend = Transaction {
             version: bitcoin::transaction::Version::TWO,
             lock_time: lock,
             input: vec![TxIn {
-                previous_output: bitcoin::OutPoint {
-                    txid: prev.compute_txid(),
-                    vout: 0,
-                },
+                previous_output: bitcoin::OutPoint { txid: prev.compute_txid(), vout: 0 },
                 script_sig: ScriptBuf::new(),
                 sequence: seq,
                 witness: Witness::new(),
             }],
-            output: vec![TxOut {
-                value: Amount::from_sat(10_000 - fee),
-                script_pubkey: ScriptBuf::new(),
-            }],
+            output: vec![TxOut { value: Amount::from_sat(10_000 - fee), script_pubkey: ScriptBuf::new() }],
         };
         let mut psbt = Psbt::from_unsigned_tx(spend).unwrap();
-        psbt.inputs[0].witness_utxo = Some(TxOut {
-            value: Amount::from_sat(10_000),
-            script_pubkey: ScriptBuf::new(),
-        });
+        psbt.inputs[0].witness_utxo = Some(TxOut { value: Amount::from_sat(10_000), script_pubkey: ScriptBuf::new() });
         psbt
     }
 
     #[test]
     fn rejects_absurd_fee() {
-        let p = PsbtPolicy {
-            max_fee_sats: 1_000,
-            ..PsbtPolicy::lab_defaults()
-        };
-        let err = p
-            .validate(&tiny_psbt(5_000, LockTime::ZERO, Sequence::ENABLE_RBF_NO_LOCKTIME))
-            .unwrap_err();
+        let p = PsbtPolicy { max_fee_sats: 1_000, ..PsbtPolicy::lab_defaults() };
+        let err = p.validate(&tiny_psbt(5_000, LockTime::ZERO, Sequence::ENABLE_RBF_NO_LOCKTIME)).unwrap_err();
         assert!(err.to_string().contains("fee"));
     }
 
     #[test]
     fn rejects_nonzero_locktime_when_max_zero() {
         let p = PsbtPolicy::lab_defaults();
-        let err = p
-            .validate(&tiny_psbt(
-                500,
-                LockTime::from_height(800_000).unwrap(),
-                Sequence::MAX,
-            ))
-            .unwrap_err();
+        let err = p.validate(&tiny_psbt(500, LockTime::from_height(800_000).unwrap(), Sequence::MAX)).unwrap_err();
         assert!(err.to_string().contains("locktime"));
     }
 
     #[test]
     fn forbids_rbf_when_configured() {
-        let p = PsbtPolicy {
-            rbf: RbfPolicy::Forbid,
-            ..PsbtPolicy::lab_defaults()
-        };
-        let err = p
-            .validate(&tiny_psbt(500, LockTime::ZERO, Sequence::ENABLE_RBF_NO_LOCKTIME))
-            .unwrap_err();
+        let p = PsbtPolicy { rbf: RbfPolicy::Forbid, ..PsbtPolicy::lab_defaults() };
+        let err = p.validate(&tiny_psbt(500, LockTime::ZERO, Sequence::ENABLE_RBF_NO_LOCKTIME)).unwrap_err();
         assert!(err.to_string().contains("RBF"));
     }
 }

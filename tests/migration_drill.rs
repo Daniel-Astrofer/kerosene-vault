@@ -4,12 +4,8 @@
 //! Tests verify the monotonic state machine (Q0→Q5), transition authorization,
 //! and the emergency readiness gating.
 
-use kerosene_vault::application::{
-    validate_emergency_ready, QuantumMigrationPort, StubQuantumMigrationController,
-};
-use kerosene_vault::domain::{
-    DayEpoch, QuantumMigrationConfig, QuantumState, TransitionAuth,
-};
+use kerosene_vault::application::{validate_emergency_ready, QuantumMigrationPort, StubQuantumMigrationController};
+use kerosene_vault::domain::{DayEpoch, QuantumMigrationConfig, QuantumState, TransitionAuth};
 
 // ═══════════════════════════════════════════════════════════════════
 // Helpers
@@ -22,8 +18,7 @@ fn epoch(s: &str) -> DayEpoch {
 fn ready_config() -> QuantumMigrationConfig {
     let mut cfg = QuantumMigrationConfig::default_at(epoch("2026-01-01"));
     cfg.emergency_constitution_hash = Some("emergency-hash-deadbeef".into());
-    cfg.migration_destination_descriptor =
-        Some("wsh(sortedmulti(3,key1,key2,key3,key4,key5))".into());
+    cfg.migration_destination_descriptor = Some("wsh(sortedmulti(3,key1,key2,key3,key4,key5))".into());
     cfg
 }
 
@@ -43,39 +38,37 @@ fn q0_to_q1_to_q2_to_q3_to_q4_to_q5_valid() {
     let mut cfg = ready_config();
 
     // Q0 → Q1
-    let auth = cfg.validate_transition(QuantumState::Q1PqPrepared, 5, &epoch("2026-01-02"))
-        .expect("Q0→Q1 should be valid");
+    let auth =
+        cfg.validate_transition(QuantumState::Q1PqPrepared, 5, &epoch("2026-01-02")).expect("Q0→Q1 should be valid");
     assert_eq!(auth, TransitionAuth::Quorum(5));
-    cfg.apply_transition(QuantumState::Q1PqPrepared, "test", epoch("2026-01-02"))
-        .expect("Q0→Q1 apply failed");
+    cfg.apply_transition(QuantumState::Q1PqPrepared, "test", epoch("2026-01-02")).expect("Q0→Q1 apply failed");
 
     // Q1 → Q2
-    let auth = cfg.validate_transition(QuantumState::Q2ElevatedRisk, 5, &epoch("2026-01-03"))
-        .expect("Q1→Q2 should be valid");
+    let auth =
+        cfg.validate_transition(QuantumState::Q2ElevatedRisk, 5, &epoch("2026-01-03")).expect("Q1→Q2 should be valid");
     assert_eq!(auth, TransitionAuth::Quorum(5));
-    cfg.apply_transition(QuantumState::Q2ElevatedRisk, "test", epoch("2026-01-03"))
-        .expect("Q1→Q2 apply failed");
+    cfg.apply_transition(QuantumState::Q2ElevatedRisk, "test", epoch("2026-01-03")).expect("Q1→Q2 apply failed");
 
     // Q2 → Q3
-    let auth = cfg.validate_transition(QuantumState::Q3MigrationRequired, 5, &epoch("2026-01-04"))
+    let auth = cfg
+        .validate_transition(QuantumState::Q3MigrationRequired, 5, &epoch("2026-01-04"))
         .expect("Q2→Q3 should be valid");
     assert_eq!(auth, TransitionAuth::Quorum(5));
-    cfg.apply_transition(QuantumState::Q3MigrationRequired, "test", epoch("2026-01-04"))
-        .expect("Q2→Q3 apply failed");
+    cfg.apply_transition(QuantumState::Q3MigrationRequired, "test", epoch("2026-01-04")).expect("Q2→Q3 apply failed");
 
     // Q3 → Q4
-    let auth = cfg.validate_transition(QuantumState::Q4DepositsDisabled, 5, &epoch("2026-01-05"))
+    let auth = cfg
+        .validate_transition(QuantumState::Q4DepositsDisabled, 5, &epoch("2026-01-05"))
         .expect("Q3→Q4 should be valid");
     assert_eq!(auth, TransitionAuth::QuorumOrAuto);
-    cfg.apply_transition(QuantumState::Q4DepositsDisabled, "test", epoch("2026-01-05"))
-        .expect("Q3→Q4 apply failed");
+    cfg.apply_transition(QuantumState::Q4DepositsDisabled, "test", epoch("2026-01-05")).expect("Q3→Q4 apply failed");
 
     // Q4 → Q5
-    let auth = cfg.validate_transition(QuantumState::Q5EmergencySweep, 5, &epoch("2026-01-06"))
+    let auth = cfg
+        .validate_transition(QuantumState::Q5EmergencySweep, 5, &epoch("2026-01-06"))
         .expect("Q4→Q5 should be valid");
     assert_eq!(auth, TransitionAuth::ReducedQuorum(3));
-    cfg.apply_transition(QuantumState::Q5EmergencySweep, "test", epoch("2026-01-06"))
-        .expect("Q4→Q5 apply failed");
+    cfg.apply_transition(QuantumState::Q5EmergencySweep, "test", epoch("2026-01-06")).expect("Q4→Q5 apply failed");
 
     assert_eq!(cfg.current_state, QuantumState::Q5EmergencySweep);
     assert_eq!(cfg.state_changed_at.as_str(), "2026-01-06");
@@ -86,16 +79,14 @@ fn q0_to_q1_to_q2_to_q3_to_q4_to_q5_valid() {
 fn q5_to_q1_rejected() {
     let cfg = config_at(QuantumState::Q5EmergencySweep);
 
-    let result = cfg.validate_transition(
-        QuantumState::Q1PqPrepared,
-        5,
-        &epoch("2026-01-07"),
-    );
+    let result = cfg.validate_transition(QuantumState::Q1PqPrepared, 5, &epoch("2026-01-07"));
 
     assert!(result.is_err(), "Q5→Q1 reverse transition must be rejected");
     let msg = result.unwrap_err().to_string().to_lowercase();
-    assert!(msg.contains("monotonic") || msg.contains("not monotonic") || msg.contains("increases"),
-        "Error should mention monotonic constraint: {msg}");
+    assert!(
+        msg.contains("monotonic") || msg.contains("not monotonic") || msg.contains("increases"),
+        "Error should mention monotonic constraint: {msg}"
+    );
 }
 
 /// Invalid: Q0 → Q0 (non-monotonic, same state) must be rejected.
@@ -112,15 +103,13 @@ fn q0_to_q0_rejected() {
 fn q0_to_q3_skip_rejected() {
     let cfg = ready_config();
 
-    let result = cfg.validate_transition(
-        QuantumState::Q3MigrationRequired,
-        5,
-        &epoch("2026-01-02"),
-    );
+    let result = cfg.validate_transition(QuantumState::Q3MigrationRequired, 5, &epoch("2026-01-02"));
     assert!(result.is_err(), "Q0→Q3 (skip) must be rejected");
     let msg = result.unwrap_err().to_string().to_lowercase();
-    assert!(msg.contains("gap") || msg.contains("step") || msg.contains("one step"),
-        "Error should mention single-step constraint: {msg}");
+    assert!(
+        msg.contains("gap") || msg.contains("step") || msg.contains("one step"),
+        "Error should mention single-step constraint: {msg}"
+    );
 }
 
 /// Invalid: Q0 → Q1 without emergency_constitution_hash must be rejected.
@@ -130,13 +119,9 @@ fn q0_to_q1_without_emergency_hash_rejected() {
     // No emergency hash set
 
     let result = cfg.validate_transition(QuantumState::Q1PqPrepared, 5, &epoch("2026-01-02"));
-    assert!(
-        result.is_err(),
-        "Q0→Q1 without emergency_constitution_hash must be rejected"
-    );
+    assert!(result.is_err(), "Q0→Q1 without emergency_constitution_hash must be rejected");
     let msg = result.unwrap_err().to_string().to_lowercase();
-    assert!(msg.contains("emergency_constitution_hash"),
-        "Error should mention emergency_constitution_hash: {msg}");
+    assert!(msg.contains("emergency_constitution_hash"), "Error should mention emergency_constitution_hash: {msg}");
 }
 
 /// Invalid: Q0 → Q1 without migration_destination_descriptor must be rejected.
@@ -147,10 +132,7 @@ fn q0_to_q1_without_destination_descriptor_rejected() {
     // No destination descriptor
 
     let result = cfg.validate_transition(QuantumState::Q1PqPrepared, 5, &epoch("2026-01-02"));
-    assert!(
-        result.is_err(),
-        "Q0→Q1 without migration_destination_descriptor must be rejected"
-    );
+    assert!(result.is_err(), "Q0→Q1 without migration_destination_descriptor must be rejected");
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -209,10 +191,7 @@ fn only_q5_is_emergency() {
 #[test]
 fn emergency_sweep_requires_q4_or_higher() {
     // Q0: rejected
-    let result = validate_emergency_ready(
-        &QuantumMigrationConfig::default_at(epoch("2026-01-01")),
-        10,
-    );
+    let result = validate_emergency_ready(&QuantumMigrationConfig::default_at(epoch("2026-01-01")), 10);
     assert!(result.is_err(), "Q0 must reject emergency sweep");
     let msg = result.unwrap_err().to_string().to_lowercase();
     assert!(msg.contains("q4"), "Error should mention Q4 requirement: {msg}");
@@ -240,8 +219,7 @@ fn emergency_sweep_requires_utxos() {
     let result = validate_emergency_ready(&cfg, 0);
     assert!(result.is_err(), "Q4 with 0 UTXOs must reject sweep");
     let msg = result.unwrap_err().to_string().to_lowercase();
-    assert!(msg.contains("no utxos") || msg.contains("empty"),
-        "Error should mention empty UTXOs: {msg}");
+    assert!(msg.contains("no utxos") || msg.contains("empty"), "Error should mention empty UTXOs: {msg}");
 }
 
 /// Emergency sweep requires both emergency_constitution_hash and destination_descriptor.
@@ -317,8 +295,7 @@ fn quantum_state_level_roundtrip() {
 
     for state in &states {
         let level = state.level();
-        let parsed = QuantumState::from_level(level)
-            .expect("valid level");
+        let parsed = QuantumState::from_level(level).expect("valid level");
         assert_eq!(*state, parsed, "Roundtrip failed for {:?}", state);
     }
 

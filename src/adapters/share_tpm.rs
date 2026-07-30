@@ -76,10 +76,7 @@ impl TpmSealAdapter {
         envelope.extend_from_slice(&salt);
         envelope.extend_from_slice(&nonce);
         let ciphertext = cipher
-            .encrypt(
-                Nonce::from_slice(&nonce),
-                Payload { msg: plaintext, aad: &envelope },
-            )
+            .encrypt(Nonce::from_slice(&nonce), Payload { msg: plaintext, aad: &envelope })
             .map_err(|_| Self::required("TPM mock seal failed"))?;
         envelope.extend_from_slice(&ciphertext);
         Ok(envelope)
@@ -102,10 +99,7 @@ impl TpmSealAdapter {
         cipher
             .decrypt(
                 Nonce::from_slice(&sealed[nonce_start..ciphertext_start]),
-                Payload {
-                    msg: &sealed[ciphertext_start..],
-                    aad: &sealed[..ciphertext_start],
-                },
+                Payload { msg: &sealed[ciphertext_start..], aad: &sealed[..ciphertext_start] },
             )
             .map_err(|_| Self::required("TPM unseal rejected by policy or ciphertext"))
     }
@@ -129,9 +123,7 @@ impl TpmSealPort for TpmSealAdapter {
         match self {
             Self::Mock => Self::mock_seal(plaintext, policy),
             Self::FailClosed => Err(Self::required("no TPM 2.0 device is available")),
-            Self::HwProbe => Err(Self::required(
-                "TPM device detected but TSS seal support is not implemented",
-            )),
+            Self::HwProbe => Err(Self::required("TPM device detected but TSS seal support is not implemented")),
             Self::Tss(tss) => tss.seal(plaintext, policy),
         }
     }
@@ -223,16 +215,14 @@ fn clear(value: Option<&str>) -> Result<String, DomainError> {
 }
 
 fn write_envelope(path: &Path, bytes: &[u8]) -> Result<(), DomainError> {
-    let parent = path.parent().ok_or_else(|| {
-        DomainError::ShareStoreForbidden("TPM sealed passphrase path has no parent".into())
-    })?;
+    let parent = path
+        .parent()
+        .ok_or_else(|| DomainError::ShareStoreForbidden("TPM sealed passphrase path has no parent".into()))?;
     fs::create_dir_all(parent)
         .map_err(|e| DomainError::ShareStoreForbidden(format!("mkdir TPM passphrase root: {e}")))?;
     let tmp = path.with_extension("tmp");
-    fs::write(&tmp, bytes)
-        .map_err(|e| DomainError::ShareStoreForbidden(format!("write TPM envelope: {e}")))?;
-    fs::rename(&tmp, path)
-        .map_err(|e| DomainError::ShareStoreForbidden(format!("rename TPM envelope: {e}")))
+    fs::write(&tmp, bytes).map_err(|e| DomainError::ShareStoreForbidden(format!("write TPM envelope: {e}")))?;
+    fs::rename(&tmp, path).map_err(|e| DomainError::ShareStoreForbidden(format!("rename TPM envelope: {e}")))
 }
 
 /// Bootstraps or reloads the AEAD passphrase from its TPM envelope.
@@ -248,9 +238,10 @@ pub fn resolve_aead_passphrase(
         fs::read(&path)
             .map_err(|e| DomainError::ShareStoreForbidden(format!("read TPM envelope: {e}")))
             .and_then(|blob| tpm.unseal(&blob, &digest))
-            .and_then(|bytes| String::from_utf8(bytes).map_err(|_| {
-                DomainError::ShareStoreForbidden("TPM-unsealed passphrase is not UTF-8".into())
-            }))
+            .and_then(|bytes| {
+                String::from_utf8(bytes)
+                    .map_err(|_| DomainError::ShareStoreForbidden("TPM-unsealed passphrase is not UTF-8".into()))
+            })
     } else {
         let value = clear(clear_passphrase)?;
         tpm.seal(value.as_bytes(), &digest).and_then(|blob| {
@@ -259,11 +250,9 @@ pub fn resolve_aead_passphrase(
         })
     };
     match resolved {
-        Ok(passphrase) => Ok(ResolvedPassphrase {
-            passphrase,
-            tpm_backend: tpm.backend_kind(),
-            used_clear_fallback: false,
-        }),
+        Ok(passphrase) => {
+            Ok(ResolvedPassphrase { passphrase, tpm_backend: tpm.backend_kind(), used_clear_fallback: false })
+        }
         Err(_) if clear_fallback => Ok(ResolvedPassphrase {
             passphrase: clear(clear_passphrase)?,
             tpm_backend: tpm.backend_kind(),
@@ -301,16 +290,11 @@ impl CounterSealedBlob {
     /// Decode counter + sealed blob.
     pub fn decode(bytes: &[u8]) -> Result<Self, DomainError> {
         if bytes.len() < 8 {
-            return Err(DomainError::TpmRequired(
-                "counter sealed blob too short".into(),
-            ));
+            return Err(DomainError::TpmRequired("counter sealed blob too short".into()));
         }
-        let counter = u64::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3],
-                                           bytes[4], bytes[5], bytes[6], bytes[7]]);
-        Ok(Self {
-            counter,
-            sealed_blob: bytes[8..].to_vec(),
-        })
+        let counter =
+            u64::from_be_bytes([bytes[0], bytes[1], bytes[2], bytes[3], bytes[4], bytes[5], bytes[6], bytes[7]]);
+        Ok(Self { counter, sealed_blob: bytes[8..].to_vec() })
     }
 }
 
@@ -321,10 +305,7 @@ impl CounterSealedBlob {
 ///
 /// Returns `Ok(())` if current >= stored (monotonic invariant holds).
 /// Returns `Err(CounterRollback)` if current < stored (rollback detected).
-pub fn validate_tpm_counter(
-    stored_counter: u64,
-    current_counter: u64,
-) -> Result<(), DomainError> {
+pub fn validate_tpm_counter(stored_counter: u64, current_counter: u64) -> Result<(), DomainError> {
     if current_counter < stored_counter {
         return Err(DomainError::TpmRequired(format!(
             "TPM counter rollback detected: stored={stored_counter} current={current_counter} \
@@ -348,7 +329,9 @@ mod tests {
         }
     }
     impl Drop for TempDir {
-        fn drop(&mut self) { let _ = fs::remove_dir_all(&self.0); }
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
     }
 
     #[test]
@@ -376,19 +359,29 @@ mod tests {
     #[test]
     fn resolve_bootstrap_reload() {
         let root = TempDir::new("reload");
-        assert_eq!(resolve_aead_passphrase(&root.0, Some("secret"), &TpmSealAdapter::Mock, false).unwrap().passphrase, "secret");
+        assert_eq!(
+            resolve_aead_passphrase(&root.0, Some("secret"), &TpmSealAdapter::Mock, false).unwrap().passphrase,
+            "secret"
+        );
         assert!(sealed_passphrase_path(&root.0).exists());
         assert_eq!(resolve_aead_passphrase(&root.0, None, &TpmSealAdapter::Mock, false).unwrap().passphrase, "secret");
     }
     #[test]
     fn clear_fallback() {
         let root = TempDir::new("fallback");
-        assert!(resolve_aead_passphrase(&root.0, Some("secret"), &TpmSealAdapter::FailClosed, true).unwrap().used_clear_fallback);
+        assert!(
+            resolve_aead_passphrase(&root.0, Some("secret"), &TpmSealAdapter::FailClosed, true)
+                .unwrap()
+                .used_clear_fallback
+        );
     }
     #[test]
     fn no_fallback() {
         let root = TempDir::new("none");
-        assert!(matches!(resolve_aead_passphrase(&root.0, Some("secret"), &TpmSealAdapter::FailClosed, false), Err(DomainError::TpmRequired(_))));
+        assert!(matches!(
+            resolve_aead_passphrase(&root.0, Some("secret"), &TpmSealAdapter::FailClosed, false),
+            Err(DomainError::TpmRequired(_))
+        ));
     }
     #[test]
     fn stub_refused_when_hardened() {
@@ -403,10 +396,7 @@ mod tests {
 
     #[test]
     fn counter_encode_decode_roundtrip() {
-        let blob = CounterSealedBlob {
-            counter: 42,
-            sealed_blob: vec![1, 2, 3],
-        };
+        let blob = CounterSealedBlob { counter: 42, sealed_blob: vec![1, 2, 3] };
         let encoded = blob.encode();
         let decoded = CounterSealedBlob::decode(&encoded).unwrap();
         assert_eq!(decoded.counter, 42);
@@ -433,19 +423,14 @@ mod tests {
 
     #[test]
     fn counter_decode_rejects_short_blob() {
-        assert!(matches!(
-            CounterSealedBlob::decode(&[1, 2, 3]),
-            Err(DomainError::TpmRequired(_))
-        ));
+        assert!(matches!(CounterSealedBlob::decode(&[1, 2, 3]), Err(DomainError::TpmRequired(_))));
     }
 
     // --- TSS variant test ---
 
     #[test]
     fn tss_variant_is_fail_closed_without_feature() {
-        let tss = TpmSealAdapter::Tss(Box::new(
-            super::super::share_tpm_tss::TpmTssSealAdapter::new(),
-        ));
+        let tss = TpmSealAdapter::Tss(Box::new(super::super::share_tpm_tss::TpmTssSealAdapter::new()));
         assert_eq!(tss.backend_kind(), "tss");
         // Without --features tpm, TSS seal/unseal fail closed
         assert!(matches!(tss.seal(b"x", b"p"), Err(DomainError::TpmRequired(_))));

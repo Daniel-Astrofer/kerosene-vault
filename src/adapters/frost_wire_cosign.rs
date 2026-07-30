@@ -89,12 +89,7 @@ pub struct TrCosignPeerState {
 
 impl TrCosignPeerState {
     pub fn new(local_node_id: impl Into<String>, shares: Arc<FrostTrShareSlot>) -> Self {
-        Self {
-            local_node_id: local_node_id.into(),
-            shares,
-            pending: Mutex::new(BTreeMap::new()),
-            anti_nonce: None,
-        }
+        Self { local_node_id: local_node_id.into(), shares, pending: Mutex::new(BTreeMap::new()), anti_nonce: None }
     }
 
     pub fn with_anti_nonce(mut self, anti: Box<dyn AntiNoncePort>) -> Self {
@@ -118,29 +113,20 @@ impl TrCosignPeerState {
     }
 
     pub fn handle_commit(&self, req: &TrCommitRequest) -> Result<TrCommitResponse, DomainError> {
-        let message = hex::decode(req.message_hex.trim()).map_err(|e| {
-            DomainError::ThresholdError(format!("co-sign message hex: {e}"))
-        })?;
+        let message = hex::decode(req.message_hex.trim())
+            .map_err(|e| DomainError::ThresholdError(format!("co-sign message hex: {e}")))?;
         let snap = self.shares.snapshot()?;
         let (id, kp) = Self::local_key_package(&snap)?;
         let kp = kp.into_even_y(None).tweak(None::<&[u8]>);
         let mut rng = OsRng;
         let (nonces, commitments) = frost::round1::commit(kp.signing_share(), &mut rng);
         let commitments_hex = hex::encode(
-            commitments
-                .serialize()
-                .map_err(|e| DomainError::ThresholdError(format!("commit serialize: {e}")))?,
+            commitments.serialize().map_err(|e| DomainError::ThresholdError(format!("commit serialize: {e}")))?,
         );
         self.pending
             .lock()
             .expect("tr cosign pending")
-            .insert(
-                req.session_id.clone(),
-                PendingTrRound {
-                    nonces,
-                    message,
-                },
-            );
+            .insert(req.session_id.clone(), PendingTrRound { nonces, message });
         Ok(TrCommitResponse {
             node_id: self.local_node_id.clone(),
             identifier_hex: hex::encode(id.serialize()),
@@ -148,15 +134,8 @@ impl TrCosignPeerState {
         })
     }
 
-    pub fn handle_sign_share(
-        &self,
-        req: &TrSignShareRequest,
-    ) -> Result<Option<TrSignShareResponse>, DomainError> {
-        if !req.participant_node_ids.is_empty()
-            && !req
-                .participant_node_ids
-                .iter()
-                .any(|id| id == &self.local_node_id)
+    pub fn handle_sign_share(&self, req: &TrSignShareRequest) -> Result<Option<TrSignShareResponse>, DomainError> {
+        if !req.participant_node_ids.is_empty() && !req.participant_node_ids.iter().any(|id| id == &self.local_node_id)
         {
             // Not in trimmed signing set — drop pending nonces if any.
             let mut pending = self.pending.lock().expect("tr cosign pending");
@@ -167,26 +146,16 @@ impl TrCosignPeerState {
         }
         let mut pending = self.pending.lock().expect("tr cosign pending");
         let entry = pending.remove(&req.session_id).ok_or_else(|| {
-            DomainError::ThresholdError(format!(
-                "no pending TR co-sign round for session {}",
-                req.session_id
-            ))
+            DomainError::ThresholdError(format!("no pending TR co-sign round for session {}", req.session_id))
         })?;
-        let PendingTrRound {
-            mut nonces,
-            message,
-        } = entry;
+        let PendingTrRound { mut nonces, message } = entry;
         let _nonces_guard = SigningNoncesGuard::new(nonces);
-        let pkg_bytes = hex::decode(req.signing_package_hex.trim()).map_err(|e| {
-            DomainError::ThresholdError(format!("signing package hex: {e}"))
-        })?;
-        let signing_package = SigningPackage::deserialize(&pkg_bytes).map_err(|e| {
-            DomainError::ThresholdError(format!("signing package deserialize: {e}"))
-        })?;
+        let pkg_bytes = hex::decode(req.signing_package_hex.trim())
+            .map_err(|e| DomainError::ThresholdError(format!("signing package hex: {e}")))?;
+        let signing_package = SigningPackage::deserialize(&pkg_bytes)
+            .map_err(|e| DomainError::ThresholdError(format!("signing package deserialize: {e}")))?;
         if signing_package.message() != message.as_slice() {
-            return Err(DomainError::ThresholdError(
-                "co-sign signing package message mismatch".into(),
-            ));
+            return Err(DomainError::ThresholdError("co-sign signing package message mismatch".into()));
         }
         // Anti-nonce: refuse sign_share if session already consumed at this vault.
         if let Some(ref anti) = self.anti_nonce {
@@ -201,9 +170,8 @@ impl TrCosignPeerState {
             return Ok(None);
         }
         let kp = kp.into_even_y(None).tweak(None::<&[u8]>);
-        let share = frost::round2::sign(&signing_package, &_nonces_guard.nonces, &kp).map_err(|e| {
-            DomainError::ThresholdError(format!("frost-tr peer round2: {e}"))
-        })?;
+        let share = frost::round2::sign(&signing_package, &_nonces_guard.nonces, &kp)
+            .map_err(|e| DomainError::ThresholdError(format!("frost-tr peer round2: {e}")))?;
         let share_hex = hex::encode(share.serialize());
         Ok(Some(TrSignShareResponse {
             node_id: self.local_node_id.clone(),
@@ -215,29 +183,17 @@ impl TrCosignPeerState {
 
 /// Outbound peer co-sign transport (mTLS or lab token).
 pub trait TrCosignTransport: Send + Sync {
-    fn collect_commitments(
-        &self,
-        req: &TrCommitRequest,
-    ) -> Result<Vec<TrCommitResponse>, DomainError>;
-    fn collect_signature_shares(
-        &self,
-        req: &TrSignShareRequest,
-    ) -> Result<Vec<TrSignShareResponse>, DomainError>;
+    fn collect_commitments(&self, req: &TrCommitRequest) -> Result<Vec<TrCommitResponse>, DomainError>;
+    fn collect_signature_shares(&self, req: &TrSignShareRequest) -> Result<Vec<TrSignShareResponse>, DomainError>;
 }
 
 pub struct NoopTrCosignTransport;
 
 impl TrCosignTransport for NoopTrCosignTransport {
-    fn collect_commitments(
-        &self,
-        _req: &TrCommitRequest,
-    ) -> Result<Vec<TrCommitResponse>, DomainError> {
+    fn collect_commitments(&self, _req: &TrCommitRequest) -> Result<Vec<TrCommitResponse>, DomainError> {
         Ok(vec![])
     }
-    fn collect_signature_shares(
-        &self,
-        _req: &TrSignShareRequest,
-    ) -> Result<Vec<TrSignShareResponse>, DomainError> {
+    fn collect_signature_shares(&self, _req: &TrSignShareRequest) -> Result<Vec<TrSignShareResponse>, DomainError> {
         Ok(vec![])
     }
 }
@@ -255,12 +211,7 @@ impl HttpTrCosignTransport {
         auth_token: Option<String>,
         peer_http: PeerHttpSettings,
     ) -> Self {
-        Self {
-            peers,
-            auth_token,
-            peer_http,
-            tls: None,
-        }
+        Self { peers, auth_token, peer_http, tls: None }
     }
 
     pub fn with_mtls(
@@ -271,30 +222,16 @@ impl HttpTrCosignTransport {
         ca_path: &Path,
         verify: &TlsPeerVerifyPolicy,
     ) -> Result<Self, DomainError> {
-        let tls = build_mtls_rustls_client_config(
-            client_cert_path,
-            client_key_path,
-            ca_path,
-            verify,
-        )?;
-        Ok(Self {
-            peers,
-            auth_token: None,
-            peer_http,
-            tls: Some(tls),
-        })
+        let tls = build_mtls_rustls_client_config(client_cert_path, client_key_path, ca_path, verify)?;
+        Ok(Self { peers, auth_token: None, peer_http, tls: Some(tls) })
     }
 
     fn build_blocking_client(&self) -> Result<reqwest::blocking::Client, DomainError> {
-        let mut builder = self
-            .peer_http
-            .apply_blocking_builder(reqwest::blocking::Client::builder())?;
+        let mut builder = self.peer_http.apply_blocking_builder(reqwest::blocking::Client::builder())?;
         if let Some(tls) = self.tls.clone() {
             builder = builder.use_preconfigured_tls(tls);
         }
-        builder
-            .build()
-            .map_err(|e| DomainError::ThresholdError(format!("TR co-sign http client: {e}")))
+        builder.build().map_err(|e| DomainError::ThresholdError(format!("TR co-sign http client: {e}")))
     }
 
     fn post_peer<T: Serialize, R: for<'de> Deserialize<'de>>(
@@ -322,48 +259,33 @@ impl HttpTrCosignTransport {
         if !res.status().is_success() {
             let status = res.status();
             let text = res.text().unwrap_or_default();
-            return Err(DomainError::ThresholdError(format!(
-                "TR co-sign peer {url} failed ({status}): {text}"
-            )));
+            return Err(DomainError::ThresholdError(format!("TR co-sign peer {url} failed ({status}): {text}")));
         }
-        res.json().map_err(|e| {
-            DomainError::ThresholdError(format!("TR co-sign peer decode: {e}"))
-        })
+        res.json().map_err(|e| DomainError::ThresholdError(format!("TR co-sign peer decode: {e}")))
     }
 }
 
 impl TrCosignTransport for HttpTrCosignTransport {
-    fn collect_commitments(
-        &self,
-        req: &TrCommitRequest,
-    ) -> Result<Vec<TrCommitResponse>, DomainError> {
+    fn collect_commitments(&self, req: &TrCommitRequest) -> Result<Vec<TrCommitResponse>, DomainError> {
         let mut out = Vec::new();
         for (id, base) in &self.peers {
-            let resp: TrCommitResponse =
-                self.post_peer(base, "/v1/frost/tr/commit", req).map_err(|e| {
-                    DomainError::ThresholdError(format!("TR commit from {id}: {e}"))
-                })?;
+            let resp: TrCommitResponse = self
+                .post_peer(base, "/v1/frost/tr/commit", req)
+                .map_err(|e| DomainError::ThresholdError(format!("TR commit from {id}: {e}")))?;
             out.push(resp);
         }
         Ok(out)
     }
 
-    fn collect_signature_shares(
-        &self,
-        req: &TrSignShareRequest,
-    ) -> Result<Vec<TrSignShareResponse>, DomainError> {
+    fn collect_signature_shares(&self, req: &TrSignShareRequest) -> Result<Vec<TrSignShareResponse>, DomainError> {
         let mut out = Vec::new();
         for (id, base) in &self.peers {
-            if !req.participant_node_ids.is_empty()
-                && !req.participant_node_ids.iter().any(|p| p == id)
-            {
+            if !req.participant_node_ids.is_empty() && !req.participant_node_ids.iter().any(|p| p == id) {
                 continue;
             }
             let resp: TrSignShareResponse = self
                 .post_peer(base, "/v1/frost/tr/sign-share", req)
-                .map_err(|e| {
-                    DomainError::ThresholdError(format!("TR sign-share from {id}: {e}"))
-                })?;
+                .map_err(|e| DomainError::ThresholdError(format!("TR sign-share from {id}: {e}")))?;
             out.push(resp);
         }
         Ok(out)
@@ -386,14 +308,11 @@ fn post_json_with_retry_blocking<T: Serialize>(
         match req.send() {
             Ok(res) => return Ok(res),
             Err(_e) if attempt < max => {
-                let sleep_ms = settings.retry_base_ms
-                    + (attempt as u64).saturating_mul(settings.retry_jitter_ms / 2);
+                let sleep_ms = settings.retry_base_ms + (attempt as u64).saturating_mul(settings.retry_jitter_ms / 2);
                 std::thread::sleep(std::time::Duration::from_millis(sleep_ms));
             }
             Err(e) => {
-                return Err(DomainError::ThresholdError(format!(
-                    "TR co-sign HTTP {url}: {e}"
-                )));
+                return Err(DomainError::ThresholdError(format!("TR co-sign HTTP {url}: {e}")));
             }
         }
     }
@@ -407,14 +326,7 @@ pub fn sign_raw_wire(
     session_id: &str,
     message: &[u8],
 ) -> Result<Signature, DomainError> {
-    Ok(sign_raw_wire_attributed(
-        shares,
-        transport,
-        local_node_id,
-        session_id,
-        message,
-    )?
-    .signature)
+    Ok(sign_raw_wire_attributed(shares, transport, local_node_id, session_id, message)?.signature)
 }
 
 pub fn sign_raw_wire_attributed(
@@ -441,8 +353,7 @@ pub fn sign_raw_wire_attributed(
 
     let local_kp_tweaked = local_kp.clone().into_even_y(None).tweak(None::<&[u8]>);
     let mut rng = OsRng;
-    let (mut local_nonces, local_commitments) =
-        frost::round1::commit(local_kp_tweaked.signing_share(), &mut rng);
+    let (mut local_nonces, local_commitments) = frost::round1::commit(local_kp_tweaked.signing_share(), &mut rng);
     let mut local_nonces_guard = SigningNoncesGuard::new(local_nonces);
 
     let commit_req = TrCommitRequest {
@@ -456,27 +367,20 @@ pub fn sign_raw_wire_attributed(
     let mut peer_id_by_identifier: BTreeMap<Identifier, String> = BTreeMap::new();
     commitments_map.insert(local_id, local_commitments);
     for peer in &peer_commits {
-        let id_bytes = hex::decode(peer.identifier_hex.trim()).map_err(|e| {
-            DomainError::ThresholdError(format!("peer identifier hex: {e}"))
-        })?;
-        let id = Identifier::deserialize(&id_bytes).map_err(|e| {
-            DomainError::ThresholdError(format!("peer identifier: {e}"))
-        })?;
-        let c_bytes = hex::decode(peer.commitments_hex.trim()).map_err(|e| {
-            DomainError::ThresholdError(format!("peer commitments hex: {e}"))
-        })?;
-        let c = SigningCommitments::deserialize(&c_bytes).map_err(|e| {
-            DomainError::ThresholdError(format!("peer commitments: {e}"))
-        })?;
+        let id_bytes = hex::decode(peer.identifier_hex.trim())
+            .map_err(|e| DomainError::ThresholdError(format!("peer identifier hex: {e}")))?;
+        let id = Identifier::deserialize(&id_bytes)
+            .map_err(|e| DomainError::ThresholdError(format!("peer identifier: {e}")))?;
+        let c_bytes = hex::decode(peer.commitments_hex.trim())
+            .map_err(|e| DomainError::ThresholdError(format!("peer commitments hex: {e}")))?;
+        let c = SigningCommitments::deserialize(&c_bytes)
+            .map_err(|e| DomainError::ThresholdError(format!("peer commitments: {e}")))?;
         commitments_map.insert(id, c);
         peer_id_by_identifier.insert(id, peer.node_id.clone());
     }
 
     if commitments_map.len() < min_signers {
-        return Err(DomainError::FailStop {
-            online: commitments_map.len(),
-            need: min_signers,
-        });
+        return Err(DomainError::FailStop { online: commitments_map.len(), need: min_signers });
     }
 
     // Trim to min_signers deterministically (local + lowest ids).
@@ -499,10 +403,8 @@ pub fn sign_raw_wire_attributed(
         commitments_map = keep;
     }
 
-    let selected_peer_nodes: std::collections::HashSet<String> = commitments_map
-        .keys()
-        .filter_map(|id| peer_id_by_identifier.get(id).cloned())
-        .collect();
+    let selected_peer_nodes: std::collections::HashSet<String> =
+        commitments_map.keys().filter_map(|id| peer_id_by_identifier.get(id).cloned()).collect();
 
     let mut message_buf = message.to_vec();
     let signing_package = SigningPackage::new(commitments_map, &message_buf);
@@ -512,11 +414,7 @@ pub fn sign_raw_wire_attributed(
             .map_err(|e| DomainError::ThresholdError(format!("signing package serialize: {e}")))?,
     );
 
-    let local_share = frost::round2::sign(
-        &signing_package,
-        &local_nonces_guard.nonces,
-        &local_kp_tweaked,
-    )
+    let local_share = frost::round2::sign(&signing_package, &local_nonces_guard.nonces, &local_kp_tweaked)
         .map_err(|e| DomainError::ThresholdError(format!("frost-tr local round2: {e}")))?;
     local_nonces_guard.nonces.zeroize();
 
@@ -531,21 +429,17 @@ pub fn sign_raw_wire_attributed(
     let mut participant_node_ids = vec![local_node_id.to_string()];
     signature_shares.insert(local_id, local_share);
     for peer in &peer_shares {
-        let id_bytes = hex::decode(peer.identifier_hex.trim()).map_err(|e| {
-            DomainError::ThresholdError(format!("peer identifier hex: {e}"))
-        })?;
-        let id = Identifier::deserialize(&id_bytes).map_err(|e| {
-            DomainError::ThresholdError(format!("peer identifier: {e}"))
-        })?;
+        let id_bytes = hex::decode(peer.identifier_hex.trim())
+            .map_err(|e| DomainError::ThresholdError(format!("peer identifier hex: {e}")))?;
+        let id = Identifier::deserialize(&id_bytes)
+            .map_err(|e| DomainError::ThresholdError(format!("peer identifier: {e}")))?;
         if !signing_package.signing_commitments().contains_key(&id) {
             continue; // peer not in trimmed set
         }
-        let s_bytes = hex::decode(peer.signature_share_hex.trim()).map_err(|e| {
-            DomainError::ThresholdError(format!("peer sig share hex: {e}"))
-        })?;
-        let s = SignatureShare::deserialize(&s_bytes).map_err(|e| {
-            DomainError::ThresholdError(format!("peer sig share: {e}"))
-        })?;
+        let s_bytes = hex::decode(peer.signature_share_hex.trim())
+            .map_err(|e| DomainError::ThresholdError(format!("peer sig share hex: {e}")))?;
+        let s = SignatureShare::deserialize(&s_bytes)
+            .map_err(|e| DomainError::ThresholdError(format!("peer sig share: {e}")))?;
         signature_shares.insert(id, s);
         if let Some(node_id) = peer_id_by_identifier.get(&id) {
             participant_node_ids.push(node_id.clone());
@@ -553,17 +447,10 @@ pub fn sign_raw_wire_attributed(
     }
 
     if signature_shares.len() < min_signers {
-        return Err(DomainError::FailStop {
-            online: signature_shares.len(),
-            need: min_signers,
-        });
+        return Err(DomainError::FailStop { online: signature_shares.len(), need: min_signers });
     }
 
-    let pubkey_tweaked = snap
-        .pubkey_package
-        .clone()
-        .into_even_y(None)
-        .tweak(None::<&[u8]>);
+    let pubkey_tweaked = snap.pubkey_package.clone().into_even_y(None).tweak(None::<&[u8]>);
     let signature = frost::aggregate(&signing_package, &signature_shares, &pubkey_tweaked)
         .map_err(|e| DomainError::ThresholdError(format!("frost-tr wire aggregate: {e}")))?;
     pubkey_tweaked
@@ -573,10 +460,7 @@ pub fn sign_raw_wire_attributed(
     message_buf.zeroize();
     participant_node_ids.sort();
     participant_node_ids.dedup();
-    Ok(AttributedWireSignature {
-        signature,
-        participant_node_ids,
-    })
+    Ok(AttributedWireSignature { signature, participant_node_ids })
 }
 
 /// Keep only the local identifier's key package (distributed_wire hygiene).
@@ -588,18 +472,10 @@ pub fn tr_state_local_only(
         .key_packages
         .get(&local_identifier)
         .cloned()
-        .ok_or_else(|| {
-            DomainError::ThresholdError(
-                "local TR identifier missing from key packages".into(),
-            )
-        })?;
+        .ok_or_else(|| DomainError::ThresholdError("local TR identifier missing from key packages".into()))?;
     let mut key_packages = BTreeMap::new();
     key_packages.insert(local_identifier, kp);
-    Ok(FrostTrShareState {
-        key_packages,
-        pubkey_package: state.pubkey_package,
-        min_signers: state.min_signers,
-    })
+    Ok(FrostTrShareState { key_packages, pubkey_package: state.pubkey_package, min_signers: state.min_signers })
 }
 
 #[cfg(test)]
@@ -613,19 +489,10 @@ mod tests {
     }
 
     impl TrCosignTransport for MemoryMesh {
-        fn collect_commitments(
-            &self,
-            req: &TrCommitRequest,
-        ) -> Result<Vec<TrCommitResponse>, DomainError> {
-            self.peers
-                .iter()
-                .map(|(_, p)| p.handle_commit(req))
-                .collect()
+        fn collect_commitments(&self, req: &TrCommitRequest) -> Result<Vec<TrCommitResponse>, DomainError> {
+            self.peers.iter().map(|(_, p)| p.handle_commit(req)).collect()
         }
-        fn collect_signature_shares(
-            &self,
-            req: &TrSignShareRequest,
-        ) -> Result<Vec<TrSignShareResponse>, DomainError> {
+        fn collect_signature_shares(&self, req: &TrSignShareRequest) -> Result<Vec<TrSignShareResponse>, DomainError> {
             let mut out = Vec::new();
             for (_, p) in &self.peers {
                 if let Some(resp) = p.handle_sign_share(req)? {
@@ -647,11 +514,8 @@ mod tests {
         for (i, id) in ids.iter().enumerate() {
             let mut map = BTreeMap::new();
             map.insert(*id, bundle.key_packages[id].clone());
-            let state = FrostTrShareState {
-                key_packages: map,
-                pubkey_package: bundle.pubkey_package.clone(),
-                min_signers: 2,
-            };
+            let state =
+                FrostTrShareState { key_packages: map, pubkey_package: bundle.pubkey_package.clone(), min_signers: 2 };
             let slot = Arc::new(FrostTrShareSlot::new());
             slot.install(state);
             let node = format!("vault-{}", i + 1);
@@ -663,18 +527,11 @@ mod tests {
                 peer_states.push((format!("vault-{}", i + 1), peer));
             }
         }
-        let transport = MemoryMesh {
-            peers: peer_states,
-        };
+        let transport = MemoryMesh { peers: peer_states };
         let msg = [7u8; 32];
-        let sig = sign_raw_wire(
-            coord_slot.as_ref().unwrap(),
-            &transport,
-            coord_id.as_ref().unwrap(),
-            "sess-wire-tr-1",
-            &msg,
-        )
-        .unwrap();
+        let sig =
+            sign_raw_wire(coord_slot.as_ref().unwrap(), &transport, coord_id.as_ref().unwrap(), "sess-wire-tr-1", &msg)
+                .unwrap();
         let snap = coord_slot.as_ref().unwrap().snapshot().unwrap();
         let pk = snap.pubkey_package.into_even_y(None).tweak(None::<&[u8]>);
         pk.verifying_key().verify(&msg, &sig).unwrap();

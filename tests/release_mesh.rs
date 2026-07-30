@@ -3,12 +3,10 @@ use std::sync::Arc;
 
 use kerosene_vault::adapters::{InMemoryLedger, InMemoryReleaseMesh};
 use kerosene_vault::application::{
-    ActivateRelease, BlobStorePort, ClockPort, CosignRelease, GetAllowlist, ProposeRelease,
-    RebuildRelease, ReleaseStorePort,
+    ActivateRelease, BlobStorePort, ClockPort, CosignRelease, GetAllowlist, ProposeRelease, RebuildRelease,
+    ReleaseStorePort,
 };
-use kerosene_vault::domain::{
-    lab_rebuild_binary_hash, Constitution, ContentHash, NodeId, ReleasePhase, ReleasePolicy,
-};
+use kerosene_vault::domain::{lab_rebuild_binary_hash, Constitution, ContentHash, NodeId, ReleasePhase, ReleasePolicy};
 
 struct FixedClock(u64);
 impl ClockPort for FixedClock {
@@ -17,18 +15,10 @@ impl ClockPort for FixedClock {
     }
 }
 
-fn lab_mesh(n: usize) -> (
-    Arc<InMemoryReleaseMesh>,
-    Arc<InMemoryLedger>,
-    Arc<dyn ClockPort>,
-) {
+fn lab_mesh(n: usize) -> (Arc<InMemoryReleaseMesh>, Arc<InMemoryLedger>, Arc<dyn ClockPort>) {
     let constitution = Constitution::v1_lab(n).unwrap();
-    let nodes: Vec<_> = (1..=n)
-        .map(|i| NodeId::new(format!("vault-{i}")).unwrap())
-        .collect();
-    let ledger = Arc::new(
-        InMemoryLedger::genesis(constitution, nodes.clone(), nodes[0].clone()).unwrap(),
-    );
+    let nodes: Vec<_> = (1..=n).map(|i| NodeId::new(format!("vault-{i}")).unwrap()).collect();
+    let ledger = Arc::new(InMemoryLedger::genesis(constitution, nodes.clone(), nodes[0].clone()).unwrap());
     let mut policy = ReleasePolicy::lab_default(n);
     policy.lab_timelock_scale = 0;
     policy.min_rebuilds = 3;
@@ -48,15 +38,8 @@ fn clean_release_rebuild_cosign_allowlist() {
     let release_port: Arc<dyn ReleaseStorePort> = mesh.clone();
     let blob_port: Arc<dyn BlobStorePort> = mesh.clone();
 
-    let propose = ProposeRelease::new(
-        release_port.clone(),
-        blob_port.clone(),
-        ledger.clone(),
-        clock.clone(),
-    );
-    let c = propose
-        .execute("rel-clean", b"kerosene-vault-src-v1", council_two_of_three())
-        .unwrap();
+    let propose = ProposeRelease::new(release_port.clone(), blob_port.clone(), ledger.clone(), clock.clone());
+    let c = propose.execute("rel-clean", b"kerosene-vault-src-v1", council_two_of_three()).unwrap();
     assert_eq!(c.phase, ReleasePhase::Proposed);
     assert_eq!(c.hb, lab_rebuild_binary_hash(b"kerosene-vault-src-v1"));
 
@@ -100,29 +83,14 @@ fn tampered_hb_rejected_on_rebuild() {
     blob_port.put(&hs, source).unwrap();
     let evil_hb = ContentHash::from_bytes(b"evil-prebuilt-binary");
 
-    let propose = ProposeRelease::new(
-        release_port.clone(),
-        blob_port.clone(),
-        ledger,
-        clock,
-    );
-    propose
-        .execute_with_hashes(
-            "rel-evil",
-            hs,
-            evil_hb,
-            council_two_of_three(),
-        )
-        .unwrap();
+    let propose = ProposeRelease::new(release_port.clone(), blob_port.clone(), ledger, clock);
+    propose.execute_with_hashes("rel-evil", hs, evil_hb, council_two_of_three()).unwrap();
 
     let rebuild = RebuildRelease::new(release_port, blob_port);
     let v1 = NodeId::new("vault-1").unwrap();
     let err = rebuild.execute("rel-evil", &v1).unwrap_err();
     let msg = err.to_string();
-    assert!(
-        msg.contains("rebuild mismatch"),
-        "expected rebuild mismatch, got {msg}"
-    );
+    assert!(msg.contains("rebuild mismatch"), "expected rebuild mismatch, got {msg}");
 }
 
 #[test]
@@ -132,9 +100,7 @@ fn insufficient_council_sigs_rejected() {
     let blob_port: Arc<dyn BlobStorePort> = mesh;
     let propose = ProposeRelease::new(release_port, blob_port, ledger, clock);
     let one = BTreeSet::from(["council-a".into()]);
-    let err = propose
-        .execute("rel-weak", b"src", one)
-        .unwrap_err();
+    let err = propose.execute("rel-weak", b"src", one).unwrap_err();
     assert!(err.to_string().contains("quorum not met"));
 }
 

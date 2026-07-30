@@ -11,9 +11,7 @@ use super::durable_fs::atomic_write_fsync;
 use super::release_memory::InMemoryReleaseMesh;
 use super::sync_util::lock_mutex;
 use crate::application::ports::{BlobStorePort, ReleaseStorePort};
-use crate::domain::{
-    AllowlistEntry, ContentHash, DomainError, ReleaseCandidate, ReleasePhase, ReleasePolicy,
-};
+use crate::domain::{AllowlistEntry, ContentHash, DomainError, ReleaseCandidate, ReleasePhase, ReleasePolicy};
 
 pub struct PersistedReleaseMesh {
     meta_path: PathBuf,
@@ -26,9 +24,7 @@ impl PersistedReleaseMesh {
         let root = root.into();
         let meta_path = root.join("release_meta.json");
         let blobs_dir = root.join("blobs");
-        fs::create_dir_all(&blobs_dir).map_err(|e| {
-            DomainError::ThresholdError(format!("release mkdir: {e}"))
-        })?;
+        fs::create_dir_all(&blobs_dir).map_err(|e| DomainError::ThresholdError(format!("release mkdir: {e}")))?;
         let mesh = InMemoryReleaseMesh::new(policy);
         if meta_path.exists() {
             hydrate_meta(&meta_path, &mesh)?;
@@ -43,11 +39,7 @@ impl PersistedReleaseMesh {
                 }
             }
         }
-        Ok(Self {
-            meta_path,
-            blobs_dir,
-            inner: mesh,
-        })
+        Ok(Self { meta_path, blobs_dir, inner: mesh })
     }
 
     fn persist_meta(&self) -> Result<(), DomainError> {
@@ -77,16 +69,13 @@ impl PersistedReleaseMesh {
             candidate_jsons.join(","),
             al.join(",")
         );
-        atomic_write_fsync(&self.meta_path, json.as_bytes()).map_err(|e| {
-            DomainError::ThresholdError(format!("release meta persist: {e}"))
-        })
+        atomic_write_fsync(&self.meta_path, json.as_bytes())
+            .map_err(|e| DomainError::ThresholdError(format!("release meta persist: {e}")))
     }
 
     fn persist_blob(&self, hash: &ContentHash, bytes: &[u8]) -> Result<(), DomainError> {
         let path = self.blobs_dir.join(hash.as_str());
-        atomic_write_fsync(&path, bytes).map_err(|e| {
-            DomainError::ThresholdError(format!("release blob persist: {e}"))
-        })
+        atomic_write_fsync(&path, bytes).map_err(|e| DomainError::ThresholdError(format!("release blob persist: {e}")))
     }
 }
 
@@ -140,26 +129,14 @@ fn list_candidate_jsons(mesh: &InMemoryReleaseMesh) -> Result<Vec<String>, Domai
 }
 
 fn candidate_json(c: &ReleaseCandidate) -> String {
-    let council: Vec<String> = c
-        .council_sigs
-        .iter()
-        .map(|s| format!("\"{}\"", escape(s)))
-        .collect();
-    let cosigns: Vec<String> = c
-        .cosigns
-        .iter()
-        .map(|s| format!("\"{}\"", escape(s)))
-        .collect();
+    let council: Vec<String> = c.council_sigs.iter().map(|s| format!("\"{}\"", escape(s))).collect();
+    let cosigns: Vec<String> = c.cosigns.iter().map(|s| format!("\"{}\"", escape(s))).collect();
     let rebuilds: Vec<String> = c
         .rebuilds
         .iter()
         .map(|(k, v)| format!(r#"{{"node":"{}","hb":"{}"}}"#, escape(k), escape(v.as_str())))
         .collect();
-    let reject = c
-        .reject_reason
-        .as_ref()
-        .map(|s| format!("\"{}\"", escape(s)))
-        .unwrap_or_else(|| "null".into());
+    let reject = c.reject_reason.as_ref().map(|s| format!("\"{}\"", escape(s))).unwrap_or_else(|| "null".into());
     format!(
         r#"{{"id":"{}","hs":"{}","hb":"{}","constitution_hash":"{}","created_at_secs":{},"phase":"{}","reject_reason":{},"council_sigs":[{}],"cosigns":[{}],"rebuilds":[{}]}}"#,
         escape(&c.id),
@@ -176,12 +153,9 @@ fn candidate_json(c: &ReleaseCandidate) -> String {
 }
 
 fn hydrate_meta(path: &Path, mesh: &InMemoryReleaseMesh) -> Result<(), DomainError> {
-    let raw = fs::read_to_string(path).map_err(|e| {
-        DomainError::ThresholdError(format!("release meta read: {e}"))
-    })?;
-    let v: serde_json::Value = serde_json::from_str(&raw).map_err(|e| {
-        DomainError::ThresholdError(format!("release meta json: {e}"))
-    })?;
+    let raw = fs::read_to_string(path).map_err(|e| DomainError::ThresholdError(format!("release meta read: {e}")))?;
+    let v: serde_json::Value =
+        serde_json::from_str(&raw).map_err(|e| DomainError::ThresholdError(format!("release meta json: {e}")))?;
     if let Some(arr) = v["candidates"].as_array() {
         for c in arr {
             let id = c["id"].as_str().unwrap_or("").to_string();
@@ -220,8 +194,7 @@ fn hydrate_meta(path: &Path, mesh: &InMemoryReleaseMesh) -> Result<(), DomainErr
             if let Some(rb) = c["rebuilds"].as_array() {
                 for r in rb {
                     if let (Some(node), Some(h)) = (r["node"].as_str(), r["hb"].as_str()) {
-                        cand.rebuilds
-                            .insert(node.to_string(), ContentHash::parse(h)?);
+                        cand.rebuilds.insert(node.to_string(), ContentHash::parse(h)?);
                     }
                 }
             }

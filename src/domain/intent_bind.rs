@@ -70,14 +70,10 @@ impl IntentSignature {
     /// Full cryptographic verification requires ml-dsa crate at runtime.
     pub fn validate_stub(&self, require_pq: bool) -> Result<(), DomainError> {
         if self.ed25519_signature == [0u8; 64] {
-            return Err(DomainError::AuthRejected(
-                "ed25519 signature is all-zero".into(),
-            ));
+            return Err(DomainError::AuthRejected("ed25519 signature is all-zero".into()));
         }
         if self.canonical_hash == [0u8; 48] {
-            return Err(DomainError::AuthRejected(
-                "canonical hash is all-zero".into(),
-            ));
+            return Err(DomainError::AuthRejected("canonical hash is all-zero".into()));
         }
         if require_pq && self.ml_dsa65_signature.is_empty() {
             return Err(DomainError::AuthRejected(
@@ -103,14 +99,10 @@ pub fn assert_outputs_match_intent(
     change_script: Option<&[u8]>,
 ) -> Result<(), DomainError> {
     if outputs.is_empty() {
-        return Err(DomainError::InvalidIntent(
-            "PSBT has no outputs to bind to Intent".into(),
-        ));
+        return Err(DomainError::InvalidIntent("PSBT has no outputs to bind to Intent".into()));
     }
     if amount_sats == 0 {
-        return Err(DomainError::InvalidIntent(
-            "Intent amount_sats must be > 0 for PSBT bind".into(),
-        ));
+        return Err(DomainError::InvalidIntent("Intent amount_sats must be > 0 for PSBT bind".into()));
     }
 
     let mut payment_matched = false;
@@ -122,9 +114,7 @@ pub fn assert_outputs_match_intent(
                 )));
             }
             if payment_matched {
-                return Err(DomainError::InvalidIntent(
-                    "PSBT has multiple outputs to Intent destination".into(),
-                ));
+                return Err(DomainError::InvalidIntent("PSBT has multiple outputs to Intent destination".into()));
             }
             payment_matched = true;
             continue;
@@ -133,14 +123,12 @@ pub fn assert_outputs_match_intent(
             Some(change) if spk.as_slice() == change => continue,
             Some(_) => {
                 return Err(DomainError::InvalidIntent(
-                    "PSBT change output is not mesh Taproot deposit key (non-tr / unbound change escape)"
-                        .into(),
+                    "PSBT change output is not mesh Taproot deposit key (non-tr / unbound change escape)".into(),
                 ));
             }
             None => {
                 return Err(DomainError::InvalidIntent(
-                    "PSBT has non-payment output but no mesh change script configured (unbound spend)"
-                        .into(),
+                    "PSBT has non-payment output but no mesh change script configured (unbound spend)".into(),
                 ));
             }
         }
@@ -174,10 +162,7 @@ mod tests {
         let err = assert_outputs_match_intent(&outs, &pay, 1_000, Some(&change)).unwrap_err();
         assert!(matches!(err, DomainError::InvalidIntent(_)));
         let msg = err.to_string();
-        assert!(
-            msg.contains("non-tr") || msg.contains("change"),
-            "expected change-escape message, got {msg}"
-        );
+        assert!(msg.contains("non-tr") || msg.contains("change"), "expected change-escape message, got {msg}");
     }
 
     #[test]

@@ -1,6 +1,4 @@
-use crate::domain::{
-    DayEpoch, DomainError, Measurement, MinerPayoutCadence, ProfitSplits, QuantumMigrationConfig,
-};
+use crate::domain::{DayEpoch, DomainError, Measurement, MinerPayoutCadence, ProfitSplits, QuantumMigrationConfig};
 
 /// Cryptographic capability requirements for downgrade prevention.
 ///
@@ -151,9 +149,7 @@ pub struct Constitution {
 impl Constitution {
     pub fn v1_lab(n: usize) -> Result<Self, DomainError> {
         if n < 2 {
-            return Err(DomainError::InvalidConstitution(
-                "signing_n must be >= 2".into(),
-            ));
+            return Err(DomainError::InvalidConstitution("signing_n must be >= 2".into()));
         }
         let signing_t = quorum_two_thirds(n);
         let governance_t = (signing_t + 1).min(n);
@@ -188,9 +184,7 @@ impl Constitution {
     /// Open economy constitution: `p%=1%` miners split live (F9).
     pub fn v1_open(n: usize) -> Result<Self, DomainError> {
         if n < 2 {
-            return Err(DomainError::InvalidConstitution(
-                "signing_n must be >= 2".into(),
-            ));
+            return Err(DomainError::InvalidConstitution("signing_n must be >= 2".into()));
         }
         let signing_t = quorum_two_thirds(n);
         let governance_t = (signing_t + 1).min(n);
@@ -228,9 +222,7 @@ impl Constitution {
     }
 
     pub fn measurement_pin_or_hash(&self) -> Measurement {
-        self.measurement_pin
-            .clone()
-            .unwrap_or_else(|| Measurement::from_bytes(self.hash.as_bytes()))
+        self.measurement_pin.clone().unwrap_or_else(|| Measurement::from_bytes(self.hash.as_bytes()))
     }
 
     pub fn with_measurement_pin(mut self, pin: Measurement) -> Self {
@@ -246,10 +238,7 @@ impl Constitution {
     }
 
     pub fn compute_hash(&self) -> String {
-        let prev = self
-            .previous_hash
-            .as_deref()
-            .unwrap_or("");
+        let prev = self.previous_hash.as_deref().unwrap_or("");
         let material = format!(
             "v{}|day{}|tx{}|n{}|t{}|gt{}|p{}|max{}|m{}|ch{}|inf{}|{}{}",
             self.version,
@@ -264,15 +253,9 @@ impl Constitution {
             self.profit_splits.channels_bps,
             self.profit_splits.infra_bps,
             self.crypto_suite_id,
-            if prev.is_empty() {
-                String::new()
-            } else {
-                format!("|prev_{}", prev)
-            }
+            if prev.is_empty() { String::new() } else { format!("|prev_{}", prev) }
         );
-        crate::domain::attestation::Measurement::from_bytes(material.as_bytes())
-            .as_hex()
-            .to_string()
+        crate::domain::attestation::Measurement::from_bytes(material.as_bytes()).as_hex().to_string()
     }
 
     pub fn validate(&self) -> Result<(), DomainError> {
@@ -286,26 +269,18 @@ impl Constitution {
             return Err(DomainError::InvalidConstitution("bad governance_t".into()));
         }
         if self.p_reward_bps > self.p_reward_max_bps {
-            return Err(DomainError::InvalidConstitution(
-                "p_reward exceeds max".into(),
-            ));
+            return Err(DomainError::InvalidConstitution("p_reward exceeds max".into()));
         }
         self.profit_splits.validate()?;
         self.downgrade_policy.validate()?;
         if self.hash != self.compute_hash() {
-            return Err(DomainError::InvalidConstitution(
-                "constitution hash mismatch".into(),
-            ));
+            return Err(DomainError::InvalidConstitution("constitution hash mismatch".into()));
         }
         Ok(())
     }
 
     pub fn to_json(&self) -> String {
-        let pin = self
-            .measurement_pin
-            .as_ref()
-            .map(|m| m.as_hex().to_string())
-            .unwrap_or_default();
+        let pin = self.measurement_pin.as_ref().map(|m| m.as_hex().to_string()).unwrap_or_default();
         format!(
             r#"{{"version":{},"max_withdraw_per_day_sats":{},"max_withdraw_per_tx_sats":{},"signing_n":{},"signing_t":{},"governance_t":{},"p_reward_bps":{},"p_reward_max_bps":{},"profit_splits":{{"miners_bps":{},"channels_bps":{},"infra_bps":{}}},"crypto_suite_id":"{}","hash":"{}","measurement_pin":"{}","downgrade_policy":{{"pq_kem_cat":{},"pq_sig_cat":{},"sym_bits":{},"hybrid_kem":{},"hybrid_sig":{},"req_pq_sig":{},"req_pq_kem":{}}},"format_versions":{{"intent":{},"receipt":{},"share_envelope":{},"dkg_transcript":{},"reshare_transcript":{},"certificate":{},"audit_record":{},"min_proto":{},"current_proto":{}}}"#,
             self.version,

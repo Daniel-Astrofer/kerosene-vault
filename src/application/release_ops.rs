@@ -4,8 +4,8 @@ use std::sync::Arc;
 use crate::application::ports::{BlobStorePort, ClockPort, LedgerPort, ReleaseStorePort};
 use crate::application::AccrueGovernanceWork;
 use crate::domain::{
-    lab_rebuild_binary_hash, AllowlistEntry, ContentHash, DomainError, GovernanceJobKind, NodeId,
-    ReleaseCandidate, ReleasePhase,
+    lab_rebuild_binary_hash, AllowlistEntry, ContentHash, DomainError, GovernanceJobKind, NodeId, ReleaseCandidate,
+    ReleasePhase,
 };
 
 pub struct ProposeRelease {
@@ -22,12 +22,7 @@ impl ProposeRelease {
         ledger: Arc<dyn LedgerPort>,
         clock: Arc<dyn ClockPort>,
     ) -> Self {
-        Self {
-            releases,
-            blobs,
-            ledger,
-            clock,
-        }
+        Self { releases, blobs, ledger, clock }
     }
 
     /// Lab: publish source bytes → Hs, derive Hb via lab rebuild, store both blobs + candidate.
@@ -46,10 +41,7 @@ impl ProposeRelease {
         let constitution = self.ledger.constitution()?;
         let policy = self.releases.policy()?;
         if council_sigs.len() < policy.council_quorum() {
-            return Err(DomainError::QuorumNotMet {
-                have: council_sigs.len(),
-                need: policy.council_quorum(),
-            });
+            return Err(DomainError::QuorumNotMet { have: council_sigs.len(), need: policy.council_quorum() });
         }
         let candidate = ReleaseCandidate::new(
             release_id.to_string(),
@@ -75,10 +67,7 @@ impl ProposeRelease {
         let constitution = self.ledger.constitution()?;
         let policy = self.releases.policy()?;
         if council_sigs.len() < policy.council_quorum() {
-            return Err(DomainError::QuorumNotMet {
-                have: council_sigs.len(),
-                need: policy.council_quorum(),
-            });
+            return Err(DomainError::QuorumNotMet { have: council_sigs.len(), need: policy.council_quorum() });
         }
         let candidate = ReleaseCandidate::new(
             release_id.to_string(),
@@ -103,11 +92,7 @@ impl RebuildRelease {
         Self { releases, blobs }
     }
 
-    pub fn execute(
-        &self,
-        release_id: &str,
-        vault_id: &NodeId,
-    ) -> Result<ReleaseCandidate, DomainError> {
+    pub fn execute(&self, release_id: &str, vault_id: &NodeId) -> Result<ReleaseCandidate, DomainError> {
         let mut candidate = self.releases.get_candidate(release_id)?;
         let source = self.blobs.get(&candidate.hs)?;
         let recomputed_hs = ContentHash::from_bytes(&source);
@@ -136,13 +121,7 @@ impl CosignRelease {
         clock: Arc<dyn ClockPort>,
         local_node: NodeId,
     ) -> Self {
-        Self {
-            releases,
-            ledger,
-            clock,
-            local_node,
-            governance: None,
-        }
+        Self { releases, ledger, clock, local_node, governance: None }
     }
 
     pub fn with_governance(mut self, governance: Arc<AccrueGovernanceWork>) -> Self {
@@ -158,11 +137,7 @@ impl CosignRelease {
         candidate.add_cosign(&self.local_node)?;
         self.releases.save_candidate(candidate.clone())?;
         if let Some(gov) = &self.governance {
-            gov.execute(
-                GovernanceJobKind::ReleaseCosign,
-                &[self.local_node.clone()],
-                release_id,
-            )?;
+            gov.execute(GovernanceJobKind::ReleaseCosign, &[self.local_node.clone()], release_id)?;
         }
         Ok(candidate)
     }
@@ -176,17 +151,8 @@ pub struct ActivateRelease {
 }
 
 impl ActivateRelease {
-    pub fn new(
-        releases: Arc<dyn ReleaseStorePort>,
-        ledger: Arc<dyn LedgerPort>,
-        clock: Arc<dyn ClockPort>,
-    ) -> Self {
-        Self {
-            releases,
-            ledger,
-            clock,
-            governance: None,
-        }
+    pub fn new(releases: Arc<dyn ReleaseStorePort>, ledger: Arc<dyn LedgerPort>, clock: Arc<dyn ClockPort>) -> Self {
+        Self { releases, ledger, clock, governance: None }
     }
 
     pub fn with_governance(mut self, governance: Arc<AccrueGovernanceWork>) -> Self {
@@ -213,19 +179,11 @@ impl ActivateRelease {
             constitution_hash: constitution.hash,
         };
         candidate.phase = ReleasePhase::Allowlisted;
-        let cosigners: Vec<NodeId> = candidate
-            .cosigns
-            .iter()
-            .filter_map(|id| NodeId::new(id.clone()).ok())
-            .collect();
+        let cosigners: Vec<NodeId> = candidate.cosigns.iter().filter_map(|id| NodeId::new(id.clone()).ok()).collect();
         self.releases.save_candidate(candidate)?;
         self.releases.put_allowlist(entry.clone())?;
         if let Some(gov) = &self.governance {
-            gov.execute(
-                GovernanceJobKind::ReleaseActivate,
-                &cosigners,
-                release_id,
-            )?;
+            gov.execute(GovernanceJobKind::ReleaseActivate, &cosigners, release_id)?;
         }
         Ok(entry)
     }

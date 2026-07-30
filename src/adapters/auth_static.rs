@@ -22,23 +22,11 @@ impl StaticTokenAuthAdapter {
     }
 
     pub fn with_treasury_signing(token: impl Into<String>, treasury_signing_allowed: bool) -> Self {
-        Self {
-            expected: token.into(),
-            treasury_signing_allowed,
-            reshare_trigger_allowed: treasury_signing_allowed,
-        }
+        Self { expected: token.into(), treasury_signing_allowed, reshare_trigger_allowed: treasury_signing_allowed }
     }
 
-    pub fn with_ops(
-        token: impl Into<String>,
-        treasury_signing_allowed: bool,
-        reshare_trigger_allowed: bool,
-    ) -> Self {
-        Self {
-            expected: token.into(),
-            treasury_signing_allowed,
-            reshare_trigger_allowed,
-        }
+    pub fn with_ops(token: impl Into<String>, treasury_signing_allowed: bool, reshare_trigger_allowed: bool) -> Self {
+        Self { expected: token.into(), treasury_signing_allowed, reshare_trigger_allowed }
     }
 }
 
@@ -75,8 +63,7 @@ impl VaultAuthPort for StaticTokenAuthAdapter {
     fn authorize_treasury_sign(&self) -> Result<(), DomainError> {
         if !self.treasury_signing_allowed {
             return Err(DomainError::AuthRejected(
-                "static lab token cannot authorize treasury signing outside lab; use mTLS"
-                    .into(),
+                "static lab token cannot authorize treasury signing outside lab; use mTLS".into(),
             ));
         }
         Ok(())
@@ -85,8 +72,7 @@ impl VaultAuthPort for StaticTokenAuthAdapter {
     fn authorize_reshare_trigger(&self) -> Result<(), DomainError> {
         if !self.reshare_trigger_allowed {
             return Err(DomainError::AuthRejected(
-                "manual reshare trigger refused; lab ceremony or VAULT_ALLOW_MANUAL_RESHARE=1"
-                    .into(),
+                "manual reshare trigger refused; lab ceremony or VAULT_ALLOW_MANUAL_RESHARE=1".into(),
             ));
         }
         Ok(())

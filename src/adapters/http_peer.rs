@@ -88,17 +88,11 @@ impl PeerHttpSettings {
         }
     }
 
-    pub fn apply_builder(
-        &self,
-        mut builder: reqwest::ClientBuilder,
-    ) -> Result<reqwest::ClientBuilder, DomainError> {
-        builder = builder
-            .timeout(self.timeout)
-            .connect_timeout(self.connect_timeout);
+    pub fn apply_builder(&self, mut builder: reqwest::ClientBuilder) -> Result<reqwest::ClientBuilder, DomainError> {
+        builder = builder.timeout(self.timeout).connect_timeout(self.connect_timeout);
         if let Some(proxy_url) = self.socks_proxy.as_deref() {
-            let proxy = reqwest::Proxy::all(proxy_url).map_err(|e| {
-                DomainError::AttestationRejected(format!("VAULT_SOCKS_PROXY invalid: {e}"))
-            })?;
+            let proxy = reqwest::Proxy::all(proxy_url)
+                .map_err(|e| DomainError::AttestationRejected(format!("VAULT_SOCKS_PROXY invalid: {e}")))?;
             builder = builder.proxy(proxy);
         }
         Ok(builder)
@@ -108,13 +102,10 @@ impl PeerHttpSettings {
         &self,
         mut builder: reqwest::blocking::ClientBuilder,
     ) -> Result<reqwest::blocking::ClientBuilder, DomainError> {
-        builder = builder
-            .timeout(self.timeout)
-            .connect_timeout(self.connect_timeout);
+        builder = builder.timeout(self.timeout).connect_timeout(self.connect_timeout);
         if let Some(proxy_url) = self.socks_proxy.as_deref() {
-            let proxy = reqwest::Proxy::all(proxy_url).map_err(|e| {
-                DomainError::AttestationRejected(format!("VAULT_SOCKS_PROXY invalid: {e}"))
-            })?;
+            let proxy = reqwest::Proxy::all(proxy_url)
+                .map_err(|e| DomainError::AttestationRejected(format!("VAULT_SOCKS_PROXY invalid: {e}")))?;
             builder = builder.proxy(proxy);
         }
         Ok(builder)
@@ -135,11 +126,7 @@ impl PeerHttpSettings {
     /// Sleep for exponential backoff with jitter before retry `attempt` (0-based after first fail).
     pub fn backoff_delay(&self, attempt: u32) -> Duration {
         let exp = self.retry_base_ms.saturating_mul(1u64 << attempt.min(6));
-        let jitter = if self.retry_jitter_ms == 0 {
-            0
-        } else {
-            rand::thread_rng().gen_range(0..=self.retry_jitter_ms)
-        };
+        let jitter = if self.retry_jitter_ms == 0 { 0 } else { rand::thread_rng().gen_range(0..=self.retry_jitter_ms) };
         Duration::from_millis(exp.saturating_add(jitter))
     }
 
@@ -174,12 +161,7 @@ pub async fn post_json_with_retry(
     let attempts = settings.max_retries.max(1);
     let mut last_err = String::new();
     for attempt in 0..attempts {
-        let req = apply_auth(
-            client
-                .post(url)
-                .header("Content-Type", "application/json")
-                .json(body),
-        );
+        let req = apply_auth(client.post(url).header("Content-Type", "application/json").json(body));
         match req.send().await {
             Ok(res) if res.status().is_success() => return Ok(res),
             Ok(res) => {
@@ -187,25 +169,19 @@ pub async fn post_json_with_retry(
                 let body_txt = res.text().await.unwrap_or_default();
                 last_err = format!("HTTP {status}: {body_txt}");
                 if !PeerHttpSettings::should_retry_status(status) || attempt + 1 >= attempts {
-                    return Err(DomainError::ThresholdError(format!(
-                        "peer POST {url}: {last_err}"
-                    )));
+                    return Err(DomainError::ThresholdError(format!("peer POST {url}: {last_err}")));
                 }
             }
             Err(e) => {
                 last_err = e.to_string();
                 if attempt + 1 >= attempts {
-                    return Err(DomainError::ThresholdError(format!(
-                        "peer POST {url}: {last_err}"
-                    )));
+                    return Err(DomainError::ThresholdError(format!("peer POST {url}: {last_err}")));
                 }
             }
         }
         tokio::time::sleep(settings.backoff_delay(attempt)).await;
     }
-    Err(DomainError::ThresholdError(format!(
-        "peer POST {url}: {last_err}"
-    )))
+    Err(DomainError::ThresholdError(format!("peer POST {url}: {last_err}")))
 }
 
 #[cfg(test)]
@@ -214,14 +190,8 @@ mod tests {
 
     #[test]
     fn normalize_socks_adds_scheme() {
-        assert_eq!(
-            PeerHttpSettings::normalize_socks_proxy("127.0.0.1:9050"),
-            "socks5h://127.0.0.1:9050"
-        );
-        assert_eq!(
-            PeerHttpSettings::normalize_socks_proxy("socks5h://tor:9050"),
-            "socks5h://tor:9050"
-        );
+        assert_eq!(PeerHttpSettings::normalize_socks_proxy("127.0.0.1:9050"), "socks5h://127.0.0.1:9050");
+        assert_eq!(PeerHttpSettings::normalize_socks_proxy("socks5h://tor:9050"), "socks5h://tor:9050");
     }
 
     #[test]
@@ -252,11 +222,7 @@ mod tests {
 
     #[test]
     fn retry_status_policy() {
-        assert!(PeerHttpSettings::should_retry_status(
-            reqwest::StatusCode::INTERNAL_SERVER_ERROR
-        ));
-        assert!(!PeerHttpSettings::should_retry_status(
-            reqwest::StatusCode::BAD_REQUEST
-        ));
+        assert!(PeerHttpSettings::should_retry_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR));
+        assert!(!PeerHttpSettings::should_retry_status(reqwest::StatusCode::BAD_REQUEST));
     }
 }

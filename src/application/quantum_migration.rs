@@ -7,8 +7,7 @@
 //! adapters and UTXO index are wired.
 
 use crate::domain::{
-    DayEpoch, DomainError, DrillReport, QuantumMigrationConfig, QuantumState,
-    SweepReport, UtxoRecord,
+    DayEpoch, DomainError, DrillReport, QuantumMigrationConfig, QuantumState, SweepReport, UtxoRecord,
 };
 
 /// Port defining quantum migration operations.
@@ -30,8 +29,7 @@ pub trait QuantumMigrationPort: Send + Sync {
 
     /// Transition to a new quantum state.
     /// Validates monotonic invariant and quorum requirements.
-    fn transition_to(&self, new_state: QuantumState, reason: &str)
-        -> Result<(), DomainError>;
+    fn transition_to(&self, new_state: QuantumState, reason: &str) -> Result<(), DomainError>;
 
     /// Execute a migration drill (testnet only).
     /// Builds unsigned PSBTs, co-signs, broadcasts, and verifies.
@@ -98,18 +96,13 @@ impl QuantumMigrationPort for StubQuantumMigrationController {
         Ok(vec![])
     }
 
-    fn transition_to(
-        &self,
-        new_state: QuantumState,
-        reason: &str,
-    ) -> Result<(), DomainError> {
+    fn transition_to(&self, new_state: QuantumState, reason: &str) -> Result<(), DomainError> {
         // Stub: validates transition conditions but does not persist.
         // Real impl would: (1) validate monotonic, (2) verify quorum via
         // mesh governance, (3) persist to ledger, (4) emit KFE notification.
         let epoch = DayEpoch::parse("2025-01-01")?; // placeholder; real impl uses ClockPort
 
-        self.config
-            .validate_transition(new_state, 5, &epoch)?;
+        self.config.validate_transition(new_state, 5, &epoch)?;
 
         let _ = reason;
         // State not mutated — stub is read-only. Real impl would update and persist.
@@ -124,9 +117,7 @@ impl QuantumMigrationPort for StubQuantumMigrationController {
         // 4. Mesh co-signs via FROST adapter.
         // 5. Broadcast sweep transaction.
         // 6. Verify confirmations at destination.
-        Ok(DrillReport::failed(vec![
-            "drill not implemented — stub returns no-op".into(),
-        ]))
+        Ok(DrillReport::failed(vec!["drill not implemented — stub returns no-op".into()]))
     }
 
     fn sweep_all(&self) -> Result<SweepReport, DomainError> {
@@ -155,10 +146,7 @@ impl QuantumMigrationPort for StubQuantumMigrationController {
 /// - Emergency constitution hash is set
 /// - Migration destination descriptor is set
 /// - UTXO inventory is non-empty (if there are funds to sweep)
-pub fn validate_emergency_ready(
-    config: &QuantumMigrationConfig,
-    utxo_count: usize,
-) -> Result<(), DomainError> {
+pub fn validate_emergency_ready(config: &QuantumMigrationConfig, utxo_count: usize) -> Result<(), DomainError> {
     if config.current_state < QuantumState::Q4DepositsDisabled {
         return Err(DomainError::InvalidConstitution(format!(
             "emergency sweep requires state >= Q4, current: {}",
@@ -166,19 +154,13 @@ pub fn validate_emergency_ready(
         )));
     }
     if config.emergency_constitution_hash.is_none() {
-        return Err(DomainError::InvalidConstitution(
-            "emergency constitution hash not set".into(),
-        ));
+        return Err(DomainError::InvalidConstitution("emergency constitution hash not set".into()));
     }
     if config.migration_destination_descriptor.is_none() {
-        return Err(DomainError::InvalidConstitution(
-            "migration destination descriptor not set".into(),
-        ));
+        return Err(DomainError::InvalidConstitution("migration destination descriptor not set".into()));
     }
     if utxo_count == 0 {
-        return Err(DomainError::InvalidConstitution(
-            "no UTXOs to sweep — inventory empty".into(),
-        ));
+        return Err(DomainError::InvalidConstitution("no UTXOs to sweep — inventory empty".into()));
     }
     Ok(())
 }
@@ -196,8 +178,7 @@ mod tests {
         let mut cfg = QuantumMigrationConfig::default_at(test_epoch());
         cfg.current_state = QuantumState::Q4DepositsDisabled;
         cfg.emergency_constitution_hash = Some("deadbeef".into());
-        cfg.migration_destination_descriptor =
-            Some("wsh(sortedmulti(3,key1,key2,key3,key4,key5))".into());
+        cfg.migration_destination_descriptor = Some("wsh(sortedmulti(3,key1,key2,key3,key4,key5))".into());
         cfg
     }
 
@@ -245,10 +226,7 @@ mod tests {
 
     #[test]
     fn validate_emergency_ready_requires_q4() {
-        let result = validate_emergency_ready(
-            &QuantumMigrationConfig::default_at(test_epoch()),
-            10,
-        );
+        let result = validate_emergency_ready(&QuantumMigrationConfig::default_at(test_epoch()), 10);
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.to_string().contains(">= Q4"));

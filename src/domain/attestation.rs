@@ -59,9 +59,7 @@ impl Measurement {
     pub fn from_hex(hex_str: impl Into<String>) -> Result<Self, DomainError> {
         let s = hex_str.into();
         if s.len() != 64 || !s.chars().all(|c| c.is_ascii_hexdigit()) {
-            return Err(DomainError::AttestationRejected(
-                "measurement must be 32-byte SHA-256 hex (64 chars)".into(),
-            ));
+            return Err(DomainError::AttestationRejected("measurement must be 32-byte SHA-256 hex (64 chars)".into()));
         }
         Ok(Self(s.to_ascii_lowercase()))
     }
@@ -94,9 +92,7 @@ pub fn admits_attestation_measurement(
     if allowlisted_hbs.is_empty() {
         return true;
     }
-    allowlisted_hbs
-        .iter()
-        .any(|hb| hb.as_str() == measurement.as_hex())
+    allowlisted_hbs.iter().any(|hb| hb.as_str() == measurement.as_hex())
 }
 
 #[cfg(test)]
@@ -108,10 +104,7 @@ mod tests {
         let m = Measurement::from_bytes(b"kerosene");
         assert_eq!(m.as_hex().len(), 64);
         assert!(m.as_hex().chars().all(|c| c.is_ascii_hexdigit()));
-        assert_eq!(
-            m.as_hex(),
-            "3e5e2cac8b6b93348880dc878d785e53e1b7d54bcaeaa4fb2ff231a90c76c043"
-        );
+        assert_eq!(m.as_hex(), "3e5e2cac8b6b93348880dc878d785e53e1b7d54bcaeaa4fb2ff231a90c76c043");
         assert_eq!(m, Measurement::from_bytes(b"kerosene"));
         assert_ne!(m, Measurement::from_bytes(b"other"));
     }
@@ -125,11 +118,7 @@ mod tests {
     fn admits_pin_only_when_allowlist_empty() {
         let pin = Measurement::from_bytes(b"pin");
         assert!(admits_attestation_measurement(&pin, &pin, &[]));
-        assert!(!admits_attestation_measurement(
-            &Measurement::from_bytes(b"other"),
-            &pin,
-            &[]
-        ));
+        assert!(!admits_attestation_measurement(&Measurement::from_bytes(b"other"), &pin, &[]));
     }
 
     #[test]
@@ -139,10 +128,6 @@ mod tests {
         let pin = Measurement::from_hex(hb.as_str()).unwrap();
         assert!(admits_attestation_measurement(&pin, &pin, &[hb.clone()]));
         let wrong_pin = Measurement::from_bytes(b"not-allowlisted");
-        assert!(!admits_attestation_measurement(
-            &wrong_pin,
-            &wrong_pin,
-            &[hb]
-        ));
+        assert!(!admits_attestation_measurement(&wrong_pin, &wrong_pin, &[hb]));
     }
 }

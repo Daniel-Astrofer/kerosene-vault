@@ -2,34 +2,31 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use crate::adapters::{
-    build_tpm_seal_port, resolve_aead_passphrase, AeadDiskShareStore, DistributedDkgAdapter,
-    DistributedWireDkgPort, FrostShareSlot, FrostShareState, FrostSignOrchestrator,
-    FrostTrBitcoinOrchestrator, FrostTrShareSlot, HttpAntiNonceTransport, HttpDayVoteTransport,
-    HttpIntentConsumeTransport, HttpTrCosignTransport, HybridIdentity, InMemoryLedger,
-    InMemoryPeerDirectory, MutualTlsAuthAdapter, NoopDayVoteTransport, NoopTrCosignTransport,
-    PersistedBucketLedger, PersistedEconomy, PersistedReleaseMesh, PolicyReshareHook,
-    QuorumAntiNonce, QuorumBucketLedger, QuorumDailyRotation, SharedAntiNonce,
-    SimAttestationAdapter, StaticTokenAuthAdapter, SystemClock, TeeAttestationAdapter,
-    TeeSealAdapter, ThresholdVaultState, TrCosignPeerState, TrCosignTransport, WireDkgHub,
-    TrWireDkgHub, WireDkgPeerAuth,
+    build_tpm_seal_port, resolve_aead_passphrase, AeadDiskShareStore, DistributedDkgAdapter, DistributedWireDkgPort,
+    FrostShareSlot, FrostShareState, FrostSignOrchestrator, FrostTrBitcoinOrchestrator, FrostTrShareSlot,
+    HttpAntiNonceTransport, HttpDayVoteTransport, HttpIntentConsumeTransport, HttpTrCosignTransport, HybridIdentity,
+    InMemoryLedger, InMemoryPeerDirectory, MutualTlsAuthAdapter, NoopDayVoteTransport, NoopTrCosignTransport,
+    PersistedBucketLedger, PersistedEconomy, PersistedReleaseMesh, PolicyReshareHook, QuorumAntiNonce,
+    QuorumBucketLedger, QuorumDailyRotation, SharedAntiNonce, SimAttestationAdapter, StaticTokenAuthAdapter,
+    SystemClock, TeeAttestationAdapter, TeeSealAdapter, ThresholdVaultState, TrCosignPeerState, TrCosignTransport,
+    TrWireDkgHub, WireDkgHub, WireDkgPeerAuth,
 };
 #[cfg(feature = "dealer_lab")]
 use crate::adapters::{
-    dealer_fatal_banner, generate_tr_dealer, persist_tr_channels_shares, persist_tr_shares,
-    DealerLabAdapter,
+    dealer_fatal_banner, generate_tr_dealer, persist_tr_channels_shares, persist_tr_shares, DealerLabAdapter,
 };
 use crate::adapters::{load_tr_channels_shares, load_tr_shares};
 use crate::application::{
-    AccrueGovernanceWork, AccrueMinerRewards, AllocateProfit, AntiNoncePort, CosignRelease,
-    DailyRotationPort, DkgPort, GateIntent, GetAllowlist, GetEconomyStatus, GetHealth,
-    GetLedgerSnapshot, GetMetrics, PingPeer, ProposeEpochAdvance, ProposeMinerPayouts, ProposeRelease,
-    OnlineStatusPort, ProbedOnlineCount, RebuildRelease, ReshareHookPort, ShareStorePort, SignMessage, StaticOnlineCount, UpsertMiner,
-    VaultAuthPort, VoteEpochAdvance, ActivateRelease,
+    AccrueGovernanceWork, AccrueMinerRewards, ActivateRelease, AllocateProfit, AntiNoncePort, CosignRelease,
+    DailyRotationPort, DkgPort, GateIntent, GetAllowlist, GetEconomyStatus, GetHealth, GetLedgerSnapshot, GetMetrics,
+    OnlineStatusPort, PingPeer, ProbedOnlineCount, ProposeEpochAdvance, ProposeMinerPayouts, ProposeRelease,
+    RebuildRelease, ReshareHookPort, ShareStorePort, SignMessage, StaticOnlineCount, UpsertMiner, VaultAuthPort,
+    VoteEpochAdvance,
 };
 use crate::bootstrap::{AuthMode, CeremonyMode, DkgMode, ShareStoreMode, VaultConfig};
 use crate::domain::{
-    quorum_two_thirds, run_dkg, Constitution, DomainError, EconomyState, Measurement, NodeId,
-    PeerEndpoint, PeerInfo, ReleasePolicy,
+    quorum_two_thirds, run_dkg, Constitution, DomainError, EconomyState, Measurement, NodeId, PeerEndpoint, PeerInfo,
+    ReleasePolicy,
 };
 
 pub struct VaultRuntime {
@@ -90,23 +87,15 @@ impl VaultRuntime {
         config.validate_attestation_policy()?;
         config.validate_hygiene()?;
 
-        if matches!(
-            config.ceremony_mode,
-            CeremonyMode::Staging | CeremonyMode::Production
-        ) && config.dealer_requested
-        {
-            return Err(DomainError::DealerForbidden(
-                "dealer DKG refused in staging/production".into(),
-            ));
+        if matches!(config.ceremony_mode, CeremonyMode::Staging | CeremonyMode::Production) && config.dealer_requested {
+            return Err(DomainError::DealerForbidden("dealer DKG refused in staging/production".into()));
         }
 
         let peers = Arc::new(InMemoryPeerDirectory::new());
         for (id, addr) in &config.seed_peers {
             peers.upsert_sync(PeerInfo {
                 id: NodeId::new(id.clone())?,
-                endpoint: PeerEndpoint {
-                    address: addr.clone(),
-                },
+                endpoint: PeerEndpoint { address: addr.clone() },
             })?;
         }
 
@@ -121,11 +110,7 @@ impl VaultRuntime {
             )));
         }
 
-        let mut constitution = if config.open_economy {
-            Constitution::v1_open(n)?
-        } else {
-            Constitution::v1_lab(n)?
-        };
+        let mut constitution = if config.open_economy { Constitution::v1_open(n)? } else { Constitution::v1_lab(n)? };
         if let Some(hex) = config.measurement_pin_hex.as_deref() {
             constitution = constitution.with_measurement_pin(Measurement::from_hex(hex)?);
         } else {
@@ -142,27 +127,12 @@ impl VaultRuntime {
         // peers) stays t=1. Cross-node votes via authenticated outbound fan-out.
         let peer_n = config.seed_peers.len();
         let n_mesh = active_set.len().max(1);
-        let rotation_quorum = if peer_n == 0 {
-            1usize
-        } else {
-            quorum_two_thirds(n_mesh).max(t)
-        };
+        let rotation_quorum = if peer_n == 0 { 1usize } else { quorum_two_thirds(n_mesh).max(t) };
         let dkg_set = active_set.clone();
-        let ledger = Arc::new(InMemoryLedger::genesis(
-            constitution,
-            active_set.clone(),
-            config.node_id.clone(),
-        )?);
+        let ledger = Arc::new(InMemoryLedger::genesis(constitution, active_set.clone(), config.node_id.clone())?);
 
-        let entropy = format!(
-            "genesis|{}|{}",
-            config.lab_root,
-            dkg_set
-                .iter()
-                .map(|n| n.as_str())
-                .collect::<Vec<_>>()
-                .join(",")
-        );
+        let entropy =
+            format!("genesis|{}|{}", config.lab_root, dkg_set.iter().map(|n| n.as_str()).collect::<Vec<_>>().join(","));
         // Lab domain DKG is deterministic from lab_root + roster (#17) — not FROST Bitcoin.
         if matches!(config.ceremony_mode, CeremonyMode::Lab) {
             eprintln!(
@@ -175,33 +145,29 @@ impl VaultRuntime {
             .find(|s| s.node_id == config.node_id)
             .cloned()
             .ok_or_else(|| DomainError::ThresholdError("local share missing after DKG".into()))?;
-        let mut online: Arc<dyn OnlineStatusPort> = Arc::new(StaticOnlineCount {
-            count: config.online_count.unwrap_or(n),
-        });
+        let mut online: Arc<dyn OnlineStatusPort> =
+            Arc::new(StaticOnlineCount { count: config.online_count.unwrap_or(n) });
         let threshold = Arc::new(ThresholdVaultState::new(group, local_share, shares));
         let mut sign_message = SignMessage::new(threshold.clone(), online.clone());
 
-        let attestation: Arc<dyn crate::application::AttestationPort> =
-            match config.attestation_mode {
-                crate::domain::AttestationMode::Sim => {
-                    Arc::new(SimAttestationAdapter::new(config.lab_root.as_bytes()))
-                }
-                crate::domain::AttestationMode::Software => {
-                    Arc::new(SimAttestationAdapter::software(config.lab_root.as_bytes()))
-                }
-                crate::domain::AttestationMode::Sev | crate::domain::AttestationMode::Sgx => {
-                    let refuse_stub = matches!(config.ceremony_mode, CeremonyMode::Production)
-                        || cfg!(feature = "production");
-                    Arc::new(TeeAttestationAdapter::with_policy(
-                        config.attestation_mode,
-                        config.attestation_staging_stub,
-                        refuse_stub,
-                        config.lab_root.as_bytes(),
-                        measurement.clone(),
-                        Vec::new(),
-                    )?)
-                }
-            };
+        let attestation: Arc<dyn crate::application::AttestationPort> = match config.attestation_mode {
+            crate::domain::AttestationMode::Sim => Arc::new(SimAttestationAdapter::new(config.lab_root.as_bytes())),
+            crate::domain::AttestationMode::Software => {
+                Arc::new(SimAttestationAdapter::software(config.lab_root.as_bytes()))
+            }
+            crate::domain::AttestationMode::Sev | crate::domain::AttestationMode::Sgx => {
+                let refuse_stub =
+                    matches!(config.ceremony_mode, CeremonyMode::Production) || cfg!(feature = "production");
+                Arc::new(TeeAttestationAdapter::with_policy(
+                    config.attestation_mode,
+                    config.attestation_staging_stub,
+                    refuse_stub,
+                    config.lab_root.as_bytes(),
+                    measurement.clone(),
+                    Vec::new(),
+                )?)
+            }
+        };
 
         let clock: Arc<dyn crate::application::ClockPort> = Arc::new(SystemClock);
         let peers_port: Arc<dyn crate::application::PeerDirectoryPort> = peers.clone();
@@ -212,16 +178,11 @@ impl VaultRuntime {
         release_policy.council_n = config.lab_council_n.max(2);
         release_policy.min_rebuilds = config.lab_min_rebuilds.max(1);
         let data_root_early = config.effective_data_dir();
-        let release_mesh = Arc::new(PersistedReleaseMesh::open(
-            data_root_early.join("release"),
-            release_policy,
-        )?);
+        let release_mesh = Arc::new(PersistedReleaseMesh::open(data_root_early.join("release"), release_policy)?);
         let release_port: Arc<dyn crate::application::ReleaseStorePort> = release_mesh.clone();
         let blob_port: Arc<dyn crate::application::BlobStorePort> = release_mesh.clone();
 
-        let economy = Arc::new(PersistedEconomy::open(
-            data_root_early.join("economy.json"),
-        )?);
+        let economy = Arc::new(PersistedEconomy::open(data_root_early.join("economy.json"))?);
         let economy_port: Arc<dyn crate::application::EconomyPort> = economy.clone();
         let governance_reward = config.governance_reward_config();
         let accrue_governance = Arc::new(AccrueGovernanceWork::new(
@@ -239,22 +200,15 @@ impl VaultRuntime {
                 let token = config
                     .effective_vault_token()
                     .ok_or_else(|| {
-                        DomainError::AuthRejected(
-                            "VAULT_API_TOKEN (or VAULT_TOKEN) required for static auth".into(),
-                        )
+                        DomainError::AuthRejected("VAULT_API_TOKEN (or VAULT_TOKEN) required for static auth".into())
                     })?
                     .to_string();
                 let lab = matches!(config.ceremony_mode, CeremonyMode::Lab);
-                Arc::new(StaticTokenAuthAdapter::with_ops(
-                    token,
-                    lab,
-                    lab || config.allow_manual_reshare,
-                ))
+                Arc::new(StaticTokenAuthAdapter::with_ops(token, lab, lab || config.allow_manual_reshare))
             }
             AuthMode::MutualTls => {
                 let mut mtls = MutualTlsAuthAdapter::with_reshare_trigger(
-                    matches!(config.ceremony_mode, CeremonyMode::Lab)
-                        || config.allow_manual_reshare,
+                    matches!(config.ceremony_mode, CeremonyMode::Lab) || config.allow_manual_reshare,
                 );
                 // Bind hybrid identity to mTLS adapter if identity exists.
                 if let Some(ref id) = hybrid_identity {
@@ -265,22 +219,15 @@ impl VaultRuntime {
         };
 
         let data_root = config.effective_data_dir();
-        let local_buckets = Arc::new(PersistedBucketLedger::open(
-            data_root.join("consumed_intents.log"),
-            max_tx,
-            max_day,
-        )?);
+        let local_buckets =
+            Arc::new(PersistedBucketLedger::open(data_root.join("consumed_intents.log"), max_tx, max_day)?);
         if !config.users_destination_allowlist.is_empty() {
-            local_buckets.admit_destinations(
-                crate::domain::BucketKind::Users,
-                config.users_destination_allowlist.clone(),
-            )?;
+            local_buckets
+                .admit_destinations(crate::domain::BucketKind::Users, config.users_destination_allowlist.clone())?;
         }
         if !config.miners_destination_allowlist.is_empty() {
-            local_buckets.admit_destinations(
-                crate::domain::BucketKind::Miners,
-                config.miners_destination_allowlist.clone(),
-            )?;
+            local_buckets
+                .admit_destinations(crate::domain::BucketKind::Miners, config.miners_destination_allowlist.clone())?;
         }
         let share_store: Arc<dyn ShareStorePort> = match config.share_store_mode {
             ShareStoreMode::AeadDisk => {
@@ -288,12 +235,8 @@ impl VaultRuntime {
                     let refuse_stub = config.hardened
                         || !matches!(config.ceremony_mode, CeremonyMode::Lab)
                         || cfg!(feature = "production");
-                    let tpm = build_tpm_seal_port(
-                        true,
-                        config.share_tpm_stub,
-                        refuse_stub,
-                    )?
-                    .expect("TPM seal port when VAULT_SHARE_TPM_SEAL=1");
+                    let tpm = build_tpm_seal_port(true, config.share_tpm_stub, refuse_stub)?
+                        .expect("TPM seal port when VAULT_SHARE_TPM_SEAL=1");
                     let resolved = resolve_aead_passphrase(
                         &data_root,
                         config.effective_share_passphrase().as_deref(),
@@ -306,10 +249,7 @@ impl VaultRuntime {
                             resolved.tpm_backend
                         );
                     } else {
-                        eprintln!(
-                            "share_tpm=sealed backend={} (disk-at-rest only; TPM ≠ SEV)",
-                            resolved.tpm_backend
-                        );
+                        eprintln!("share_tpm=sealed backend={} (disk-at-rest only; TPM ≠ SEV)", resolved.tpm_backend);
                     }
                     Arc::new(AeadDiskShareStore::with_tpm_seal(
                         data_root.join("shares"),
@@ -319,8 +259,7 @@ impl VaultRuntime {
                 } else {
                     let pass = config.effective_share_passphrase().ok_or_else(|| {
                         DomainError::ShareStoreForbidden(
-                            "VAULT_DATA_PASSPHRASE required outside lab (no default passphrase)"
-                                .into(),
+                            "VAULT_DATA_PASSPHRASE required outside lab (no default passphrase)".into(),
                         )
                     })?;
                     Arc::new(AeadDiskShareStore::new(data_root.join("shares"), pass))
@@ -334,8 +273,7 @@ impl VaultRuntime {
                     {
                         if matches!(
                             config.attestation_mode,
-                            crate::domain::AttestationMode::Sev
-                                | crate::domain::AttestationMode::Sgx
+                            crate::domain::AttestationMode::Sev | crate::domain::AttestationMode::Sgx
                         ) {
                             Arc::new(TeeSealAdapter::hw(
                                 data_root.join("tee-shares"),
@@ -355,30 +293,22 @@ impl VaultRuntime {
                 }
                 #[cfg(not(feature = "production"))]
                 {
-                    if config.attestation_staging_stub
-                        && !matches!(config.ceremony_mode, CeremonyMode::Production)
-                    {
+                    if config.attestation_staging_stub && !matches!(config.ceremony_mode, CeremonyMode::Production) {
                         let pass = config.effective_share_passphrase().ok_or_else(|| {
                             DomainError::ShareStoreForbidden(
-                                "VAULT_DATA_PASSPHRASE required for tee staging stub outside lab"
-                                    .into(),
+                                "VAULT_DATA_PASSPHRASE required for tee staging stub outside lab".into(),
                             )
                         })?;
                         Arc::new(
-                            TeeSealAdapter::staging_stub(
-                                data_root.join("tee-shares"),
-                                pass,
-                                measurement.clone(),
-                            )
-                            .with_attestation(attestation.clone()),
+                            TeeSealAdapter::staging_stub(data_root.join("tee-shares"), pass, measurement.clone())
+                                .with_attestation(attestation.clone()),
                         )
                     } else {
                         #[cfg(feature = "tee_hw")]
                         {
                             if matches!(
                                 config.attestation_mode,
-                                crate::domain::AttestationMode::Sev
-                                    | crate::domain::AttestationMode::Sgx
+                                crate::domain::AttestationMode::Sev | crate::domain::AttestationMode::Sgx
                             ) {
                                 Arc::new(TeeSealAdapter::hw(
                                     data_root.join("tee-shares"),
@@ -400,10 +330,7 @@ impl VaultRuntime {
             }
         };
 
-        let wire_token = config
-            .effective_vault_token()
-            .unwrap_or("kerosene-vault-lab-only")
-            .to_string();
+        let wire_token = config.effective_vault_token().unwrap_or("kerosene-vault-lab-only").to_string();
         let mut peer_bases: Vec<(String, String)> = Vec::new();
         let mtls = matches!(config.auth_mode, AuthMode::MutualTls);
         for (id, addr) in &config.seed_peers {
@@ -427,13 +354,8 @@ impl VaultRuntime {
         };
         let peer_count = peer_bases.len();
         // High #7: probe peer /v1/health; unreachable peers do not count as online.
-        if !(config.online_static
-            || (matches!(config.ceremony_mode, CeremonyMode::Lab) && peer_count == 0))
-        {
-            let peer_health: Vec<String> = peer_bases
-                .iter()
-                .map(|(_, b)| format!("{b}/v1/health"))
-                .collect();
+        if !(config.online_static || (matches!(config.ceremony_mode, CeremonyMode::Lab) && peer_count == 0)) {
+            let peer_health: Vec<String> = peer_bases.iter().map(|(_, b)| format!("{b}/v1/health")).collect();
             online = Arc::new(ProbedOnlineCount::new(
                 peers.clone(),
                 peer_health,
@@ -443,18 +365,11 @@ impl VaultRuntime {
             ));
             sign_message = SignMessage::new(threshold.clone(), online.clone());
         }
-        let peer_prepare: Vec<String> = peer_bases
-            .iter()
-            .map(|(_, b)| format!("{b}/v1/anti-nonce/prepare"))
-            .collect();
-        let intent_prepare: Vec<String> = peer_bases
-            .iter()
-            .map(|(_, b)| format!("{b}/v1/intent/consume/prepare"))
-            .collect();
-        let day_vote_peers: Vec<(String, String)> = peer_bases
-            .iter()
-            .map(|(id, b)| (id.clone(), format!("{b}/v1/day/vote")))
-            .collect();
+        let peer_prepare: Vec<String> = peer_bases.iter().map(|(_, b)| format!("{b}/v1/anti-nonce/prepare")).collect();
+        let intent_prepare: Vec<String> =
+            peer_bases.iter().map(|(_, b)| format!("{b}/v1/intent/consume/prepare")).collect();
+        let day_vote_peers: Vec<(String, String)> =
+            peer_bases.iter().map(|(id, b)| (id.clone(), format!("{b}/v1/day/vote"))).collect();
 
         let anti_transport = match config.auth_mode {
             AuthMode::StaticToken => Arc::new(HttpAntiNonceTransport::with_peer_http(
@@ -474,37 +389,29 @@ impl VaultRuntime {
                 )?)
             }
         };
-        let anti_nonce: Arc<dyn AntiNoncePort> = Arc::new(QuorumAntiNonce::open(
-            data_root.join("used_sessions.log"),
-            anti_transport,
-            peer_count,
-        )?);
+        let anti_nonce: Arc<dyn AntiNoncePort> =
+            Arc::new(QuorumAntiNonce::open(data_root.join("used_sessions.log"), anti_transport, peer_count)?);
 
-        let intent_transport: Arc<dyn crate::adapters::IntentConsumeQuorumTransport> =
-            match config.auth_mode {
-                AuthMode::StaticToken => Arc::new(HttpIntentConsumeTransport::with_peer_http(
+        let intent_transport: Arc<dyn crate::adapters::IntentConsumeQuorumTransport> = match config.auth_mode {
+            AuthMode::StaticToken => Arc::new(HttpIntentConsumeTransport::with_peer_http(
+                intent_prepare,
+                peer_auth_token.clone(),
+                config.peer_http.clone(),
+            )),
+            AuthMode::MutualTls => {
+                let (cert, key, ca) = config.require_mtls_client_identity()?;
+                Arc::new(HttpIntentConsumeTransport::with_mtls(
                     intent_prepare,
-                    peer_auth_token.clone(),
                     config.peer_http.clone(),
-                )),
-                AuthMode::MutualTls => {
-                    let (cert, key, ca) = config.require_mtls_client_identity()?;
-                    Arc::new(HttpIntentConsumeTransport::with_mtls(
-                        intent_prepare,
-                        config.peer_http.clone(),
-                        std::path::Path::new(cert),
-                        std::path::Path::new(key),
-                        std::path::Path::new(ca),
-                        &config.tls_verify_policy,
-                    )?)
-                }
-            };
+                    std::path::Path::new(cert),
+                    std::path::Path::new(key),
+                    std::path::Path::new(ca),
+                    &config.tls_verify_policy,
+                )?)
+            }
+        };
         // Fail-closed when peers configured (incl. hardened): quorum prepare before authorize.
-        let buckets = Arc::new(QuorumBucketLedger::from_local(
-            local_buckets,
-            intent_transport,
-            peer_count,
-        ));
+        let buckets = Arc::new(QuorumBucketLedger::from_local(local_buckets, intent_transport, peer_count));
         let bucket_port: Arc<dyn crate::application::BucketLedgerPort> = buckets.clone();
 
         let frost_shares = Arc::new(FrostShareSlot::new());
@@ -528,38 +435,36 @@ impl VaultRuntime {
             .with_governance(accrue_governance.clone()),
         );
 
-        let day_vote_transport: Arc<dyn crate::adapters::DayVoteTransport> =
-            if peer_count == 0 {
-                Arc::new(NoopDayVoteTransport)
-            } else {
-                match config.auth_mode {
-                    AuthMode::StaticToken => Arc::new(HttpDayVoteTransport::with_peer_http(
+        let day_vote_transport: Arc<dyn crate::adapters::DayVoteTransport> = if peer_count == 0 {
+            Arc::new(NoopDayVoteTransport)
+        } else {
+            match config.auth_mode {
+                AuthMode::StaticToken => Arc::new(HttpDayVoteTransport::with_peer_http(
+                    day_vote_peers,
+                    peer_auth_token.clone(),
+                    config.peer_http.clone(),
+                )),
+                AuthMode::MutualTls => {
+                    let (cert, key, ca) = config.require_mtls_client_identity()?;
+                    Arc::new(HttpDayVoteTransport::with_mtls(
                         day_vote_peers,
-                        peer_auth_token.clone(),
                         config.peer_http.clone(),
-                    )),
-                    AuthMode::MutualTls => {
-                        let (cert, key, ca) = config.require_mtls_client_identity()?;
-                        Arc::new(HttpDayVoteTransport::with_mtls(
-                            day_vote_peers,
-                            config.peer_http.clone(),
-                            std::path::Path::new(cert),
-                            std::path::Path::new(key),
-                            std::path::Path::new(ca),
-                            &config.tls_verify_policy,
-                        )?)
-                    }
+                        std::path::Path::new(cert),
+                        std::path::Path::new(key),
+                        std::path::Path::new(ca),
+                        &config.tls_verify_policy,
+                    )?)
                 }
-            };
-        let daily_rotation: Arc<dyn DailyRotationPort> =
-            Arc::new(QuorumDailyRotation::with_persist_and_transport(
-                clock.clone(),
-                rotation_quorum,
-                config.node_id.as_str(),
-                reshare_hook.clone(),
-                data_root.join("day_epoch"),
-                day_vote_transport,
-            ));
+            }
+        };
+        let daily_rotation: Arc<dyn DailyRotationPort> = Arc::new(QuorumDailyRotation::with_persist_and_transport(
+            clock.clone(),
+            rotation_quorum,
+            config.node_id.as_str(),
+            reshare_hook.clone(),
+            data_root.join("day_epoch"),
+            day_vote_transport,
+        ));
 
         // Wire DKG fan-out only to seated peers (not waiting-set seeds cut by tier).
         let mut peer_addrs = BTreeMap::new();
@@ -594,10 +499,7 @@ impl VaultRuntime {
         )?);
 
         // TR wire co-sign transport (Critical #1/#2): used when not dealer_lab multi-share.
-        let tr_cosign_peers: Vec<(String, String)> = peer_bases
-            .iter()
-            .map(|(id, b)| (id.clone(), b.clone()))
-            .collect();
+        let tr_cosign_peers: Vec<(String, String)> = peer_bases.iter().map(|(id, b)| (id.clone(), b.clone())).collect();
         let tr_cosign_transport: Arc<dyn TrCosignTransport> = if tr_cosign_peers.is_empty() {
             Arc::new(NoopTrCosignTransport)
         } else {
@@ -620,10 +522,7 @@ impl VaultRuntime {
                 }
             }
         };
-        let tr_cosign_peer = Arc::new(TrCosignPeerState::new(
-            config.node_id.as_str(),
-            frost_tr_shares.clone(),
-        ));
+        let tr_cosign_peer = Arc::new(TrCosignPeerState::new(config.node_id.as_str(), frost_tr_shares.clone()));
 
         #[cfg(feature = "dealer_lab")]
         let (dkg, frost, frost_tr, frost_tr_channels): (
@@ -632,10 +531,7 @@ impl VaultRuntime {
             Option<Arc<FrostTrBitcoinOrchestrator>>,
             Option<Arc<FrostTrBitcoinOrchestrator>>,
         ) = {
-            if config.dealer_requested
-                && matches!(config.ceremony_mode, CeremonyMode::Lab)
-                && !config.hardened
-            {
+            if config.dealer_requested && matches!(config.ceremony_mode, CeremonyMode::Lab) && !config.hardened {
                 dealer_fatal_banner();
                 let adapter = DealerLabAdapter::new();
                 let max = n.min(u16::MAX as usize) as u16;
@@ -676,7 +572,7 @@ impl VaultRuntime {
                     config.bitcoin_network,
                 )
                 .with_psbt_policy(config.psbt_policy)
-                            .with_wire_cosign(
+                .with_wire_cosign(
                     config.node_id.as_str(),
                     true, // dealer_lab: in-process N-share OK
                     tr_cosign_transport.clone(),
@@ -698,17 +594,8 @@ impl VaultRuntime {
                     config.bitcoin_network,
                 )
                 .with_psbt_policy(config.psbt_policy)
-                .with_wire_cosign(
-                    config.node_id.as_str(),
-                    true,
-                    tr_cosign_transport.clone(),
-                );
-                (
-                    Arc::new(adapter),
-                    Some(Arc::new(orch)),
-                    Some(Arc::new(tr_orch)),
-                    Some(Arc::new(tr_ch_orch)),
-                )
+                .with_wire_cosign(config.node_id.as_str(), true, tr_cosign_transport.clone());
+                (Arc::new(adapter), Some(Arc::new(orch)), Some(Arc::new(tr_orch)), Some(Arc::new(tr_ch_orch)))
             } else if matches!(config.dkg_mode, DkgMode::DistributedWire) {
                 // Over-wire ceremony via /v1/dkg/round{1,2,3}; no in-process dealer/sim.
                 // frost_tr installed after TR DKG / sealed single-share load; wire co-sign required.
@@ -716,7 +603,8 @@ impl VaultRuntime {
                     Ok(existing) => {
                         if existing.key_packages.len() > 1 {
                             return Err(DomainError::ThresholdError(
-                                "distributed_wire refuses sealed multi-share TR material; install local share only".into(),
+                                "distributed_wire refuses sealed multi-share TR material; install local share only"
+                                    .into(),
                             ));
                         }
                         frost_tr_shares.install(existing);
@@ -786,16 +674,15 @@ impl VaultRuntime {
             Option<Arc<FrostTrBitcoinOrchestrator>>,
         ) = {
             if config.dealer_requested || matches!(config.dkg_mode, DkgMode::DealerLab) {
-                return Err(DomainError::DealerForbidden(
-                    "dealer DKG not compiled (build without dealer_lab)".into(),
-                ));
+                return Err(DomainError::DealerForbidden("dealer DKG not compiled (build without dealer_lab)".into()));
             }
             if matches!(config.dkg_mode, DkgMode::DistributedWire) {
                 let frost_tr = match load_tr_shares(share_store.as_ref()) {
                     Ok(existing) => {
                         if existing.key_packages.len() > 1 {
                             return Err(DomainError::ThresholdError(
-                                "distributed_wire refuses sealed multi-share TR material; install local share only".into(),
+                                "distributed_wire refuses sealed multi-share TR material; install local share only"
+                                    .into(),
                             ));
                         }
                         frost_tr_shares.install(existing);
@@ -862,37 +749,24 @@ impl VaultRuntime {
             config.node_tier,
             // High #14: software measurement is never TEE.
             config.tee_available && config.attestation_mode.is_tee(),
-            dkg_set
-                .iter()
-                .map(|n| n.as_str().to_string())
-                .collect(),
+            dkg_set.iter().map(|n| n.as_str().to_string()).collect(),
         )
         .with_peer_probe(!config.online_static && peer_count > 0)
         .with_constitution(configured_members, required_threshold)
         .with_online_status(online.clone());
-        let get_metrics =
-            GetMetrics::new(config.node_id.clone(), ledger_port.clone(), Some(bucket_port.clone()));
+        let get_metrics = GetMetrics::new(config.node_id.clone(), ledger_port.clone(), Some(bucket_port.clone()));
         let ping_peer = PingPeer::new(peers_port, attestation, clock.clone(), measurement);
         let get_ledger = GetLedgerSnapshot::new(ledger_port.clone());
         let propose_epoch = ProposeEpochAdvance::new(ledger_port.clone(), config.node_id.clone());
         let vote_epoch = VoteEpochAdvance::new(ledger_port.clone(), config.node_id.clone());
-        let propose_release = ProposeRelease::new(
-            release_port.clone(),
-            blob_port.clone(),
-            ledger_port.clone(),
-            clock.clone(),
-        );
+        let propose_release =
+            ProposeRelease::new(release_port.clone(), blob_port.clone(), ledger_port.clone(), clock.clone());
         let rebuild_release = RebuildRelease::new(release_port.clone(), blob_port);
-        let cosign_release = CosignRelease::new(
-            release_port.clone(),
-            ledger_port.clone(),
-            clock.clone(),
-            config.node_id.clone(),
-        )
-        .with_governance(accrue_governance.clone());
-        let activate_release =
-            ActivateRelease::new(release_port.clone(), ledger_port.clone(), clock.clone())
+        let cosign_release =
+            CosignRelease::new(release_port.clone(), ledger_port.clone(), clock.clone(), config.node_id.clone())
                 .with_governance(accrue_governance.clone());
+        let activate_release = ActivateRelease::new(release_port.clone(), ledger_port.clone(), clock.clone())
+            .with_governance(accrue_governance.clone());
         let get_allowlist = GetAllowlist::new(release_port);
         let gate_intent = GateIntent::new(bucket_port, ledger_port.clone(), economy_port.clone());
         let allocate_profit = AllocateProfit::new(ledger_port.clone());
@@ -906,23 +780,11 @@ impl VaultRuntime {
             config.tee_available,
         );
         let upsert_miner = UpsertMiner::new(economy_port.clone());
-        let accrue_rewards = AccrueMinerRewards::new(
-            economy_port.clone(),
-            ledger_port.clone(),
-            config.node_id.clone(),
-        );
-        let propose_miner_payouts = ProposeMinerPayouts::new(
-            economy_port,
-            ledger_port,
-            clock,
-            config.miner_payout_cadence,
-        );
+        let accrue_rewards = AccrueMinerRewards::new(economy_port.clone(), ledger_port.clone(), config.node_id.clone());
+        let propose_miner_payouts =
+            ProposeMinerPayouts::new(economy_port, ledger_port, clock, config.miner_payout_cadence);
 
-        let mode = if config.hardened {
-            "production-refuse"
-        } else {
-            "lab-visualize"
-        };
+        let mode = if config.hardened { "production-refuse" } else { "lab-visualize" };
         eprintln!(
             "MODE={mode} tier={} tee_available={} auth={} share_store={} dkg={} reshare={} bitcoin={}",
             config.node_tier.as_str(),
@@ -1002,13 +864,6 @@ fn wire_distributed_dkg(
         pubkey_package: bundle.pubkey_package,
         min_signers: min as usize,
     });
-    let orch = FrostSignOrchestrator::from_share_slot(
-        shares,
-        Box::new(SharedAntiNonce(anti_nonce)),
-        rotation,
-    );
-    Ok((
-        Arc::new(DistributedDkgAdapter::new()),
-        Some(Arc::new(orch)),
-    ))
+    let orch = FrostSignOrchestrator::from_share_slot(shares, Box::new(SharedAntiNonce(anti_nonce)), rotation);
+    Ok((Arc::new(DistributedDkgAdapter::new()), Some(Arc::new(orch))))
 }

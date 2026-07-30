@@ -90,10 +90,7 @@ pub struct GovernanceRewardConfig {
 
 impl GovernanceRewardConfig {
     pub fn disabled() -> Self {
-        Self {
-            reward_sats: 0,
-            reward_bps_of_pool: 0,
-        }
+        Self { reward_sats: 0, reward_bps_of_pool: 0 }
     }
 
     pub fn is_enabled(self) -> bool {
@@ -101,8 +98,7 @@ impl GovernanceRewardConfig {
     }
 
     pub fn bounty_sats(self, current_pool_sats: u64) -> u64 {
-        let from_bps =
-            current_pool_sats.saturating_mul(self.reward_bps_of_pool as u64) / 10_000;
+        let from_bps = current_pool_sats.saturating_mul(self.reward_bps_of_pool as u64) / 10_000;
         self.reward_sats.saturating_add(from_bps)
     }
 }
@@ -188,20 +184,14 @@ impl EconomyState {
             || op.payout_destination.contains('/')
             || op.payout_destination.contains('\\')
         {
-            return Err(DomainError::InvalidIntent(
-                "miner payout destination illegal".into(),
-            ));
+            return Err(DomainError::InvalidIntent("miner payout destination illegal".into()));
         }
-        self.operators
-            .insert(op.node_id.as_str().to_string(), op);
+        self.operators.insert(op.node_id.as_str().to_string(), op);
         Ok(())
     }
 
     pub fn eligible_active(&self) -> Vec<&MinerOperator> {
-        self.operators
-            .values()
-            .filter(|o| o.is_eligible(&self.policy))
-            .collect()
+        self.operators.values().filter(|o| o.is_eligible(&self.policy)).collect()
     }
 
     /// Accrue full profit splits into MINERS / CHANNELS / INFRA credit pools.
@@ -216,12 +206,7 @@ impl EconomyState {
         self.channels_pool_sats = self.channels_pool_sats.saturating_add(channels);
         self.infra_pool_sats = self.infra_pool_sats.saturating_add(infra);
         self.accrued_profit_sats = self.accrued_profit_sats.saturating_add(profit_sats);
-        Ok(ProfitSplitAccrual {
-            profit_sats,
-            miners_sats: miners,
-            channels_sats: channels,
-            infra_sats: infra,
-        })
+        Ok(ProfitSplitAccrual { profit_sats, miners_sats: miners, channels_sats: channels, infra_sats: infra })
     }
 
     /// Accrue `p_reward_bps` of profit into pools via [`ProfitSplits::open_with_reward`].
@@ -230,9 +215,7 @@ impl EconomyState {
         let Ok(splits) = ProfitSplits::open_with_reward(p_reward_bps) else {
             return 0;
         };
-        self.accrue_profit_splits(profit_sats, &splits)
-            .map(|a| a.miners_sats)
-            .unwrap_or(0)
+        self.accrue_profit_splits(profit_sats, &splits).map(|a| a.miners_sats).unwrap_or(0)
     }
 
     /// Accrue a governance job bounty for eligible operators who participated.
@@ -267,12 +250,7 @@ impl EconomyState {
 
         let eligible: Vec<NodeId> = participants
             .iter()
-            .filter(|id| {
-                self.operators
-                    .get(id.as_str())
-                    .map(|o| o.is_eligible(&self.policy))
-                    .unwrap_or(false)
-            })
+            .filter(|id| self.operators.get(id.as_str()).map(|o| o.is_eligible(&self.policy)).unwrap_or(false))
             .cloned()
             .collect();
 
@@ -287,17 +265,13 @@ impl EconomyState {
                     share += 1;
                     rem -= 1;
                 }
-                *self
-                    .governance_credits
-                    .entry(id.as_str().to_string())
-                    .or_insert(0) += share;
+                *self.governance_credits.entry(id.as_str().to_string()).or_insert(0) += share;
                 credited.push((id.clone(), share));
             }
         }
 
         self.miner_pool_sats = self.miner_pool_sats.saturating_add(bounty);
-        self.pending_governance_reward_sats =
-            self.pending_governance_reward_sats.saturating_add(bounty);
+        self.pending_governance_reward_sats = self.pending_governance_reward_sats.saturating_add(bounty);
 
         GovernanceAccrual {
             job,
@@ -316,10 +290,7 @@ impl EconomyState {
             return Err(DomainError::NoEligibleMiners);
         }
         if amount == 0 || amount > self.miner_pool_sats {
-            return Err(DomainError::InsufficientMinerPool {
-                have: self.miner_pool_sats,
-                want: amount,
-            });
+            return Err(DomainError::InsufficientMinerPool { have: self.miner_pool_sats, want: amount });
         }
         let n = eligible.len() as u64;
         let each = amount / n;
@@ -342,10 +313,7 @@ impl EconomyState {
 
     pub fn debit_pool(&mut self, amount: u64) -> Result<(), DomainError> {
         if amount > self.miner_pool_sats {
-            return Err(DomainError::InsufficientMinerPool {
-                have: self.miner_pool_sats,
-                want: amount,
-            });
+            return Err(DomainError::InsufficientMinerPool { have: self.miner_pool_sats, want: amount });
         }
         self.miner_pool_sats -= amount;
         let from_gov = amount.min(self.pending_governance_reward_sats);
@@ -427,27 +395,19 @@ impl MinerPayoutShare {
         intent_id: impl Into<String>,
         policy_hash: impl Into<String>,
     ) -> Result<SettlementIntent, DomainError> {
-        SettlementIntent::new(
-            intent_id,
-            BucketKind::Miners,
-            self.destination.clone(),
-            self.amount_sats,
-            policy_hash,
-        )
+        SettlementIntent::new(intent_id, BucketKind::Miners, self.destination.clone(), self.amount_sats, policy_hash)
     }
 }
 
 /// Reject vault self-payment: payout destination must match registered operator, not invented.
-pub fn assert_bank_issued_miner_payout(
-    economy: &EconomyState,
-    intent: &SettlementIntent,
-) -> Result<(), DomainError> {
+pub fn assert_bank_issued_miner_payout(economy: &EconomyState, intent: &SettlementIntent) -> Result<(), DomainError> {
     if intent.bucket != BucketKind::Miners {
         return Ok(());
     }
-    let matched = economy.operators.values().any(|op| {
-        op.is_eligible(&economy.policy) && op.payout_destination == intent.destination
-    });
+    let matched = economy
+        .operators
+        .values()
+        .any(|op| op.is_eligible(&economy.policy) && op.payout_destination == intent.destination);
     if !matched {
         return Err(DomainError::MinerSelfPayForbidden);
     }
@@ -479,29 +439,16 @@ mod tests {
         assert_eq!(got, 10_000);
         assert_eq!(eco.miner_pool_sats, 10_000);
         assert_eq!(eco.channels_pool_sats + eco.infra_pool_sats, 990_000);
-        assert_eq!(
-            eco.miner_pool_sats + eco.channels_pool_sats + eco.infra_pool_sats,
-            1_000_000
-        );
+        assert_eq!(eco.miner_pool_sats + eco.channels_pool_sats + eco.infra_pool_sats, 1_000_000);
     }
 
     #[test]
     fn weekly_cadence_blocks_until_week_elapsed() {
         let mut eco = EconomyState::new_open();
         eco.record_miner_payout(1_000_000, None);
-        assert!(eco
-            .assert_payout_cadence_ok(MinerPayoutCadence::Weekly, 1_000_000 + 100, None)
-            .is_err());
-        assert!(eco
-            .assert_payout_cadence_ok(
-                MinerPayoutCadence::Weekly,
-                1_000_000 + 7 * 86_400,
-                None
-            )
-            .is_ok());
-        assert!(eco
-            .assert_payout_cadence_ok(MinerPayoutCadence::Manual, 1_000_000 + 1, None)
-            .is_ok());
+        assert!(eco.assert_payout_cadence_ok(MinerPayoutCadence::Weekly, 1_000_000 + 100, None).is_err());
+        assert!(eco.assert_payout_cadence_ok(MinerPayoutCadence::Weekly, 1_000_000 + 7 * 86_400, None).is_ok());
+        assert!(eco.assert_payout_cadence_ok(MinerPayoutCadence::Manual, 1_000_000 + 1, None).is_ok());
     }
 
     #[test]
@@ -538,15 +485,8 @@ mod tests {
         })
         .unwrap();
 
-        let cfg = GovernanceRewardConfig {
-            reward_sats: 1_000,
-            reward_bps_of_pool: 0,
-        };
-        let got = eco.accrue_governance_job(
-            GovernanceJobKind::DayAdvanced,
-            &[a.clone(), b.clone(), wait],
-            &cfg,
-        );
+        let cfg = GovernanceRewardConfig { reward_sats: 1_000, reward_bps_of_pool: 0 };
+        let got = eco.accrue_governance_job(GovernanceJobKind::DayAdvanced, &[a.clone(), b.clone(), wait], &cfg);
         assert_eq!(got.accrued_to_pool_sats, 1_000);
         assert_eq!(got.eligible_credited, 2);
         assert_eq!(eco.miner_pool_sats, 1_000);

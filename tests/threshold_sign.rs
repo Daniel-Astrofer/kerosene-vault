@@ -5,11 +5,7 @@ use kerosene_vault::application::{SignMessage, StaticOnlineCount};
 use kerosene_vault::domain::{run_dkg, DomainError, NodeId};
 
 fn nodes3() -> Vec<NodeId> {
-    vec![
-        NodeId::new("vault-1").unwrap(),
-        NodeId::new("vault-2").unwrap(),
-        NodeId::new("vault-3").unwrap(),
-    ]
+    vec![NodeId::new("vault-1").unwrap(), NodeId::new("vault-2").unwrap(), NodeId::new("vault-3").unwrap()]
 }
 
 #[test]
@@ -36,9 +32,7 @@ fn sign_succeeds_at_two_thirds_online() {
     let state = Arc::new(ThresholdVaultState::new(group, local, shares));
     let online = Arc::new(StaticOnlineCount { count: 2 });
     let sign = SignMessage::new(state, online);
-    let sig = sign
-        .run_lab_quorum_sign("sess-1", "msg-hash-abc")
-        .unwrap();
+    let sig = sign.run_lab_quorum_sign("sess-1", "msg-hash-abc").unwrap();
     assert_eq!(sig.session_id, "sess-1");
     assert_eq!(sig.participants.len(), 2);
 }
@@ -51,9 +45,7 @@ fn fail_stop_when_online_below_t() {
     let state = Arc::new(ThresholdVaultState::new(group, local, shares));
     let online = Arc::new(StaticOnlineCount { count: 1 });
     let sign = SignMessage::new(state, online);
-    let err = sign
-        .run_lab_quorum_sign("sess-fail", "m")
-        .unwrap_err();
+    let err = sign.run_lab_quorum_sign("sess-fail", "m").unwrap_err();
     assert!(matches!(err, DomainError::FailStop { online: 1, need: 2 }));
 }
 

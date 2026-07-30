@@ -13,8 +13,7 @@ mod sgx;
 
 use crate::application::AttestationPort;
 use crate::domain::{
-    admits_attestation_measurement, AttestationMode, AttestationQuote, ContentHash, DomainError,
-    Measurement,
+    admits_attestation_measurement, AttestationMode, AttestationQuote, ContentHash, DomainError, Measurement,
 };
 
 use self::quote::{HwQuoteEnvelope, PLATFORM_SEV, PLATFORM_SGX};
@@ -40,14 +39,7 @@ impl TeeAttestationAdapter {
         platform_root: &[u8],
         pinned_measurement: Measurement,
     ) -> Result<Self, DomainError> {
-        Self::with_policy(
-            mode,
-            staging_stub,
-            false,
-            platform_root,
-            pinned_measurement,
-            Vec::new(),
-        )
+        Self::with_policy(mode, staging_stub, false, platform_root, pinned_measurement, Vec::new())
     }
 
     /// Full policy constructor: production sets `refuse_stub` to reject staging stubs.
@@ -60,14 +52,10 @@ impl TeeAttestationAdapter {
         allowlisted_hbs: Vec<ContentHash>,
     ) -> Result<Self, DomainError> {
         if !matches!(mode, AttestationMode::Sev | AttestationMode::Sgx) {
-            return Err(DomainError::AttestationRejected(
-                "TeeAttestationAdapter requires sev or sgx mode".into(),
-            ));
+            return Err(DomainError::AttestationRejected("TeeAttestationAdapter requires sev or sgx mode".into()));
         }
         if refuse_stub && staging_stub {
-            return Err(DomainError::LabFlagForbidden(
-                "ATTESTATION_STAGING_STUB in production ceremony".into(),
-            ));
+            return Err(DomainError::LabFlagForbidden("ATTESTATION_STAGING_STUB in production ceremony".into()));
         }
         Ok(Self {
             mode,
@@ -87,14 +75,7 @@ impl TeeAttestationAdapter {
         pinned_measurement: Measurement,
         allowlisted_hbs: Vec<ContentHash>,
     ) -> Result<Self, DomainError> {
-        Self::with_policy(
-            mode,
-            staging_stub,
-            refuse_stub,
-            platform_root,
-            pinned_measurement,
-            allowlisted_hbs,
-        )
+        Self::with_policy(mode, staging_stub, refuse_stub, platform_root, pinned_measurement, allowlisted_hbs)
     }
 
     pub fn pinned_measurement(&self) -> &Measurement {
@@ -124,11 +105,7 @@ impl TeeAttestationAdapter {
     }
 
     fn enforce_measurement(&self, measurement: &Measurement) -> Result<(), DomainError> {
-        if !admits_attestation_measurement(
-            measurement,
-            &self.pinned_measurement,
-            &self.allowlisted_hbs,
-        ) {
+        if !admits_attestation_measurement(measurement, &self.pinned_measurement, &self.allowlisted_hbs) {
             if measurement != &self.pinned_measurement {
                 return Err(DomainError::MeasurementMismatch);
             }
@@ -154,17 +131,9 @@ impl TeeAttestationAdapter {
                 return Err(DomainError::SimAttestationForbidden);
             }
         };
-        let blob = HwQuoteEnvelope {
-            platform: self.platform_code(),
-            measurement: measurement.clone(),
-            report,
-        }
-        .encode();
-        Ok(AttestationQuote {
-            mode: self.mode,
-            measurement: measurement.clone(),
-            quote_blob: blob,
-        })
+        let blob =
+            HwQuoteEnvelope { platform: self.platform_code(), measurement: measurement.clone(), report }.encode();
+        Ok(AttestationQuote { mode: self.mode, measurement: measurement.clone(), quote_blob: blob })
     }
 
     fn verify_hw_quote(&self, quote: &AttestationQuote) -> Result<(), DomainError> {
@@ -177,17 +146,13 @@ impl TeeAttestationAdapter {
             )));
         }
         if &env.measurement != &quote.measurement {
-            return Err(DomainError::AttestationRejected(
-                "HW quote envelope measurement != quote.measurement".into(),
-            ));
+            return Err(DomainError::AttestationRejected("HW quote envelope measurement != quote.measurement".into()));
         }
         self.enforce_measurement(&env.measurement)?;
         match self.mode {
             AttestationMode::Sev => sev_snp::verify_report(&env.measurement, &env.report),
             AttestationMode::Sgx => sgx::verify_report(&env.measurement, &env.report),
-            AttestationMode::Sim | AttestationMode::Software => {
-                Err(DomainError::SimAttestationForbidden)
-            }
+            AttestationMode::Sim | AttestationMode::Software => Err(DomainError::SimAttestationForbidden),
         }
     }
 
@@ -222,9 +187,7 @@ impl AttestationPort for TeeAttestationAdapter {
 
     fn verify_quote(&self, quote: &AttestationQuote) -> Result<(), DomainError> {
         if quote.mode.is_software_measurement() {
-            return Err(DomainError::AttestationRejected(
-                "TEE adapter rejects software/sim quotes".into(),
-            ));
+            return Err(DomainError::AttestationRejected("TEE adapter rejects software/sim quotes".into()));
         }
         if quote.mode != self.mode {
             return Err(DomainError::AttestationRejected(format!(
@@ -246,9 +209,7 @@ impl AttestationPort for TeeAttestationAdapter {
 
         if !self.stub_path_allowed() {
             if self.refuse_stub {
-                return Err(DomainError::LabFlagForbidden(
-                    "ATTESTATION_STAGING_STUB in production ceremony".into(),
-                ));
+                return Err(DomainError::LabFlagForbidden("ATTESTATION_STAGING_STUB in production ceremony".into()));
             }
             return Err(DomainError::AttestationRejected(format!(
                 "{} hardware verify unavailable (CI fail-closed without --features tee_hw; staging may set ATTESTATION_STAGING_STUB=1)",
@@ -258,9 +219,7 @@ impl AttestationPort for TeeAttestationAdapter {
 
         let expected = self.stub_mac(&quote.measurement);
         if expected != quote.quote_blob {
-            return Err(DomainError::AttestationRejected(
-                "TEE staging stub quote mac mismatch".into(),
-            ));
+            return Err(DomainError::AttestationRejected("TEE staging stub quote mac mismatch".into()));
         }
         Ok(())
     }
@@ -285,11 +244,7 @@ mod tests {
     #[test]
     fn refuse_sim_quotes() {
         let tee = TeeAttestationAdapter::new(AttestationMode::Sgx, true, b"plat", pin()).unwrap();
-        let bad = AttestationQuote {
-            mode: AttestationMode::Sim,
-            measurement: pin(),
-            quote_blob: vec![1, 2, 3],
-        };
+        let bad = AttestationQuote { mode: AttestationMode::Sim, measurement: pin(), quote_blob: vec![1, 2, 3] };
         assert!(matches!(
             tee.verify_quote(&bad),
             Err(DomainError::AttestationRejected(ref r)) if r.contains("sim")
@@ -311,24 +266,11 @@ mod tests {
                 if f.contains("ATTESTATION_STAGING_STUB")
         ));
 
-        let tee = TeeAttestationAdapter::with_policy(
-            AttestationMode::Sev,
-            false,
-            true,
-            b"plat",
-            pin(),
-            Vec::new(),
-        )
-        .unwrap();
+        let tee =
+            TeeAttestationAdapter::with_policy(AttestationMode::Sev, false, true, b"plat", pin(), Vec::new()).unwrap();
         // Production without HW: issue fails closed (clear error).
         let err = tee.issue_quote(&pin()).unwrap_err();
-        assert!(
-            matches!(
-                err,
-                DomainError::AttestationRejected(_) | DomainError::TeeRequired(_)
-            ),
-            "unexpected: {err}"
-        );
+        assert!(matches!(err, DomainError::AttestationRejected(_) | DomainError::TeeRequired(_)), "unexpected: {err}");
         // Stub-shaped blob refused in production.
         let stubby = AttestationQuote {
             mode: AttestationMode::Sev,
@@ -345,19 +287,9 @@ mod tests {
     fn measurement_mismatch_rejected() {
         let tee = TeeAttestationAdapter::new(AttestationMode::Sgx, true, b"plat", pin()).unwrap();
         let other = Measurement::from_bytes(b"other-binary");
-        assert!(matches!(
-            tee.issue_quote(&other),
-            Err(DomainError::MeasurementMismatch)
-        ));
-        let bad = AttestationQuote {
-            mode: AttestationMode::Sgx,
-            measurement: other,
-            quote_blob: vec![1, 2, 3],
-        };
-        assert!(matches!(
-            tee.verify_quote(&bad),
-            Err(DomainError::MeasurementMismatch)
-        ));
+        assert!(matches!(tee.issue_quote(&other), Err(DomainError::MeasurementMismatch)));
+        let bad = AttestationQuote { mode: AttestationMode::Sgx, measurement: other, quote_blob: vec![1, 2, 3] };
+        assert!(matches!(tee.verify_quote(&bad), Err(DomainError::MeasurementMismatch)));
     }
 
     #[test]
@@ -374,33 +306,20 @@ mod tests {
         )
         .unwrap();
         // Pin matches constitution but is not on allowlist → NotAllowlisted.
-        assert!(matches!(
-            tee.issue_quote(&pin),
-            Err(DomainError::NotAllowlisted(_))
-        ));
+        assert!(matches!(tee.issue_quote(&pin), Err(DomainError::NotAllowlisted(_))));
 
-        let admitted =
-            Measurement::from_hex(ContentHash::from_bytes(b"allowlisted-binary").as_str()).unwrap();
+        let admitted = Measurement::from_hex(ContentHash::from_bytes(b"allowlisted-binary").as_str()).unwrap();
         // Wrong pin still mismatches first.
-        assert!(matches!(
-            tee.issue_quote(&admitted),
-            Err(DomainError::MeasurementMismatch)
-        ));
+        assert!(matches!(tee.issue_quote(&admitted), Err(DomainError::MeasurementMismatch)));
     }
 
     #[test]
     fn allowlist_admits_when_pin_is_allowlisted_hb() {
         let hb = ContentHash::from_bytes(b"release-hb-v1");
         let pin = Measurement::from_hex(hb.as_str()).unwrap();
-        let tee = TeeAttestationAdapter::with_allowlist(
-            AttestationMode::Sgx,
-            true,
-            false,
-            b"plat",
-            pin.clone(),
-            vec![hb],
-        )
-        .unwrap();
+        let tee =
+            TeeAttestationAdapter::with_allowlist(AttestationMode::Sgx, true, false, b"plat", pin.clone(), vec![hb])
+                .unwrap();
         let q = tee.issue_quote(&pin).unwrap();
         tee.verify_quote(&q).unwrap();
     }
@@ -420,25 +339,10 @@ mod tests {
 
     #[test]
     fn hw_envelope_verify_fail_closed_clear_error() {
-        let tee = TeeAttestationAdapter::with_policy(
-            AttestationMode::Sev,
-            false,
-            true,
-            b"plat",
-            pin(),
-            Vec::new(),
-        )
-        .unwrap();
-        let env = HwQuoteEnvelope {
-            platform: PLATFORM_SEV,
-            measurement: pin(),
-            report: b"fake-sev-report".to_vec(),
-        };
-        let q = AttestationQuote {
-            mode: AttestationMode::Sev,
-            measurement: pin(),
-            quote_blob: env.encode(),
-        };
+        let tee =
+            TeeAttestationAdapter::with_policy(AttestationMode::Sev, false, true, b"plat", pin(), Vec::new()).unwrap();
+        let env = HwQuoteEnvelope { platform: PLATFORM_SEV, measurement: pin(), report: b"fake-sev-report".to_vec() };
+        let q = AttestationQuote { mode: AttestationMode::Sev, measurement: pin(), quote_blob: env.encode() };
         let err = tee.verify_quote(&q).unwrap_err();
         let msg = err.to_string();
         assert!(

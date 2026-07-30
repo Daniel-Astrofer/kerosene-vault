@@ -35,14 +35,10 @@ enum SealBackend {
     FailClosed,
     /// Lab-only measurement-bound AEAD envelope (never under `production` feature).
     #[cfg(not(feature = "production"))]
-    StagingStub {
-        passphrase: SecretString,
-    },
+    StagingStub { passphrase: SecretString },
     /// Hardware TEE seal (compiled with `tee_hw`).
     #[cfg(feature = "tee_hw")]
-    Hw {
-        platform: AttestationMode,
-    },
+    Hw { platform: AttestationMode },
 }
 
 /// Versioned TEE seal adapter (`ShareStorePort`).
@@ -61,27 +57,16 @@ pub type TeeSealShareStore = TeeSealAdapter;
 impl TeeSealAdapter {
     /// Production-style constructor: refuse seal/unseal until real TEE HW is available.
     pub fn fail_closed(measurement: Measurement) -> Self {
-        Self {
-            root: PathBuf::from("/dev/null"),
-            backend: SealBackend::FailClosed,
-            measurement,
-            attestation: None,
-        }
+        Self { root: PathBuf::from("/dev/null"), backend: SealBackend::FailClosed, measurement, attestation: None }
     }
 
     /// Staging-stub seal path (lab / `ATTESTATION_STAGING_STUB=1` only).
     /// Not available under `--features production`.
     #[cfg(not(feature = "production"))]
-    pub fn staging_stub(
-        root: impl Into<PathBuf>,
-        passphrase: impl Into<String>,
-        measurement: Measurement,
-    ) -> Self {
+    pub fn staging_stub(root: impl Into<PathBuf>, passphrase: impl Into<String>, measurement: Measurement) -> Self {
         Self {
             root: root.into(),
-            backend: SealBackend::StagingStub {
-                passphrase: SecretString::from(passphrase.into()),
-            },
+            backend: SealBackend::StagingStub { passphrase: SecretString::from(passphrase.into()) },
             measurement,
             attestation: None,
         }
@@ -96,9 +81,7 @@ impl TeeSealAdapter {
         attestation: Arc<dyn AttestationPort>,
     ) -> Result<Self, DomainError> {
         if !matches!(platform, AttestationMode::Sev | AttestationMode::Sgx) {
-            return Err(DomainError::TeeRequired(
-                "tee_hw seal requires ATTESTATION_MODE=sev|sgx".into(),
-            ));
+            return Err(DomainError::TeeRequired("tee_hw seal requires ATTESTATION_MODE=sev|sgx".into()));
         }
         Ok(Self {
             root: root.into(),
@@ -125,23 +108,16 @@ impl TeeSealAdapter {
     /// Unseal (and HW seal) only after a live attestation quote verifies.
     fn require_attestation_ok(&self) -> Result<(), DomainError> {
         let Some(att) = self.attestation.as_ref() else {
-            return Err(DomainError::TeeRequired(
-                "attestation required before TEE unseal".into(),
-            ));
+            return Err(DomainError::TeeRequired("attestation required before TEE unseal".into()));
         };
         let quote = att.issue_quote(&self.measurement)?;
         att.verify_quote(&quote)
     }
 
     #[cfg(not(feature = "production"))]
-    fn derive_stub_key(
-        &self,
-        passphrase: &SecretString,
-        salt: &[u8; 16],
-    ) -> Result<[u8; 32], DomainError> {
-        let params = Params::new(19_456, 2, 1, Some(32)).map_err(|e| {
-            DomainError::ShareStoreForbidden(format!("argon2 params: {e}"))
-        })?;
+    fn derive_stub_key(&self, passphrase: &SecretString, salt: &[u8; 16]) -> Result<[u8; 32], DomainError> {
+        let params = Params::new(19_456, 2, 1, Some(32))
+            .map_err(|e| DomainError::ShareStoreForbidden(format!("argon2 params: {e}")))?;
         let argon = Argon2::new(Algorithm::Argon2id, Version::V0x13, params);
         let mut material = Vec::with_capacity(passphrase.expose_secret().len() + 64);
         material.extend_from_slice(passphrase.expose_secret().as_bytes());
@@ -172,16 +148,13 @@ impl TeeSealAdapter {
         match platform {
             AttestationMode::Sev => hw::sev_snp_derived_root(),
             AttestationMode::Sgx => hw::sgx_seal_root(),
-            AttestationMode::Sim | AttestationMode::Software => Err(DomainError::TeeRequired(
-                "software/sim attestation cannot derive HW seal keys".into(),
-            )),
+            AttestationMode::Sim | AttestationMode::Software => {
+                Err(DomainError::TeeRequired("software/sim attestation cannot derive HW seal keys".into()))
+            }
         }
     }
 
-    fn aead_encrypt(
-        key: &[u8; 32],
-        plaintext: &[u8],
-    ) -> Result<([u8; 12], Vec<u8>), DomainError> {
+    fn aead_encrypt(key: &[u8; 32], plaintext: &[u8]) -> Result<([u8; 12], Vec<u8>), DomainError> {
         let cipher = ChaCha20Poly1305::new_from_slice(key)
             .map_err(|e| DomainError::ShareStoreForbidden(format!("cipher: {e}")))?;
         let mut nonce_bytes = [0u8; 12];
@@ -193,17 +166,11 @@ impl TeeSealAdapter {
         Ok((nonce_bytes, ciphertext))
     }
 
-    fn aead_decrypt(
-        key: &[u8; 32],
-        nonce_bytes: &[u8],
-        ciphertext: &[u8],
-    ) -> Result<Vec<u8>, DomainError> {
+    fn aead_decrypt(key: &[u8; 32], nonce_bytes: &[u8], ciphertext: &[u8]) -> Result<Vec<u8>, DomainError> {
         let cipher = ChaCha20Poly1305::new_from_slice(key)
             .map_err(|e| DomainError::ShareStoreForbidden(format!("cipher: {e}")))?;
         let nonce = Nonce::from_slice(nonce_bytes);
-        cipher
-            .decrypt(nonce, ciphertext)
-            .map_err(|_| DomainError::ShareStoreForbidden("tee decrypt failed".into()))
+        cipher.decrypt(nonce, ciphertext).map_err(|_| DomainError::ShareStoreForbidden("tee decrypt failed".into()))
     }
 
     fn pack_envelope(mode: u8, salt: &[u8; 16], nonce: &[u8; 12], ciphertext: &[u8]) -> Vec<u8> {
@@ -219,20 +186,14 @@ impl TeeSealAdapter {
 
     fn parse_envelope(blob: &[u8]) -> Result<(u8, [u8; 16], &[u8], &[u8]), DomainError> {
         if blob.len() < 8 + 1 + 1 + 16 + 12 + 16 {
-            return Err(DomainError::ShareStoreForbidden(
-                "tee seal envelope too short".into(),
-            ));
+            return Err(DomainError::ShareStoreForbidden("tee seal envelope too short".into()));
         }
         if &blob[..8] != MAGIC {
-            return Err(DomainError::ShareStoreForbidden(
-                "tee seal magic mismatch".into(),
-            ));
+            return Err(DomainError::ShareStoreForbidden("tee seal magic mismatch".into()));
         }
         let version = blob[8];
         if version != ENVELOPE_VERSION {
-            return Err(DomainError::ShareStoreForbidden(format!(
-                "unsupported tee seal version {version}"
-            )));
+            return Err(DomainError::ShareStoreForbidden(format!("unsupported tee seal version {version}")));
         }
         let mode = blob[9];
         let mut salt = [0u8; 16];
@@ -248,8 +209,7 @@ impl TeeSealAdapter {
 
         match &self.backend {
             SealBackend::FailClosed => Err(DomainError::TeeRequired(
-                "TEE seal path not available; host disk AEAD is lab-only (production fail-closed)"
-                    .into(),
+                "TEE seal path not available; host disk AEAD is lab-only (production fail-closed)".into(),
             )),
             #[cfg(not(feature = "production"))]
             SealBackend::StagingStub { passphrase } => {
@@ -267,9 +227,7 @@ impl TeeSealAdapter {
                     AttestationMode::Sev => MODE_HW_SEV,
                     AttestationMode::Sgx => MODE_HW_SGX,
                     AttestationMode::Sim | AttestationMode::Software => {
-                        return Err(DomainError::TeeRequired(
-                            "software/sim cannot produce HW seal envelopes".into(),
-                        ));
+                        return Err(DomainError::TeeRequired("software/sim cannot produce HW seal envelopes".into()));
                     }
                 };
                 let (nonce, ct) = Self::aead_encrypt(&key, plaintext)?;
@@ -293,8 +251,7 @@ impl TeeSealAdapter {
                 {
                     let SealBackend::StagingStub { passphrase } = &self.backend else {
                         return Err(DomainError::TeeRequired(
-                            "staging-stub envelope refused without ATTESTATION_STAGING_STUB"
-                                .into(),
+                            "staging-stub envelope refused without ATTESTATION_STAGING_STUB".into(),
                         ));
                     };
                     let mut key = self.derive_stub_key(passphrase, &salt)?;
@@ -307,9 +264,7 @@ impl TeeSealAdapter {
                 #[cfg(not(feature = "tee_hw"))]
                 {
                     let _ = (salt, nonce, ciphertext);
-                    return Err(DomainError::TeeRequired(
-                        "HW TEE unseal requires --features tee_hw".into(),
-                    ));
+                    return Err(DomainError::TeeRequired("HW TEE unseal requires --features tee_hw".into()));
                 }
                 #[cfg(feature = "tee_hw")]
                 {
@@ -318,11 +273,7 @@ impl TeeSealAdapter {
                             "HW TEE envelope refused without tee_hw HW backend".into(),
                         ));
                     };
-                    let expected = if mode == MODE_HW_SEV {
-                        AttestationMode::Sev
-                    } else {
-                        AttestationMode::Sgx
-                    };
+                    let expected = if mode == MODE_HW_SEV { AttestationMode::Sev } else { AttestationMode::Sgx };
                     if *platform != expected {
                         return Err(DomainError::ShareStoreForbidden(format!(
                             "tee seal mode {} does not match platform {}",
@@ -338,9 +289,7 @@ impl TeeSealAdapter {
                     Ok(plain)
                 }
             }
-            other => Err(DomainError::ShareStoreForbidden(format!(
-                "unknown tee seal mode {other}"
-            ))),
+            other => Err(DomainError::ShareStoreForbidden(format!("unknown tee seal mode {other}"))),
         }
     }
 }
@@ -370,8 +319,7 @@ impl ShareStorePort for TeeSealAdapter {
         match &self.backend {
             SealBackend::FailClosed => {
                 return Err(DomainError::TeeRequired(
-                    "TEE seal path not available; host disk AEAD is lab-only (production fail-closed)"
-                        .into(),
+                    "TEE seal path not available; host disk AEAD is lab-only (production fail-closed)".into(),
                 ));
             }
             #[cfg(not(feature = "production"))]
@@ -385,9 +333,7 @@ impl ShareStorePort for TeeSealAdapter {
                 self.require_attestation_ok()?;
             }
         }
-        fs::create_dir_all(&self.root).map_err(|e| {
-            DomainError::ShareStoreForbidden(format!("tee seal mkdir: {e}"))
-        })?;
+        fs::create_dir_all(&self.root).map_err(|e| DomainError::ShareStoreForbidden(format!("tee seal mkdir: {e}")))?;
         let sealed = self.seal_envelope(plaintext)?;
         atomic_write(&self.path_for(share_id), &sealed)
     }
@@ -395,15 +341,13 @@ impl ShareStorePort for TeeSealAdapter {
     fn get_share(&self, share_id: &str) -> Result<Vec<u8>, DomainError> {
         if matches!(&self.backend, SealBackend::FailClosed) {
             return Err(DomainError::TeeRequired(
-                "TEE unseal path not available; host disk AEAD is lab-only (production fail-closed)"
-                    .into(),
+                "TEE unseal path not available; host disk AEAD is lab-only (production fail-closed)".into(),
             ));
         }
         // Versioned HW/stub envelopes unseal only after attestation OK.
         self.require_attestation_ok()?;
-        let bytes = fs::read(self.path_for(share_id)).map_err(|e| {
-            DomainError::ShareStoreForbidden(format!("tee seal read: {e}"))
-        })?;
+        let bytes = fs::read(self.path_for(share_id))
+            .map_err(|e| DomainError::ShareStoreForbidden(format!("tee seal read: {e}")))?;
         self.unseal_envelope(&bytes)
     }
 }
@@ -423,16 +367,9 @@ mod hw {
             ));
         }
         use sev_snp_utilities::guest::derived_key::derived_key::DerivedKey;
-        use sev_snp_utilities::guest::derived_key::get_derived_key::{
-            DerivedKeyRequestBuilder, DerivedKeyRequester,
-        };
-        let options = DerivedKeyRequestBuilder::new()
-            .with_launch_measurement()
-            .with_tcb_version()
-            .build();
-        DerivedKey::request(options).map_err(|e| {
-            DomainError::TeeRequired(format!("SEV-SNP derived key failed: {e}"))
-        })
+        use sev_snp_utilities::guest::derived_key::get_derived_key::{DerivedKeyRequestBuilder, DerivedKeyRequester};
+        let options = DerivedKeyRequestBuilder::new().with_launch_measurement().with_tcb_version().build();
+        DerivedKey::request(options).map_err(|e| DomainError::TeeRequired(format!("SEV-SNP derived key failed: {e}")))
     }
 
     /// SGX sealing (`sgx_seal_data`) lives inside an enclave SDK; host CI has no path.
@@ -441,8 +378,7 @@ mod hw {
             || Path::new("/dev/isgx").exists()
             || Path::new("/dev/sgx/enclave").exists();
         Err(DomainError::TeeRequired(
-            "SGX seal unavailable on host path (enclave sgx_seal_data SDK required; fail-closed)"
-                .into(),
+            "SGX seal unavailable on host path (enclave sgx_seal_data SDK required; fail-closed)".into(),
         ))
     }
 }
@@ -457,10 +393,7 @@ mod tests {
     #[cfg(any(not(feature = "production"), feature = "tee_hw"))]
     impl TempDir {
         fn new(name: &str) -> Self {
-            let p = std::env::temp_dir().join(format!(
-                "kv-tee-{name}-{}",
-                std::process::id()
-            ));
+            let p = std::env::temp_dir().join(format!("kv-tee-{name}-{}", std::process::id()));
             let _ = std::fs::remove_dir_all(&p);
             std::fs::create_dir_all(&p).unwrap();
             Self(p)
@@ -475,9 +408,7 @@ mod tests {
 
     #[cfg(any(not(feature = "production"), feature = "tee_hw"))]
     fn stub_attestation(measurement: Measurement) -> Arc<dyn AttestationPort> {
-        Arc::new(
-            TeeAttestationAdapter::new(AttestationMode::Sev, true, b"plat", measurement).unwrap(),
-        )
+        Arc::new(TeeAttestationAdapter::new(AttestationMode::Sev, true, b"plat", measurement).unwrap())
     }
 
     #[cfg(not(feature = "production"))]
@@ -485,8 +416,7 @@ mod tests {
     fn staging_stub_roundtrip_envelope() {
         let tmp = TempDir::new("round");
         let m = Measurement::from_bytes(b"pin-v1");
-        let store = TeeSealAdapter::staging_stub(&tmp.0, "lab-pass", m.clone())
-            .with_attestation(stub_attestation(m));
+        let store = TeeSealAdapter::staging_stub(&tmp.0, "lab-pass", m.clone()).with_attestation(stub_attestation(m));
         store.put_share("s1", b"frost-share-bytes").unwrap();
         let got = store.get_share("s1").unwrap();
         assert_eq!(got, b"frost-share-bytes");
@@ -501,28 +431,19 @@ mod tests {
     fn staging_stub_unseal_requires_attestation_ok() {
         let tmp = TempDir::new("att-gate");
         let m = Measurement::from_bytes(b"pin-att");
-        let store = TeeSealAdapter::staging_stub(&tmp.0, "lab-pass", m.clone())
-            .with_attestation(stub_attestation(m.clone()));
+        let store =
+            TeeSealAdapter::staging_stub(&tmp.0, "lab-pass", m.clone()).with_attestation(stub_attestation(m.clone()));
         store.put_share("s1", b"secret").unwrap();
 
         let no_att = TeeSealAdapter::staging_stub(&tmp.0, "lab-pass", m);
-        assert!(matches!(
-            no_att.get_share("s1"),
-            Err(DomainError::TeeRequired(_))
-        ));
+        assert!(matches!(no_att.get_share("s1"), Err(DomainError::TeeRequired(_))));
     }
 
     #[test]
     fn fail_closed_without_hw_no_stub() {
         let store = TeeSealAdapter::fail_closed(Measurement::from_bytes(b"x"));
-        assert!(matches!(
-            store.put_share("s", b"x"),
-            Err(DomainError::TeeRequired(_))
-        ));
-        assert!(matches!(
-            store.get_share("s"),
-            Err(DomainError::TeeRequired(_))
-        ));
+        assert!(matches!(store.put_share("s", b"x"), Err(DomainError::TeeRequired(_))));
+        assert!(matches!(store.get_share("s"), Err(DomainError::TeeRequired(_))));
         assert_eq!(store.store_kind(), "tee_seal");
     }
 
@@ -531,15 +452,12 @@ mod tests {
     fn stub_path_only_when_explicitly_allowed() {
         let tmp = TempDir::new("stub-only");
         let m = Measurement::from_bytes(b"pin-a");
-        let allowed = TeeSealAdapter::staging_stub(&tmp.0, "lab-pass", m.clone())
-            .with_attestation(stub_attestation(m.clone()));
+        let allowed =
+            TeeSealAdapter::staging_stub(&tmp.0, "lab-pass", m.clone()).with_attestation(stub_attestation(m.clone()));
         allowed.put_share("s1", b"secret").unwrap();
 
         let refused = TeeSealAdapter::fail_closed(m);
-        assert!(matches!(
-            refused.get_share("s1"),
-            Err(DomainError::TeeRequired(_))
-        ));
+        assert!(matches!(refused.get_share("s1"), Err(DomainError::TeeRequired(_))));
         assert!(matches!(
             refused.unseal_envelope(&std::fs::read(allowed.path_for("s1")).unwrap()),
             Err(DomainError::TeeRequired(_))
@@ -555,10 +473,7 @@ mod tests {
         blob.push(ENVELOPE_VERSION);
         blob.push(MODE_STAGING_STUB);
         blob.extend_from_slice(&[0u8; 16 + 12 + 16]);
-        assert!(matches!(
-            store.unseal_envelope(&blob),
-            Err(DomainError::TeeRequired(_))
-        ));
+        assert!(matches!(store.unseal_envelope(&blob), Err(DomainError::TeeRequired(_))));
         assert!(!cfg!(feature = "dealer_lab"));
     }
 
@@ -566,19 +481,11 @@ mod tests {
     #[test]
     fn wrong_measurement_cannot_unseal() {
         let tmp = TempDir::new("meas");
-        let a = TeeSealAdapter::staging_stub(
-            &tmp.0,
-            "lab-pass",
-            Measurement::from_bytes(b"pin-a"),
-        )
-        .with_attestation(stub_attestation(Measurement::from_bytes(b"pin-a")));
+        let a = TeeSealAdapter::staging_stub(&tmp.0, "lab-pass", Measurement::from_bytes(b"pin-a"))
+            .with_attestation(stub_attestation(Measurement::from_bytes(b"pin-a")));
         a.put_share("s1", b"secret").unwrap();
-        let b = TeeSealAdapter::staging_stub(
-            &tmp.0,
-            "lab-pass",
-            Measurement::from_bytes(b"pin-b"),
-        )
-        .with_attestation(stub_attestation(Measurement::from_bytes(b"pin-b")));
+        let b = TeeSealAdapter::staging_stub(&tmp.0, "lab-pass", Measurement::from_bytes(b"pin-b"))
+            .with_attestation(stub_attestation(Measurement::from_bytes(b"pin-b")));
         assert!(b.get_share("s1").is_err());
     }
 
@@ -603,9 +510,8 @@ mod tests {
     fn tee_hw_sgx_fail_closed_without_enclave_sdk() {
         let tmp = TempDir::new("hw-sgx");
         let m = Measurement::from_bytes(b"hw-sgx-pin");
-        let att = Arc::new(
-            TeeAttestationAdapter::new(AttestationMode::Sgx, true, b"plat", m.clone()).unwrap(),
-        ) as Arc<dyn AttestationPort>;
+        let att = Arc::new(TeeAttestationAdapter::new(AttestationMode::Sgx, true, b"plat", m.clone()).unwrap())
+            as Arc<dyn AttestationPort>;
         let store = TeeSealAdapter::hw(&tmp.0, AttestationMode::Sgx, m, att).unwrap();
         let err = store.put_share("s", b"x").unwrap_err();
         assert!(matches!(err, DomainError::TeeRequired(_)));

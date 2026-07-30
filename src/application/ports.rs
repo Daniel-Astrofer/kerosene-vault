@@ -1,9 +1,8 @@
 use crate::domain::{
-    AttestationMode, AttestationQuote, AllowlistEntry, BucketKind, BucketPolicy, Constitution,
-    ContentHash, DayEpoch, DomainError, EconomyState, Epoch, EpochAdvanceProposal,
-    GovernanceAccrual, GovernanceJobKind, GovernanceRewardConfig, HybridContext, HybridEnvelope,
-    LedgerEntry, Measurement, MinerOperator, MinerPayoutShare, NodeId, PeerInfo,
-    ProfitSplitAccrual, ProfitSplits, ReleaseCandidate, ReleasePolicy, ResharePolicy,
+    AllowlistEntry, AttestationMode, AttestationQuote, BucketKind, BucketPolicy, Constitution, ContentHash, DayEpoch,
+    DomainError, EconomyState, Epoch, EpochAdvanceProposal, GovernanceAccrual, GovernanceJobKind,
+    GovernanceRewardConfig, HybridContext, HybridEnvelope, LedgerEntry, Measurement, MinerOperator, MinerPayoutShare,
+    NodeId, PeerInfo, ProfitSplitAccrual, ProfitSplits, ReleaseCandidate, ReleasePolicy, ResharePolicy,
 };
 
 pub trait PeerDirectoryPort: Send + Sync {
@@ -82,12 +81,7 @@ pub trait BucketLedgerPort: Send + Sync {
         self.try_consume(intent_id)
     }
     /// Release soft reservation and roll back tentative spend (sign failure path).
-    fn release_reservation(
-        &self,
-        intent_id: &str,
-        kind: BucketKind,
-        amount_sats: u64,
-    ) -> Result<(), DomainError> {
+    fn release_reservation(&self, intent_id: &str, kind: BucketKind, amount_sats: u64) -> Result<(), DomainError> {
         let _ = (intent_id, kind, amount_sats);
         Ok(())
     }
@@ -126,11 +120,7 @@ pub trait EconomyPort: Send + Sync {
     fn snapshot(&self) -> Result<EconomyState, DomainError>;
     fn upsert_operator(&self, op: MinerOperator) -> Result<(), DomainError>;
     fn accrue_from_profit(&self, profit_sats: u64, p_reward_bps: u32) -> Result<u64, DomainError>;
-    fn accrue_profit_splits(
-        &self,
-        profit_sats: u64,
-        splits: &ProfitSplits,
-    ) -> Result<ProfitSplitAccrual, DomainError>;
+    fn accrue_profit_splits(&self, profit_sats: u64, splits: &ProfitSplits) -> Result<ProfitSplitAccrual, DomainError>;
     fn accrue_governance_job(
         &self,
         job: GovernanceJobKind,
@@ -184,11 +174,7 @@ pub trait AntiNoncePort: Send + Sync {
         self.prepare_remote(session_id)
     }
     /// Soft prepare bound to an Intent id (session must equal intent or `intent:…`).
-    fn prepare_remote_bound(
-        &self,
-        session_id: &str,
-        intent_id: &str,
-    ) -> Result<bool, DomainError> {
+    fn prepare_remote_bound(&self, session_id: &str, intent_id: &str) -> Result<bool, DomainError> {
         bind_session_to_intent(session_id, intent_id)?;
         self.prepare_remote(session_id)
     }
@@ -203,16 +189,12 @@ pub fn bind_session_to_intent(session_id: &str, intent_id: &str) -> Result<(), D
     let intent_id = intent_id.trim();
     let session_id = session_id.trim();
     if intent_id.is_empty() || session_id.is_empty() {
-        return Err(DomainError::NonceReuse(
-            "session_id and intent_id required for anti-nonce prepare".into(),
-        ));
+        return Err(DomainError::NonceReuse("session_id and intent_id required for anti-nonce prepare".into()));
     }
     if session_id == intent_id || session_id.starts_with(&format!("{intent_id}:")) {
         return Ok(());
     }
-    Err(DomainError::NonceReuse(format!(
-        "session_id {session_id} not bound to intent {intent_id}"
-    )))
+    Err(DomainError::NonceReuse(format!("session_id {session_id} not bound to intent {intent_id}")))
 }
 
 /// Hook invoked after a quorum day_epoch advance (reshare policy).
@@ -222,12 +204,7 @@ pub trait ReshareHookPort: Send + Sync {
     }
     /// Called after governance quorum advances the day_epoch.
     /// `participants` are vaults that voted for the target day (eligibility hook).
-    fn on_day_advance(
-        &self,
-        from: &DayEpoch,
-        to: &DayEpoch,
-        participants: &[NodeId],
-    ) -> Result<(), DomainError>;
+    fn on_day_advance(&self, from: &DayEpoch, to: &DayEpoch, participants: &[NodeId]) -> Result<(), DomainError>;
     /// Explicit FROST reshare (`VAULT_RESHARE_POLICY=manual` or ops trigger).
     fn trigger_manual(&self, reason: &str) -> Result<(), DomainError> {
         let _ = reason;
@@ -263,11 +240,7 @@ pub trait ChannelInjectPort: Send + Sync {
     /// Close a channel specified by `channel_point` (txid:vout).
     /// If `force` is true, force-close the channel.
     /// Returns the closing txid.
-    fn close_channel(
-        &self,
-        channel_point: &str,
-        force: bool,
-    ) -> Result<String, DomainError>;
+    fn close_channel(&self, channel_point: &str, force: bool) -> Result<String, DomainError>;
 }
 
 /// Hybrid envelope: X25519 + ML-KEM-768 + AES-256-GCM with HKDF-SHA-384 combiner.

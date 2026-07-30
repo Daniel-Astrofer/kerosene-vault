@@ -19,20 +19,13 @@ impl SignMessage {
     }
 
     pub fn begin(&self, session_id: &str, message_hash: &str) -> Result<SigningSession, DomainError> {
-        self.threshold
-            .begin_session(session_id, message_hash, self.online.online_count())
+        self.threshold.begin_session(session_id, message_hash, self.online.online_count())
     }
 
-    pub fn run_lab_quorum_sign(
-        &self,
-        session_id: &str,
-        message_hash: &str,
-    ) -> Result<CombinedSignature, DomainError> {
+    pub fn run_lab_quorum_sign(&self, session_id: &str, message_hash: &str) -> Result<CombinedSignature, DomainError> {
         let online = self.online.online_count();
-        self.threshold
-            .begin_session(session_id, message_hash, online)?;
-        self.threshold
-            .lab_collect_partials_from_all(session_id, online)?;
+        self.threshold.begin_session(session_id, message_hash, online)?;
+        self.threshold.lab_collect_partials_from_all(session_id, online)?;
         self.threshold.combine(session_id, online)
     }
 }
@@ -54,9 +47,7 @@ pub struct MutableOnlineCount {
 
 impl MutableOnlineCount {
     pub fn new(count: usize) -> Self {
-        Self {
-            count: std::sync::Mutex::new(count),
-        }
+        Self { count: std::sync::Mutex::new(count) }
     }
 
     pub fn set(&self, count: usize) {

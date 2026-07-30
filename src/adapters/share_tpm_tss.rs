@@ -268,11 +268,7 @@ impl TpmTssSealAdapter {
     }
 
     /// Verify a TPM quote against expected PCR values.
-    pub fn tss_verify_quote(
-        &self,
-        _quote: &[u8],
-        _expected_pcr_digest: &[u8],
-    ) -> Result<(), DomainError> {
+    pub fn tss_verify_quote(&self, _quote: &[u8], _expected_pcr_digest: &[u8]) -> Result<(), DomainError> {
         Err(Self::tss_not_linked())
     }
 
@@ -367,15 +363,14 @@ impl TpmSealPort for TpmTssSealAdapter {
             let _ = (plaintext, policy_digest);
             Err(DomainError::TpmRequired(
                 "TPM TSS seal compiled (features tpm) but tss-esapi not linked — \
-                 install libtss2-esys + libtss2-tcti-device".into(),
+                 install libtss2-esys + libtss2-tcti-device"
+                    .into(),
             ))
         }
         #[cfg(not(feature = "tpm"))]
         {
             let _ = (plaintext, policy_digest);
-            Err(DomainError::TpmRequired(
-                "TPM TSS seal not compiled: rebuild with --features tpm".into(),
-            ))
+            Err(DomainError::TpmRequired("TPM TSS seal not compiled: rebuild with --features tpm".into()))
         }
     }
 
@@ -392,15 +387,14 @@ impl TpmSealPort for TpmTssSealAdapter {
             let _ = (sealed, policy_digest);
             Err(DomainError::TpmRequired(
                 "TPM TSS unseal compiled (features tpm) but tss-esapi not linked — \
-                 install libtss2-esys + libtss2-tcti-device".into(),
+                 install libtss2-esys + libtss2-tcti-device"
+                    .into(),
             ))
         }
         #[cfg(not(feature = "tpm"))]
         {
             let _ = (sealed, policy_digest);
-            Err(DomainError::TpmRequired(
-                "TPM TSS unseal not compiled: rebuild with --features tpm".into(),
-            ))
+            Err(DomainError::TpmRequired("TPM TSS unseal not compiled: rebuild with --features tpm".into()))
         }
     }
 }
@@ -497,8 +491,7 @@ mod tests {
 
     #[test]
     fn tss_adapter_custom_tcti() {
-        let adapter = TpmTssSealAdapter::new()
-            .with_tcti("swtpm:path=/tmp/mytpm/sock");
+        let adapter = TpmTssSealAdapter::new().with_tcti("swtpm:path=/tmp/mytpm/sock");
         assert_eq!(adapter.backend_kind(), "tss");
     }
 
@@ -511,10 +504,7 @@ mod tests {
     #[test]
     fn tss_verify_quote_stub_fails_closed() {
         let adapter = TpmTssSealAdapter::new();
-        assert!(matches!(
-            adapter.tss_verify_quote(b"quote", b"digest"),
-            Err(DomainError::TpmRequired(_))
-        ));
+        assert!(matches!(adapter.tss_verify_quote(b"quote", b"digest"), Err(DomainError::TpmRequired(_))));
     }
 
     #[test]

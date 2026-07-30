@@ -59,8 +59,7 @@ pub fn issue_report(measurement: &Measurement) -> Result<Vec<u8>, DomainError> {
     {
         let _ = measurement;
         Err(DomainError::AttestationRejected(
-            "SGX hardware quote unavailable: rebuild with --features tee_hw (CI fail-closed without HW)"
-                .into(),
+            "SGX hardware quote unavailable: rebuild with --features tee_hw (CI fail-closed without HW)".into(),
         ))
     }
 }
@@ -75,8 +74,7 @@ pub fn verify_report(measurement: &Measurement, report: &[u8]) -> Result<(), Dom
     {
         let _ = (measurement, report);
         Err(DomainError::AttestationRejected(
-            "SGX hardware verify unavailable: rebuild with --features tee_hw (CI fail-closed without HW)"
-                .into(),
+            "SGX hardware verify unavailable: rebuild with --features tee_hw (CI fail-closed without HW)".into(),
         ))
     }
 }
@@ -177,11 +175,7 @@ pub struct SgxTcbVersion {
 impl SgxTcbVersion {
     /// Minimum required TCB version for vault go-live.
     /// Must be updated when Intel publishes TCB recoveries.
-    pub const MINIMUM: Self = Self {
-        cpu_svn: [0u8; 16],
-        pce_svn: 0,
-        qe_svn: 0,
-    };
+    pub const MINIMUM: Self = Self { cpu_svn: [0u8; 16], pce_svn: 0, qe_svn: 0 };
 }
 
 /// Validate SGX TCB version against minimum required.
@@ -190,10 +184,7 @@ impl SgxTcbVersion {
 /// If any is lower → outdated TCB → possible firmware rollback → refuse.
 ///
 /// Returns `Err(AttestationRejected)` with component details if validation fails.
-pub fn validate_sgx_tcb(
-    reported: &SgxTcbVersion,
-    minimum: &SgxTcbVersion,
-) -> Result<(), DomainError> {
+pub fn validate_sgx_tcb(reported: &SgxTcbVersion, minimum: &SgxTcbVersion) -> Result<(), DomainError> {
     // Check cpu_svn byte-by-byte (lexicographic comparison)
     for (i, (&r, &m)) in reported.cpu_svn.iter().zip(minimum.cpu_svn.iter()).enumerate() {
         if r < m {
@@ -247,46 +238,22 @@ mod tests {
 
     #[test]
     fn sgx_tcb_validation_accepts_equal() {
-        let reported = SgxTcbVersion {
-            cpu_svn: [1u8; 16],
-            pce_svn: 5,
-            qe_svn: 5,
-        };
-        let minimum = SgxTcbVersion {
-            cpu_svn: [1u8; 16],
-            pce_svn: 5,
-            qe_svn: 5,
-        };
+        let reported = SgxTcbVersion { cpu_svn: [1u8; 16], pce_svn: 5, qe_svn: 5 };
+        let minimum = SgxTcbVersion { cpu_svn: [1u8; 16], pce_svn: 5, qe_svn: 5 };
         assert!(validate_sgx_tcb(&reported, &minimum).is_ok());
     }
 
     #[test]
     fn sgx_tcb_validation_accepts_greater() {
-        let reported = SgxTcbVersion {
-            cpu_svn: [2u8; 16],
-            pce_svn: 10,
-            qe_svn: 10,
-        };
-        let minimum = SgxTcbVersion {
-            cpu_svn: [1u8; 16],
-            pce_svn: 5,
-            qe_svn: 5,
-        };
+        let reported = SgxTcbVersion { cpu_svn: [2u8; 16], pce_svn: 10, qe_svn: 10 };
+        let minimum = SgxTcbVersion { cpu_svn: [1u8; 16], pce_svn: 5, qe_svn: 5 };
         assert!(validate_sgx_tcb(&reported, &minimum).is_ok());
     }
 
     #[test]
     fn sgx_tcb_validation_rejects_cpu_svn_rollback() {
-        let reported = SgxTcbVersion {
-            cpu_svn: [0u8; 16],
-            pce_svn: 5,
-            qe_svn: 5,
-        };
-        let minimum = SgxTcbVersion {
-            cpu_svn: [1u8; 16],
-            pce_svn: 5,
-            qe_svn: 5,
-        };
+        let reported = SgxTcbVersion { cpu_svn: [0u8; 16], pce_svn: 5, qe_svn: 5 };
+        let minimum = SgxTcbVersion { cpu_svn: [1u8; 16], pce_svn: 5, qe_svn: 5 };
         assert!(matches!(
             validate_sgx_tcb(&reported, &minimum),
             Err(DomainError::AttestationRejected(ref msg)) if msg.contains("cpu_svn")
@@ -295,16 +262,8 @@ mod tests {
 
     #[test]
     fn sgx_tcb_validation_rejects_pce_svn_rollback() {
-        let reported = SgxTcbVersion {
-            cpu_svn: [1u8; 16],
-            pce_svn: 4,
-            qe_svn: 5,
-        };
-        let minimum = SgxTcbVersion {
-            cpu_svn: [1u8; 16],
-            pce_svn: 5,
-            qe_svn: 5,
-        };
+        let reported = SgxTcbVersion { cpu_svn: [1u8; 16], pce_svn: 4, qe_svn: 5 };
+        let minimum = SgxTcbVersion { cpu_svn: [1u8; 16], pce_svn: 5, qe_svn: 5 };
         assert!(matches!(
             validate_sgx_tcb(&reported, &minimum),
             Err(DomainError::AttestationRejected(ref msg)) if msg.contains("pce_svn")
