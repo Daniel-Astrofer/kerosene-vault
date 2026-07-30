@@ -18,8 +18,8 @@ path = "src/lib.rs"
 vault-identity-core = { path = "../vault-identity-core" }
 
 # FROST signing
-frost-secp256k1 = "3"
-frost-secp256k1-tr = "3"
+frost-secp256k1 = { version = "3", features = ["serde"] }
+frost-secp256k1-tr = { version = "3", features = ["serde"] }
 
 # Tokio — sync only (no net features)
 tokio = { version = "1", default-features = false, features = ["rt", "macros", "sync", "io-util"] }

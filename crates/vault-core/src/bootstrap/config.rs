@@ -1153,6 +1153,7 @@ mod tests {
             peer_http: PeerHttpSettings::clearnet_defaults(),
             clearnet_publish: false,
             admin_unix_socket_path: None,
+        }
     }
 
     fn with_mtls_paths(mut cfg: VaultConfig) -> VaultConfig {

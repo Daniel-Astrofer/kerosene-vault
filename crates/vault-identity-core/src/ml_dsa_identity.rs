@@ -3,7 +3,15 @@
 //! ML-DSA (Module-Lattice-Based Digital Signature Algorithm) is the
 //! FIPS 204 post-quantum signing standard. ML-DSA-65 targets NIST
 //! security level 3 (AES-192 equivalent).
+//!
+//! Key storage format:
+//!   - secret: `ExpandedSigningKeyBytes` (4032 bytes)
+//!   - public: `EncodedVerifyingKey` (1952 bytes)
 
+use ml_dsa::{
+    ExpandedSigningKey, ExpandedSigningKeyBytes, EncodedSignature,
+    EncodedVerifyingKey, MlDsa65, Signature, SigningKey, VerifyingKey,
+};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 use crate::error::IdentityError;
@@ -12,19 +20,15 @@ use crate::VaultIdentity;
 /// ML-DSA-65 identity keypair (post-quantum signing).
 #[derive(Debug, Clone, Zeroize, ZeroizeOnDrop)]
 pub struct MlDsa65Identity {
-    /// Serialized secret key.
     secret_key: Vec<u8>,
-    /// Serialized public key.
     public_key: Vec<u8>,
 }
 
-// ML-DSA-65 fixed sizes per FIPS 204
 const ML_DSA_65_SECRET_KEY_LEN: usize = 4032;
 const ML_DSA_65_PUBLIC_KEY_LEN: usize = 1952;
 const ML_DSA_65_SIGNATURE_LEN: usize = 3309;
 
 impl MlDsa65Identity {
-    /// Create from raw key material.
     pub fn from_raw(secret: &[u8], public: &[u8]) -> Result<Self, IdentityError> {
         if secret.len() != ML_DSA_65_SECRET_KEY_LEN {
             return Err(IdentityError::InvalidKeyMaterial(format!(
@@ -43,6 +47,19 @@ impl MlDsa65Identity {
             public_key: public.to_vec(),
         })
     }
+
+    fn load_expanded_sk(&self) -> Result<ExpandedSigningKey<MlDsa65>, IdentityError> {
+        let arr = ExpandedSigningKeyBytes::<MlDsa65>::try_from(self.secret_key.as_slice())
+            .map_err(|_| IdentityError::InvalidKeyMaterial("bad expanded SK length".into()))?;
+        #[allow(deprecated)]
+        Ok(ExpandedSigningKey::<MlDsa65>::from_expanded(&arr))
+    }
+
+    fn load_vk(&self) -> Result<VerifyingKey<MlDsa65>, IdentityError> {
+        let arr = EncodedVerifyingKey::<MlDsa65>::try_from(self.public_key.as_slice())
+            .map_err(|_| IdentityError::InvalidKeyMaterial("bad VK length".into()))?;
+        Ok(VerifyingKey::<MlDsa65>::decode(&arr))
+    }
 }
 
 impl VaultIdentity for MlDsa65Identity {
@@ -51,14 +68,18 @@ impl VaultIdentity for MlDsa65Identity {
     type Signature = Vec<u8>;
 
     fn generate() -> Result<Self, IdentityError> {
-        // Use ml-dsa crate for key generation
-        let mut rng = rand::rngs::OsRng;
-        let (secret, public) = ml_dsa::generate_keypair::<ml_dsa::MlDsa65>(&mut rng)
+        use ml_dsa::Generate;
+        let mut rng = getrandom::SysRng;
+        let sk = SigningKey::<MlDsa65>::try_generate_from_rng(&mut rng)
             .map_err(|e| IdentityError::KeyGenerationFailed(format!("ML-DSA-65 keygen: {e}")))?;
 
+        #[allow(deprecated)]
+        let expanded_bytes = sk.expanded_key().to_expanded();
+        let vk_bytes = sk.expanded_key().verifying_key().encode();
+
         Ok(Self {
-            secret_key: secret.as_ref().to_vec(),
-            public_key: public.as_ref().to_vec(),
+            secret_key: expanded_bytes.as_slice().to_vec(),
+            public_key: vk_bytes.as_slice().to_vec(),
         })
     }
 
@@ -69,13 +90,15 @@ impl VaultIdentity for MlDsa65Identity {
                 secret.len()
             )));
         }
-        // Recover public key from secret
-        let (_, public) = ml_dsa::Keypair::from_secret(&ml_dsa::MlDsa65, secret)
-            .map_err(|e| IdentityError::InvalidKeyMaterial(format!("ML-DSA-65 key recovery: {e}")))?;
+        let arr = ExpandedSigningKeyBytes::<MlDsa65>::try_from(secret.as_slice())
+            .map_err(|_| IdentityError::InvalidKeyMaterial("bad SK length".into()))?;
+        #[allow(deprecated)]
+        let expanded = ExpandedSigningKey::<MlDsa65>::from_expanded(&arr);
+        let vk_bytes = expanded.verifying_key().encode();
 
         Ok(Self {
             secret_key: secret.clone(),
-            public_key: public.as_ref().to_vec(),
+            public_key: vk_bytes.as_slice().to_vec(),
         })
     }
 
@@ -88,23 +111,37 @@ impl VaultIdentity for MlDsa65Identity {
     }
 
     fn sign(&self, message: &[u8]) -> Result<Self::Signature, IdentityError> {
-        let mut rng = rand::rngs::OsRng;
-        let signature = ml_dsa::sign(message, &self.secret_key, &mut rng)
+        let expanded = self.load_expanded_sk()?;
+        // Use ml_dsa::Signer re-export (signature 3.x) via try_sign
+        let sig: Signature<MlDsa65> = ml_dsa::Signer::try_sign(&expanded, message)
             .map_err(|e| IdentityError::SigningFailed(format!("ML-DSA-65 sign: {e}")))?;
-        Ok(signature)
+        Ok(sig.encode().as_slice().to_vec())
     }
 
-    fn verify(public: &Self::PublicKey, message: &[u8], signature: &Self::Signature) -> Result<bool, IdentityError> {
+    fn verify(
+        public: &Self::PublicKey,
+        message: &[u8],
+        signature: &Self::Signature,
+    ) -> Result<bool, IdentityError> {
         if public.len() != ML_DSA_65_PUBLIC_KEY_LEN {
             return Err(IdentityError::InvalidKeyMaterial(format!(
                 "ML-DSA-65 verify: expected {ML_DSA_65_PUBLIC_KEY_LEN} byte public key, got {}",
                 public.len()
             )));
         }
-        match ml_dsa::verify(message, signature, public) {
-            Ok(()) => Ok(true),
-            Err(_) => Ok(false),
+        let vk_arr = EncodedVerifyingKey::<MlDsa65>::try_from(public.as_slice())
+            .map_err(|_| IdentityError::InvalidKeyMaterial("bad VK length".into()))?;
+        let vk = VerifyingKey::<MlDsa65>::decode(&vk_arr);
+
+        if signature.len() != ML_DSA_65_SIGNATURE_LEN {
+            return Ok(false);
         }
+        let sig_arr = EncodedSignature::<MlDsa65>::try_from(signature.as_slice())
+            .map_err(|_| IdentityError::InvalidKeyMaterial("bad sig length".into()))?;
+        let sig = Signature::<MlDsa65>::decode(&sig_arr)
+            .ok_or_else(|| IdentityError::InvalidKeyMaterial("invalid signature bytes".into()))?;
+
+        Ok(vk.verify_internal(message, &sig))
     }
 
     fn to_bytes(&self) -> Vec<u8> {
@@ -124,7 +161,9 @@ impl VaultIdentity for MlDsa65Identity {
         }
         Ok(Self {
             secret_key: bytes[..ML_DSA_65_SECRET_KEY_LEN].to_vec(),
-            public_key: bytes[ML_DSA_65_SECRET_KEY_LEN..ML_DSA_65_SECRET_KEY_LEN + ML_DSA_65_PUBLIC_KEY_LEN].to_vec(),
+            public_key: bytes[ML_DSA_65_SECRET_KEY_LEN
+                ..ML_DSA_65_SECRET_KEY_LEN + ML_DSA_65_PUBLIC_KEY_LEN]
+                .to_vec(),
         })
     }
 }
@@ -180,9 +219,7 @@ mod tests {
         let id = MlDsa65Identity::generate().unwrap();
         let valid = MlDsa65Identity::from_raw(&id.secret_key, &id.public_key);
         assert!(valid.is_ok());
-        let bad_secret = MlDsa65Identity::from_raw(&[0u8; 10], &id.public_key);
-        assert!(bad_secret.is_err());
-        let bad_public = MlDsa65Identity::from_raw(&id.secret_key, &[0u8; 10]);
-        assert!(bad_public.is_err());
+        assert!(MlDsa65Identity::from_raw(&[0u8; 10], &id.public_key).is_err());
+        assert!(MlDsa65Identity::from_raw(&id.secret_key, &[0u8; 10]).is_err());
     }
 }

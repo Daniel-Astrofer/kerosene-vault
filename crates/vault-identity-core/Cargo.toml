@@ -11,7 +11,9 @@ path = "src/lib.rs"
 
 [dependencies]
 ed25519-dalek = { version = "2", features = ["rand_core"] }
-ml-dsa = "0.1"
+ml-dsa = { version = "0.1", features = ["rand_core"] }
+rand = "0.8"
+getrandom = "0.4"
 serde = { version = "1", features = ["derive"] }
 sha2 = "0.10"
 x25519-dalek = "2"
@@ -19,4 +21,3 @@ zeroize = { version = "1", features = ["zeroize_derive"] }
 secrecy = "0.10"
 
 [dev-dependencies]
-rand = "0.8"

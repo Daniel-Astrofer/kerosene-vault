@@ -16,6 +16,7 @@ use kerosene_contracts::{
     ADMIN_CONTRACT_VERSION,
 };
 
+use crate::application::ports::PeerDirectoryPort;
 use crate::bootstrap::VaultRuntime;
 
 /// Read-only administrative service for vault introspection.
@@ -165,7 +166,6 @@ impl AdminService {
         let event_id = format!("vault-admin-{now:x}-{}", rand_byte_prefix());
 
         AuditReferenceV1 {
-            contract_version: ADMIN_CONTRACT_VERSION.to_string(),
             event_id,
             request_id: request_id.to_string(),
             occurred_at: iso_timestamp(),

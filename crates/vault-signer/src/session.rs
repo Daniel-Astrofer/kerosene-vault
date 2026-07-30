@@ -9,7 +9,7 @@ use frost_secp256k1 as frost;
 use frost_secp256k1::Identifier;
 use serde::{Deserialize, Serialize};
 
-use crate::signer::{SerializedCommitments, SerializedSignatureShare, SignerError};
+use crate::signer::SignerError;
 
 /// Unique session identifier.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

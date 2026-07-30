@@ -33,6 +33,7 @@ futures-util = "0.3"
 hkdf = "0.12"
 hex = "0.4"
 http-body-util = "0.1"
+libc = "0.2"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
 kerosene-contracts = { path = "../../../kerosene-contracts-admin/rust/kerosene-contracts" }

@@ -13,9 +13,9 @@
 use std::sync::Arc;
 
 use axum::body::Body;
-use axum::extract::State;
+use axum::extract::{Request, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::middleware::{from_fn, Next};
+use axum::middleware::{from_fn, from_fn_with_state, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::get;
 use axum::{Json, Router};
@@ -23,8 +23,7 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use kerosene_contracts::AdminErrorEnvelopeV1;
-use bytes::Bytes;
-
+use tower::ServiceExt;
 use crate::application::{admin_error, resolve_request_id, AdminService};
 use crate::bootstrap::VaultRuntime;
 
@@ -32,26 +31,59 @@ use crate::bootstrap::VaultRuntime;
 #[derive(Clone)]
 pub struct AdminApiState {
     pub service: AdminService,
+    pub auth_token: String,
 }
 
-/// Build the admin API router with security middleware.
-///
-/// Returns a standalone `Router` that can be served on a Unix socket or TCP.
-pub fn build_admin_router(runtime: Arc<VaultRuntime>) -> Router {
-    let service = AdminService::new(runtime);
-    let state = AdminApiState { service };
+/// Auth header constant for admin API token validation.
+const ADMIN_AUTH_HEADER: &str = "X-Vault-Token";
 
-    Router::new()
+/// Build the admin API router with security + auth middleware.
+///
+/// All routes require a valid auth token via `X-Vault-Token` header.
+/// Fails (panics) at construction if no token is configured — fail-closed.
+pub fn build_admin_router(runtime: Arc<VaultRuntime>) -> Router {
+    let auth_token = runtime.config.effective_vault_token()
+        .expect(
+            "FATAL: VAULT_API_TOKEN is required for admin API. \
+             The admin socket will NOT start without an auth token (fail-closed).",
+        )
+        .to_string();
+    let service = AdminService::new(runtime);
+    let state = AdminApiState { service, auth_token };
+
+    let protected = Router::new()
         .route("/admin/status", get(admin_status_handler))
         .route("/admin/health", get(admin_health_handler))
         .route("/admin/roster", get(admin_roster_handler))
         .route("/admin/ceremony", get(admin_ceremony_handler))
         .route("/admin/compatibility", get(admin_compatibility_handler))
         .route("/admin/audit-reference", get(admin_audit_reference_handler))
-        .route("/admin/error-test", get(admin_error_test_handler))
+        .route_layer(from_fn_with_state(state.clone(), require_admin_auth_mw));
+
+    Router::new()
+        .merge(protected)
         .layer(from_fn(admin_security_headers_mw))
         .layer(axum::extract::DefaultBodyLimit::max(64 * 1024))
         .with_state(state)
+}
+
+/// Auth middleware for admin routes.
+async fn require_admin_auth_mw(
+    State(state): State<AdminApiState>,
+    headers: HeaderMap,
+    request: Request,
+    next: Next,
+) -> Result<Response, (StatusCode, Json<serde_json::Value>)> {
+    match headers.get(ADMIN_AUTH_HEADER).and_then(|v| v.to_str().ok()) {
+        Some(token) if token == state.auth_token => Ok(next.run(request).await),
+        Some(_) | None => {
+            eprintln!("unauthorized admin API request (missing or invalid auth token)");
+            Err((
+                StatusCode::UNAUTHORIZED,
+                Json(serde_json::json!({"error": "unauthorized: valid X-Vault-Token header required"})),
+            ))
+        }
+    }
 }
 
 /// Security headers middleware for admin responses.
@@ -152,12 +184,6 @@ async fn admin_audit_reference_handler(
     (StatusCode::OK, Json(resp))
 }
 
-/// GET /admin/error-test — returns a test error envelope (for client integration tests).
-async fn admin_error_test_handler(headers: HeaderMap) -> impl IntoResponse {
-    let request_id = extract_request_id(&headers);
-    admin_error_json(admin_error(&request_id, "ERR_TEST", "this is a test error envelope"))
-}
-
 /// Spawn the admin API on a Unix domain socket.
 ///
 /// Creates a `tokio::net::UnixListener` bound to `socket_path`,
@@ -202,11 +228,9 @@ pub async fn spawn_admin_unix_socket(
                         let svc = service_fn(move |req: hyper::Request<hyper::body::Incoming>| {
                             let router = router.clone();
                             async move {
-                                let (parts, _incoming) = req.into_parts();
-                                // Admin endpoints are all GET — empty body is sufficient.
-                                let body = Body::from(http_body_util::Empty::<Bytes>::new());
-                                let axum_req = axum::http::Request::from_parts(parts, body);
-                                router.call(axum_req).await
+                                let (parts, _body) = req.into_parts();
+                                let axum_req = axum::http::Request::from_parts(parts, Body::from(&b""[..]));
+                                Ok::<_, std::convert::Infallible>(router.oneshot(axum_req).await.unwrap())
                             }
                         });
                         if let Err(e) = http1::Builder::new().serve_connection(io, svc).await {

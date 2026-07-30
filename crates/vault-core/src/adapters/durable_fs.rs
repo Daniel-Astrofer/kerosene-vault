@@ -5,11 +5,15 @@
 
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 
 use crate::domain::DomainError;
 
 /// Write `data` to `path` via tmp + fsync + rename + parent fsync.
+///
+/// Opens the temporary file with O_NOFOLLOW to prevent symlink races:
+/// if an attacker replaces the tmp path with a symlink, the open fails.
 pub fn atomic_write_fsync(path: &Path, data: &[u8]) -> Result<(), DomainError> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -21,8 +25,9 @@ pub fn atomic_write_fsync(path: &Path, data: &[u8]) -> Result<(), DomainError> {
             .create(true)
             .write(true)
             .truncate(true)
+            .custom_flags(libc::O_NOFOLLOW)
             .open(&tmp)
-            .map_err(|e| DomainError::ShareStoreForbidden(format!("open tmp: {e}")))?;
+            .map_err(|e| DomainError::ShareStoreForbidden(format!("open tmp with O_NOFOLLOW: {e}")))?;
         f.write_all(data).map_err(|e| DomainError::ShareStoreForbidden(format!("write tmp: {e}")))?;
         f.sync_all().map_err(|e| DomainError::ShareStoreForbidden(format!("fsync tmp: {e}")))?;
     }

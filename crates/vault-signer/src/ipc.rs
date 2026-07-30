@@ -28,15 +28,26 @@ pub enum SignerRequest {
         participants: Vec<Vec<u8>>, // identifiers as bytes
         min_signers: u16,
     },
+    /// Install key packages (must be sent before signing).
+    InstallKeyPackages {
+        /// Serialized `PublicKeyPackage` as a JSON value.
+        pubkey_package: serde_json::Value,
+    },
     /// Submit round 1 commitments.
+    ///
+    /// `commitments` is a JSON array of `[identifier, SigningCommitments]` pairs
+    /// serialized via serde. The identifier is a u16 encoded as JSON number.
     SubmitCommitments {
         session_id: String,
-        commitments: Vec<crate::signer::SerializedCommitments>,
+        commitments: serde_json::Value,
     },
     /// Submit round 2 signature share.
+    ///
+    /// `share` is a JSON value representing a `(Identifier, SignatureShare)` pair
+    /// serialized via serde.
     SubmitSignatureShare {
         session_id: String,
-        share: crate::signer::SerializedSignatureShare,
+        share: serde_json::Value,
     },
     /// Get the current aggregated signature.
     GetSignature {
@@ -59,6 +70,8 @@ pub enum SignerResponse {
     },
     /// Commitments accepted.
     CommitmentsAccepted,
+    /// Key packages installed successfully.
+    KeyPackagesInstalled,
     /// Signature share accepted.
     SignatureShareAccepted,
     /// Aggregated signature ready.
