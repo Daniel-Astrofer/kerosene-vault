@@ -65,6 +65,8 @@ pub fn build_router(runtime: Arc<VaultRuntime>) -> Router {
         .route("/v1/sign", post(v1_sign))
         .route("/v1/financial-quorum", post(v1_financial_quorum))
         .route("/v1/financial-quorum/context", get(v1_financial_quorum_context))
+        .route("/v1/admin/status", get(v1_admin_status))
+        .route("/v1/admin/ceremony", get(v1_admin_ceremony))
         .route("/v1/intent", post(v1_intent))
         // Two-phase Intent (High #9): reserve → commit after success, release on failure.
         .route("/v1/intent/reserve", post(v1_intent_reserve))
@@ -177,6 +179,7 @@ async fn require_token_mw(
                         crate::adapters::RouteClass::KfeSettlement => "kfe settlement only",
                         crate::adapters::RouteClass::VaultPeer => "vault peer only",
                         crate::adapters::RouteClass::SharedOps => "shared ops",
+                        crate::adapters::RouteClass::AdminRead => "vault operator read only",
                     }
                 )),
             ));
@@ -199,6 +202,60 @@ async fn v1_metrics(State(state): State<AppState>) -> impl IntoResponse {
         Ok(body) => (StatusCode::OK, body),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, json_err(e)),
     }
+}
+
+async fn v1_admin_status(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let request_id = admin_request_id(&headers);
+    match state.runtime.get_health.execute() {
+        Ok(health) => (
+            StatusCode::OK,
+            serde_json::json!({
+                "contract_version": "0.1.0",
+                "request_id": request_id,
+                "local_ready": health.local_ready,
+                "financial_ready": health.financial_ready,
+                "node_id": state.runtime.config.node_id.as_str(),
+                "ceremony_mode": state.runtime.config.ceremony_mode.as_str(),
+                "bitcoin_network": state.runtime.config.bitcoin_network.as_str()
+            })
+            .to_string(),
+        ),
+        Err(error) => (StatusCode::INTERNAL_SERVER_ERROR, json_err(error)),
+    }
+}
+
+async fn v1_admin_ceremony(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    let request_id = admin_request_id(&headers);
+    (
+        StatusCode::OK,
+        serde_json::json!({
+            "contract_version": "0.1.0",
+            "request_id": request_id,
+            "mode": state.runtime.config.ceremony_mode.as_str(),
+            "node_id": state.runtime.config.node_id.as_str(),
+            "genesis_members": state.runtime.genesis_roster.len(),
+            "online_members": state.runtime.online.online_count(),
+            "required_threshold": state.runtime.threshold.group().t,
+            "financial_ready": state.runtime.online.online_count()
+                >= state.runtime.threshold.group().t
+        })
+        .to_string(),
+    )
+}
+
+fn admin_request_id(headers: &HeaderMap) -> String {
+    headers
+        .get("X-Request-Id")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| !value.is_empty() && value.len() <= 128)
+        .unwrap_or("vault-admin")
+        .to_string()
 }
 
 #[derive(serde::Deserialize)]

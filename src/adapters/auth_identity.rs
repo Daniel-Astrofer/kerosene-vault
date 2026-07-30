@@ -54,6 +54,7 @@ impl MeshPrincipal {
             RouteClass::KfeSettlement => matches!(self.role, MeshRole::Kfe),
             RouteClass::VaultPeer => matches!(self.role, MeshRole::Vault),
             RouteClass::SharedOps => matches!(self.role, MeshRole::Kfe | MeshRole::Vault),
+            RouteClass::AdminRead => matches!(self.role, MeshRole::Vault),
         }
     }
 }
@@ -67,11 +68,16 @@ pub enum RouteClass {
     VaultPeer,
     /// `/v1/day/advance`, `/v1/day/current`, `/v1/reshare/trigger`.
     SharedOps,
+    /// Read-only administrative diagnostics. Never grants signing authority.
+    AdminRead,
 }
 
 /// Map HTTP path to route class. Returns `None` for public / unclassified.
 pub fn route_class_for_path(path: &str) -> Option<RouteClass> {
     let p = path.split('?').next().unwrap_or(path);
+    if p.starts_with("/v1/admin/") {
+        return Some(RouteClass::AdminRead);
+    }
     if p.starts_with("/v1/sign")
         || p.starts_with("/v1/financial-quorum")
         || p.starts_with("/v1/bitcoin/")
@@ -431,6 +437,7 @@ mod tests {
         assert_eq!(p.node_id, "vault-2");
         assert!(!p.allows_route(RouteClass::KfeSettlement));
         assert!(p.allows_route(RouteClass::VaultPeer));
+        assert!(p.allows_route(RouteClass::AdminRead));
     }
 
     #[test]
@@ -444,6 +451,7 @@ mod tests {
         .unwrap();
         assert!(p.allows_route(RouteClass::KfeSettlement));
         assert!(!p.allows_route(RouteClass::VaultPeer));
+        assert!(!p.allows_route(RouteClass::AdminRead));
     }
 
     #[test]
@@ -472,6 +480,10 @@ mod tests {
         assert_eq!(
             route_class_for_path("/v1/day/advance"),
             Some(RouteClass::SharedOps)
+        );
+        assert_eq!(
+            route_class_for_path("/v1/admin/status"),
+            Some(RouteClass::AdminRead)
         );
     }
 }
