@@ -1,9 +1,11 @@
 use std::net::SocketAddr;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum_server::tls_rustls::RustlsAcceptor;
-use kerosene_vault::adapters::{build_mtls_server_config, build_router, PeerCertAcceptor};
+use kerosene_vault::adapters::{
+    build_admin_router, build_mtls_server_config, build_router, PeerCertAcceptor,
+};
 use kerosene_vault::bootstrap::{AuthMode, VaultConfig, VaultRuntime};
 
 #[tokio::main]
@@ -47,6 +49,15 @@ async fn main() {
     );
 
     let app = build_router(runtime.clone());
+    if let Some(socket_path) = admin_socket_path() {
+        let admin_runtime = runtime.clone();
+        tokio::spawn(async move {
+            if let Err(error) = serve_admin_socket(socket_path, admin_runtime).await {
+                eprintln!("admin socket error: {error}");
+                std::process::exit(1);
+            }
+        });
+    }
 
     match auth_mode {
         AuthMode::MutualTls => {
@@ -99,5 +110,78 @@ async fn main() {
                 std::process::exit(1);
             }
         }
+    }
+}
+
+fn admin_socket_path() -> Option<PathBuf> {
+    std::env::var_os("VAULT_ADMIN_UNIX_SOCKET")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
+#[cfg(unix)]
+async fn serve_admin_socket(
+    path: PathBuf,
+    runtime: Arc<VaultRuntime>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use std::os::unix::fs::PermissionsExt;
+
+    remove_stale_admin_socket(&path)?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    let listener = tokio::net::UnixListener::bind(&path)?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o660))?;
+    eprintln!("admin=unix socket={} mode=0660", path.display());
+    axum::serve(listener, build_admin_router(runtime)).await?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn remove_stale_admin_socket(
+    path: &Path,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    use std::os::unix::fs::FileTypeExt;
+
+    if let Ok(metadata) = std::fs::symlink_metadata(path) {
+        if !metadata.file_type().is_socket() {
+            return Err(format!(
+                "refusing to replace non-socket admin path {}",
+                path.display()
+            )
+            .into());
+        }
+        std::fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+async fn serve_admin_socket(
+    _path: PathBuf,
+    _runtime: Arc<VaultRuntime>,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    Err("VAULT_ADMIN_UNIX_SOCKET is only supported on Unix".into())
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn admin_socket_never_replaces_a_regular_file() {
+        let root = std::env::temp_dir().join(format!(
+            "kerosene-vault-admin-test-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let path = root.join("vault-admin.sock");
+        std::fs::write(&path, b"do not replace").unwrap();
+
+        assert!(remove_stale_admin_socket(&path).is_err());
+        assert_eq!(std::fs::read(&path).unwrap(), b"do not replace");
+
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(root).unwrap();
     }
 }

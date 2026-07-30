@@ -122,6 +122,25 @@ pub fn build_router(runtime: Arc<VaultRuntime>) -> Router {
         .with_state(state)
 }
 
+/// Local, read-only administrative surface.
+///
+/// Authentication is delegated to Unix socket ownership and mode. This router
+/// intentionally exposes no signing, DKG, reshare, nonce or mutation routes.
+pub fn build_admin_router(runtime: Arc<VaultRuntime>) -> Router {
+    let state = AppState {
+        runtime,
+        auth_limiter: Arc::new(SlidingWindowLimiter::auth_defaults()),
+        prepare_limiter: Arc::new(SlidingWindowLimiter::prepare_defaults()),
+    };
+    Router::new()
+        .route("/v1/health", get(v1_health))
+        .route("/v1/admin/status", get(v1_admin_status))
+        .route("/v1/admin/ceremony", get(v1_admin_ceremony))
+        .layer(DefaultBodyLimit::max(16 * 1024))
+        .layer(axum::middleware::from_fn(security_headers_mw))
+        .with_state(state)
+}
+
 async fn require_token_mw(
     State(state): State<AppState>,
     headers: HeaderMap,

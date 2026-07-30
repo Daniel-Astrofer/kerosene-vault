@@ -86,7 +86,7 @@ pub use frost_wire_cosign::{
     TrCommitRequest, TrCommitResponse, TrCosignPeerState, TrCosignTransport, TrSignShareRequest,
     TrSignShareResponse,
 };
-pub use http::{build_router, AppState};
+pub use http::{build_admin_router, build_router, AppState};
 pub use hybrid_envelope::HybridEnvelopeAdapter;
 pub use identity_hybrid::HybridIdentity;
 pub use http_peer::{
