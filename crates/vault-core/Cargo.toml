@@ -36,7 +36,7 @@ http-body-util = "0.1"
 libc = "0.2"
 hyper = { version = "1", features = ["server", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio"] }
-kerosene-contracts = { path = "../../../kerosene-contracts-admin/rust/kerosene-contracts" }
+kerosene-contracts.workspace = true
 ml-dsa = "0.1"
 ml-kem = "0.3"
 rand = "0.8"
