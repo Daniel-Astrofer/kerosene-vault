@@ -3,7 +3,7 @@
 //! when `VAULT_AUTH_MODE=mtls` (static token header refused).
 //!
 //! App-layer principal (Critical #3): mTLS SPIFFE/SAN → role (`kfe` vs `vault`);
-//! routes are authorized by role (not “any CA leaf = full power”).
+//! routes are authorized by role (not "any CA leaf = full power").
 
 use std::sync::Arc;
 
@@ -65,7 +65,7 @@ pub fn build_router(runtime: Arc<VaultRuntime>) -> Router {
         .route("/v1/admin/status", get(v1_admin_status))
         .route("/v1/admin/ceremony", get(v1_admin_ceremony))
         .route("/v1/intent", post(v1_intent))
-        // Two-phase Intent (High #9): reserve → commit after success, release on failure.
+        // Two-phase Intent (High #9): reserve -> commit after success, release on failure.
         .route("/v1/intent/reserve", post(v1_intent_reserve))
         .route("/v1/intent/release", post(v1_intent_release))
         .route("/v1/intent/commit", post(v1_intent_commit))
@@ -87,7 +87,7 @@ pub fn build_router(runtime: Arc<VaultRuntime>) -> Router {
         .route("/v1/reshare/tr/finalize", post(v1_reshare_tr_finalize))
         .route("/v1/reshare/tr/status", get(v1_reshare_tr_status))
         .route("/v1/anti-nonce/prepare", post(v1_anti_nonce_prepare))
-        // Legacy alias — same durable prepare semantics as `/prepare`.
+        // Legacy alias -- same durable prepare semantics as `/prepare`.
         .route("/v1/anti-nonce/ingest", post(v1_anti_nonce_prepare))
         .route("/v1/intent/consume/prepare", post(v1_intent_consume_prepare))
         .route("/v1/day/advance", post(v1_day_advance))
@@ -115,6 +115,25 @@ pub fn build_router(runtime: Arc<VaultRuntime>) -> Router {
         .route("/", get(v1_health))
         .merge(protected)
         .layer(DefaultBodyLimit::max(256 * 1024))
+        .layer(axum::middleware::from_fn(security_headers_mw))
+        .with_state(state)
+}
+
+/// Local, read-only administrative surface.
+///
+/// Authentication is delegated to Unix socket ownership and mode. This router
+/// intentionally exposes no signing, DKG, reshare, nonce or mutation routes.
+pub fn build_admin_router(runtime: Arc<VaultRuntime>) -> Router {
+    let state = AppState {
+        runtime,
+        auth_limiter: Arc::new(SlidingWindowLimiter::auth_defaults()),
+        prepare_limiter: Arc::new(SlidingWindowLimiter::prepare_defaults()),
+    };
+    Router::new()
+        .route("/v1/health", get(v1_health))
+        .route("/v1/admin/status", get(v1_admin_status))
+        .route("/v1/admin/ceremony", get(v1_admin_ceremony))
+        .layer(DefaultBodyLimit::max(16 * 1024))
         .layer(axum::middleware::from_fn(security_headers_mw))
         .with_state(state)
 }
@@ -383,7 +402,7 @@ async fn v1_bitcoin_deposit(State(state): State<AppState>, Query(q): Query<Depos
 
 #[derive(serde::Deserialize)]
 struct DepositQuery {
-    /// `USERS` (default, shared omnibus) or `CHANNELS` (dedicated key ≠ USERS).
+    /// `USERS` (default, shared omnibus) or `CHANNELS` (dedicated key != USERS).
     bucket: Option<String>,
 }
 
@@ -403,7 +422,7 @@ async fn v1_bitcoin_sign_sighash(State(state): State<AppState>, body: Bytes) -> 
     if let Err(e) = state.runtime.auth.authorize_treasury_sign() {
         return (StatusCode::UNAUTHORIZED, json_err(e));
     }
-    // Raw sighash cannot bind PSBT outputs — opt-in lab only (#28).
+    // Raw sighash cannot bind PSBT outputs -- opt-in lab only (#28).
     if !matches!(state.runtime.config.ceremony_mode, CeremonyMode::Lab) {
         return (
             StatusCode::FORBIDDEN,
@@ -429,7 +448,7 @@ async fn v1_bitcoin_sign_sighash(State(state): State<AppState>, body: Bytes) -> 
         return (
             StatusCode::BAD_REQUEST,
             json_err(
-                "raw sighash requires intent_id, bucket, destination, and amount_sats (outputs still unbound — prefer sign-psbt)",
+                "raw sighash requires intent_id, bucket, destination, and amount_sats (outputs still unbound -- prefer sign-psbt)",
             ),
         );
     }
@@ -465,7 +484,7 @@ struct BitcoinPsbtBody {
     bucket: Option<String>,
     destination: Option<String>,
     amount_sats: Option<u64>,
-    /// When false, Intent must already be soft-reserved (CHANNELS→LND inject fund step).
+    /// When false, Intent must already be soft-reserved (CHANNELS->LND inject fund step).
     /// Sign without reserve/commit so openChannel failure can still release.
     #[serde(default = "default_commit_intent")]
     commit_intent: bool,
@@ -565,7 +584,7 @@ async fn v1_bitcoin_sign_psbt(State(state): State<AppState>, body: Bytes) -> imp
         }
         return (StatusCode::SERVICE_UNAVAILABLE, r#"{"error":"taproot FROST not installed for bucket"}"#.into());
     };
-    // Fail-stop if online < t (probed liveness — High #7).
+    // Fail-stop if online < t (probed liveness -- High #7).
     let online = state.runtime.online.online_count();
     let need = state.runtime.threshold.group().t;
     if online < need {
@@ -620,7 +639,7 @@ fn build_settlement_intent(
     SettlementIntent::new(id, bucket, destination, amount, constitution.hash)
 }
 
-/// Two-phase reserve (High #9) — do not durable-burn before successful sign.
+/// Two-phase reserve (High #9) -- do not durable-burn before successful sign.
 fn maybe_reserve_intent(
     state: &AppState,
     intent_id: Option<&str>,
