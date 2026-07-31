@@ -83,15 +83,9 @@ async fn main() {
     let cli = Cli::parse();
 
     match cli.command {
-        Command::Serve {
-            socket,
-            store_path,
-            auth_token,
-            node_id,
-        } => {
-            let daemon = IdentityDaemon::new(&node_id, &store_path)
-                .await
-                .expect("failed to initialize identity daemon");
+        Command::Serve { socket, store_path, auth_token, node_id } => {
+            let daemon =
+                IdentityDaemon::new(&node_id, &store_path).await.expect("failed to initialize identity daemon");
             let server = IdentityServer::new(daemon, &socket, auth_token.as_deref());
             tracing::info!("starting vault-identityd on unix socket: {socket}");
             if let Err(e) = server.run().await {
@@ -100,17 +94,13 @@ async fn main() {
             }
         }
         Command::GenerateIdentity { node_id, store_path } => {
-            let daemon = IdentityDaemon::new(&node_id, &store_path)
-                .await
-                .expect("failed to initialize identity daemon");
+            let daemon =
+                IdentityDaemon::new(&node_id, &store_path).await.expect("failed to initialize identity daemon");
             match daemon.load_or_generate_identity().await {
                 Ok(id) => {
                     println!("Identity generated for node: {}", id.node_id);
                     println!("Ed25519 public key: {}", hex::encode(id.ed25519.verifying_key_bytes()));
-                    println!(
-                        "ML-DSA-65 public key: {}",
-                        hex::encode(id.ml_dsa65.public_key())
-                    );
+                    println!("ML-DSA-65 public key: {}", hex::encode(id.ml_dsa65.public_key()));
                 }
                 Err(e) => {
                     eprintln!("Failed to generate identity: {e}");
@@ -119,17 +109,13 @@ async fn main() {
             }
         }
         Command::RotateIdentity { node_id, store_path } => {
-            let daemon = IdentityDaemon::new(&node_id, &store_path)
-                .await
-                .expect("failed to initialize identity daemon");
+            let daemon =
+                IdentityDaemon::new(&node_id, &store_path).await.expect("failed to initialize identity daemon");
             match daemon.rotate_identity().await {
                 Ok(id) => {
                     println!("Identity rotated for node: {}", id.node_id);
                     println!("New Ed25519 public key: {}", hex::encode(id.ed25519.verifying_key_bytes()));
-                    println!(
-                        "New ML-DSA-65 public key: {}",
-                        hex::encode(id.ml_dsa65.public_key())
-                    );
+                    println!("New ML-DSA-65 public key: {}", hex::encode(id.ml_dsa65.public_key()));
                 }
                 Err(e) => {
                     eprintln!("Failed to rotate identity: {e}");
@@ -139,16 +125,10 @@ async fn main() {
         }
         Command::Status { socket } => {
             // Query the running daemon via HTTP GET on the Unix socket
-            let client = reqwest::Client::builder()
-                .build()
-                .expect("failed to build HTTP client");
+            let client = reqwest::Client::builder().build().expect("failed to build HTTP client");
 
             let url = format!("http://localhost/v1/health");
-            match client
-                .get(&url)
-                .send()
-                .await
-            {
+            match client.get(&url).send().await {
                 Ok(resp) => {
                     let body: serde_json::Value = resp.json().await.unwrap_or_default();
                     println!("Daemon status: {body}");

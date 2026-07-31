@@ -81,12 +81,7 @@ impl AdminService {
         let peers = self.runtime.peers.list_peers().ok();
         let peer_count = peers.as_ref().map(|p| p.len()).unwrap_or(0);
 
-        let genesis: Vec<String> = self
-            .runtime
-            .genesis_roster
-            .iter()
-            .map(|n| n.as_str().to_string())
-            .collect();
+        let genesis: Vec<String> = self.runtime.genesis_roster.iter().map(|n| n.as_str().to_string()).collect();
 
         serde_json::json!({
             "contract_version": ADMIN_CONTRACT_VERSION,
@@ -159,17 +154,10 @@ impl AdminService {
     /// Generates an opaque audit event identifier tied to the caller's
     /// request ID. Never contains PII or secret material.
     pub fn audit_reference(&self, request_id: &str) -> AuditReferenceV1 {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_millis())
-            .unwrap_or(0);
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
         let event_id = format!("vault-admin-{now:x}-{}", rand_byte_prefix());
 
-        AuditReferenceV1 {
-            event_id,
-            request_id: request_id.to_string(),
-            occurred_at: iso_timestamp(),
-        }
+        AuditReferenceV1 { event_id, request_id: request_id.to_string(), occurred_at: iso_timestamp() }
     }
 }
 
@@ -199,10 +187,7 @@ pub fn resolve_request_id(header_value: Option<&str>) -> String {
 }
 
 fn fallback_request_id() -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
     format!("vault-admin-{now:x}")
 }
 
@@ -212,9 +197,7 @@ fn rand_byte_prefix() -> String {
 }
 
 fn iso_timestamp() -> String {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default();
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default();
     let secs = now.as_secs();
     let nanos = now.subsec_nanos();
     let days = secs / 86400;
@@ -224,10 +207,7 @@ fn iso_timestamp() -> String {
     let seconds = remaining % 60;
 
     let (year, month, day) = days_to_date(days);
-    format!(
-        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z",
-        year, month, day, hours, minutes, seconds, nanos / 1_000_000
-    )
+    format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.{:03}Z", year, month, day, hours, minutes, seconds, nanos / 1_000_000)
 }
 
 /// Convert days since Unix epoch to (year, month, day).

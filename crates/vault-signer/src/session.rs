@@ -19,10 +19,7 @@ impl SessionId {
     /// Create a new random session ID.
     pub fn new() -> Self {
         use std::time::{SystemTime, UNIX_EPOCH};
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
         let random: u64 = rand::random();
         Self(format!("session-{ts:x}-{random:x}"))
     }
@@ -70,16 +67,9 @@ pub struct SigningSession {
 
 impl SigningSession {
     /// Create a new signing session.
-    pub fn new(
-        message: Vec<u8>,
-        expected_participants: Vec<Identifier>,
-        min_signers: usize,
-    ) -> Self {
+    pub fn new(message: Vec<u8>, expected_participants: Vec<Identifier>, min_signers: usize) -> Self {
         use std::time::{SystemTime, UNIX_EPOCH};
-        let ts = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+        let ts = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_nanos()).unwrap_or(0);
 
         Self {
             id: SessionId::new(),
@@ -148,10 +138,7 @@ pub struct SigningSessionManager {
 impl SigningSessionManager {
     /// Create a new session manager.
     pub fn new(max_sessions: usize) -> Self {
-        Self {
-            sessions: BTreeMap::new(),
-            max_sessions,
-        }
+        Self { sessions: BTreeMap::new(), max_sessions }
     }
 
     /// Create a new signing session.
@@ -173,16 +160,12 @@ impl SigningSessionManager {
 
     /// Get a session by ID.
     pub fn get_session(&self, id: &SessionId) -> Result<&SigningSession, SignerError> {
-        self.sessions
-            .get(id)
-            .ok_or(SignerError::SessionNotFound)
+        self.sessions.get(id).ok_or(SignerError::SessionNotFound)
     }
 
     /// Get a mutable session by ID.
     pub fn get_session_mut(&mut self, id: &SessionId) -> Result<&mut SigningSession, SignerError> {
-        self.sessions
-            .get_mut(id)
-            .ok_or(SignerError::SessionNotFound)
+        self.sessions.get_mut(id).ok_or(SignerError::SessionNotFound)
     }
 
     /// Remove a completed or failed session.
@@ -198,10 +181,7 @@ impl SigningSessionManager {
     /// Clean up expired sessions (older than the given duration in seconds).
     pub fn cleanup_expired(&mut self, max_age_secs: u64) {
         use std::time::{SystemTime, UNIXEPOCH};
-        let now = SystemTime::now()
-            .duration_since(UNIXEPOCH)
-            .map(|d| d.as_nanos())
-            .unwrap_or(0);
+        let now = SystemTime::now().duration_since(UNIXEPOCH).map(|d| d.as_nanos()).unwrap_or(0);
 
         self.sessions.retain(|_, session| {
             let age_ns = now.saturating_sub(session.created_at);
@@ -218,16 +198,12 @@ mod tests {
     fn create_and_manage_session() {
         let mut manager = SigningSessionManager::new(10);
 
-        let id1 = manager
-            .create_session(b"message-1".to_vec(), vec![], 2)
-            .unwrap();
+        let id1 = manager.create_session(b"message-1".to_vec(), vec![], 2).unwrap();
 
         let session = manager.get_session(&id1).unwrap();
         assert_eq!(session.state, SessionState::AwaitingCommitments);
 
-        let id2 = manager
-            .create_session(b"message-2".to_vec(), vec![], 3)
-            .unwrap();
+        let id2 = manager.create_session(b"message-2".to_vec(), vec![], 3).unwrap();
         assert_ne!(id1, id2);
         assert_eq!(manager.active_count(), 2);
     }
@@ -240,9 +216,7 @@ mod tests {
         let id2 = Identifier::try_from(2u16).unwrap();
         let participants = vec![id1, id2];
 
-        let session_id = manager
-            .create_session(b"test message".to_vec(), participants.clone(), 2)
-            .unwrap();
+        let session_id = manager.create_session(b"test message".to_vec(), participants.clone(), 2).unwrap();
 
         // Add commitments
         {

@@ -80,16 +80,10 @@ impl IdentityDaemon {
             .map_err(|e| IdentityError::InternalError(format!("failed to create store dir: {e}")))?;
 
         // Passphrase for AEAD encryption at rest.
-        let passphrase = std::env::var("VAULT_IDENTITY_PASSPHRASE")
-            .unwrap_or_else(|_| "kerosene-vault-identity-default".into());
+        let passphrase =
+            std::env::var("VAULT_IDENTITY_PASSPHRASE").unwrap_or_else(|_| "kerosene-vault-identity-default".into());
 
-        Ok(Self {
-            node_id: node_id.to_string(),
-            file_id,
-            store_path: path,
-            identity: None,
-            passphrase,
-        })
+        Ok(Self { node_id: node_id.to_string(), file_id, store_path: path, identity: None, passphrase })
     }
 
     /// Sanitized filename for the identity blob.
@@ -119,21 +113,14 @@ impl IdentityDaemon {
         let mut salt = [0u8; AEAD_SALT_SIZE];
         rand::thread_rng().fill_bytes(&mut salt);
         let key = self.derive_key(&salt)?;
-        let cipher =
-            Aes256Gcm::new_from_slice(&key).map_err(|e| IdentityError::InternalError(e.to_string()))?;
+        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| IdentityError::InternalError(e.to_string()))?;
 
         let mut nonce_bytes = [0u8; AEAD_NONCE_SIZE];
         rand::thread_rng().fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         let ciphertext = cipher
-            .encrypt(
-                nonce,
-                Payload {
-                    msg: plaintext,
-                    aad: AEAD_AAD_CONTEXT,
-                },
-            )
+            .encrypt(nonce, Payload { msg: plaintext, aad: AEAD_AAD_CONTEXT })
             .map_err(|_| IdentityError::InternalError("AEAD encrypt failed".into()))?;
 
         // Format: salt (16) || nonce (12) || ciphertext
@@ -147,9 +134,7 @@ impl IdentityDaemon {
     /// Decrypt AEAD-encrypted bytes.
     fn decrypt_bytes(&self, blob: &[u8]) -> Result<Vec<u8>, IdentityError> {
         if blob.len() < AEAD_SALT_SIZE + AEAD_NONCE_SIZE + 1 {
-            return Err(IdentityError::DeserializationFailed(
-                "encrypted blob too short".into(),
-            ));
+            return Err(IdentityError::DeserializationFailed("encrypted blob too short".into()));
         }
         let mut salt = [0u8; AEAD_SALT_SIZE];
         salt.copy_from_slice(&blob[..AEAD_SALT_SIZE]);
@@ -157,18 +142,11 @@ impl IdentityDaemon {
         let ciphertext = &blob[AEAD_SALT_SIZE + AEAD_NONCE_SIZE..];
 
         let key = self.derive_key(&salt)?;
-        let cipher =
-            Aes256Gcm::new_from_slice(&key).map_err(|e| IdentityError::InternalError(e.to_string()))?;
+        let cipher = Aes256Gcm::new_from_slice(&key).map_err(|e| IdentityError::InternalError(e.to_string()))?;
         let nonce = Nonce::from_slice(nonce_bytes);
 
         cipher
-            .decrypt(
-                nonce,
-                Payload {
-                    msg: ciphertext,
-                    aad: AEAD_AAD_CONTEXT,
-                },
-            )
+            .decrypt(nonce, Payload { msg: ciphertext, aad: AEAD_AAD_CONTEXT })
             .map_err(|_| IdentityError::DeserializationFailed("AEAD decrypt failed: wrong key or tampered data".into()))
     }
 
@@ -191,18 +169,13 @@ impl IdentityDaemon {
                 // O_NOFOLLOW: fail if tmp is a symlink (race protection).
                 .custom_flags(libc::O_NOFOLLOW)
                 .open(&tmp)
-                .map_err(|e| {
-                    IdentityError::InternalError(format!("open tmp with O_NOFOLLOW: {e}"))
-                })?;
+                .map_err(|e| IdentityError::InternalError(format!("open tmp with O_NOFOLLOW: {e}")))?;
 
-            f.write_all(data)
-                .map_err(|e| IdentityError::InternalError(format!("write tmp: {e}")))?;
-            f.sync_all()
-                .map_err(|e| IdentityError::InternalError(format!("fsync tmp: {e}")))?;
+            f.write_all(data).map_err(|e| IdentityError::InternalError(format!("write tmp: {e}")))?;
+            f.sync_all().map_err(|e| IdentityError::InternalError(format!("fsync tmp: {e}")))?;
         }
 
-        fs::rename(&tmp, path)
-            .map_err(|e| IdentityError::InternalError(format!("rename: {e}")))?;
+        fs::rename(&tmp, path).map_err(|e| IdentityError::InternalError(format!("rename: {e}")))?;
 
         // fsync parent directory so the rename is durable after crash.
         if let Ok(dir) = fs::File::open(parent) {
@@ -216,18 +189,14 @@ impl IdentityDaemon {
     fn read_identity_blob(&self, path: &Path) -> Result<Vec<u8>, IdentityError> {
         use std::os::unix::fs::MetadataExt;
 
-        let file = fs::File::open(path)
-            .map_err(|e| IdentityError::DeserializationFailed(format!("open identity: {e}")))?;
+        let file =
+            fs::File::open(path).map_err(|e| IdentityError::DeserializationFailed(format!("open identity: {e}")))?;
 
-        let meta = file
-            .metadata()
-            .map_err(|e| IdentityError::DeserializationFailed(format!("metadata: {e}")))?;
+        let meta = file.metadata().map_err(|e| IdentityError::DeserializationFailed(format!("metadata: {e}")))?;
 
         // Reject oversized files (OOM / zip-bomb protection).
         if meta.size() > MAX_IDENTITY_FILE_SIZE {
-            return Err(IdentityError::DeserializationFailed(
-                "identity file exceeds max size".into(),
-            ));
+            return Err(IdentityError::DeserializationFailed("identity file exceeds max size".into()));
         }
 
         // Reject world-accessible files.
@@ -244,9 +213,7 @@ impl IdentityDaemon {
         use std::io::Read;
         let mut buf = Vec::with_capacity(meta.size() as usize);
         let mut reader = std::io::BufReader::new(file);
-        reader
-            .read_to_end(&mut buf)
-            .map_err(|e| IdentityError::DeserializationFailed(format!("read: {e}")))?;
+        reader.read_to_end(&mut buf).map_err(|e| IdentityError::DeserializationFailed(format!("read: {e}")))?;
         Ok(buf)
     }
 
@@ -288,15 +255,12 @@ impl IdentityDaemon {
         // Archive existing identity if present (time-bound retention).
         let path = self.identity_path();
         if path.exists() {
-            let now_secs = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs())
-                .unwrap_or(0);
+            let now_secs =
+                std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
             let archive_name = format!("identity-{}.old.{}", self.file_id, now_secs);
             let archive = self.store_path.join(&archive_name);
-            fs::rename(&path, &archive).map_err(|e| {
-                IdentityError::RotationFailed(format!("archive old identity: {e}"))
-            })?;
+            fs::rename(&path, &archive)
+                .map_err(|e| IdentityError::RotationFailed(format!("archive old identity: {e}")))?;
             info!("archived old identity to {}", archive.display());
 
             // Cleanup old archives beyond retention window.
@@ -346,29 +310,19 @@ fn sanitize_node_id(node_id: &str) -> Result<String, IdentityError> {
         return Err(IdentityError::InternalError("node_id must not be empty".into()));
     }
     if trimmed.contains("..") {
-        return Err(IdentityError::InternalError(
-            "node_id path traversal detected: '..'".into(),
-        ));
+        return Err(IdentityError::InternalError("node_id path traversal detected: '..'".into()));
     }
     if trimmed.contains('/') || trimmed.contains('\\') {
-        return Err(IdentityError::InternalError(
-            "node_id path traversal detected: separator character".into(),
-        ));
+        return Err(IdentityError::InternalError("node_id path traversal detected: separator character".into()));
     }
     if trimmed.starts_with('.') {
-        return Err(IdentityError::InternalError(
-            "node_id must not start with '.'".into(),
-        ));
+        return Err(IdentityError::InternalError("node_id must not start with '.'".into()));
     }
     if trimmed.contains('\0') {
-        return Err(IdentityError::InternalError(
-            "node_id contains null byte".into(),
-        ));
+        return Err(IdentityError::InternalError("node_id contains null byte".into()));
     }
     if trimmed.len() > 256 {
-        return Err(IdentityError::InternalError(
-            "node_id too long (max 256 chars)".into(),
-        ));
+        return Err(IdentityError::InternalError("node_id too long (max 256 chars)".into()));
     }
     Ok(trimmed.to_string())
 }
@@ -380,7 +334,7 @@ fn sanitize_node_id(node_id: &str) -> Result<String, IdentityError> {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct IdentityInfo {
     pub node_id: String,
-    pub ed25519_public: String, // hex
+    pub ed25519_public: String,  // hex
     pub ml_dsa65_public: String, // hex
     pub created_at: u64,
     pub expires_at: u64,
@@ -461,15 +415,13 @@ impl IdentityServer {
     /// When `auth_token` is `None` — the daemon **must** be configured with
     /// an auth token (fail-closed). This is checked at start, not at runtime.
     pub fn new(daemon: IdentityDaemon, socket_path: &str, auth_token: Option<&str>) -> Self {
-        let token = auth_token
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| {
-                panic!(
-                    "FATAL: VAULT_IDENTITY_AUTH_TOKEN is required. \
+        let token = auth_token.map(|s| s.to_string()).unwrap_or_else(|| {
+            panic!(
+                "FATAL: VAULT_IDENTITY_AUTH_TOKEN is required. \
                      The identity daemon will NOT start without an auth token (fail-closed). \
                      Set VAULT_IDENTITY_AUTH_TOKEN in the environment."
-                )
-            });
+            )
+        });
         Self {
             daemon: Arc::new(tokio::sync::Mutex::new(daemon)),
             socket_path: socket_path.to_string(),
@@ -528,10 +480,7 @@ impl IdentityServer {
     }
 
     fn router(&self) -> Router {
-        let state = AppState {
-            daemon: self.daemon.clone(),
-            auth_token: self.auth_token.clone(),
-        };
+        let state = AppState { daemon: self.daemon.clone(), auth_token: self.auth_token.clone() };
 
         // Protected routes (require auth token).
         let protected = Router::new()
@@ -540,16 +489,10 @@ impl IdentityServer {
             .route("/v1/identities/rotate", post(handle_rotate))
             .route("/v1/identities/certificate", get(handle_certificate))
             .route("/v1/identities/sign", post(handle_sign))
-            .route_layer(axum::middleware::from_fn_with_state(
-                state.clone(),
-                require_auth_mw,
-            ));
+            .route_layer(axum::middleware::from_fn_with_state(state.clone(), require_auth_mw));
 
         // Health endpoint is public (no auth required for monitoring).
-        Router::new()
-            .route("/v1/health", get(handle_health))
-            .merge(protected)
-            .with_state(state)
+        Router::new().route("/v1/health", get(handle_health)).merge(protected).with_state(state)
     }
 }
 
@@ -582,10 +525,7 @@ async fn require_auth_mw(
         Some(token) if token == state.auth_token => Ok(next.run(request).await),
         _ => {
             warn!("unauthorized IPC request to protected route");
-            Err((
-                StatusCode::UNAUTHORIZED,
-                Json(serde_json::json!({"error": "unauthorized"})),
-            ))
+            Err((StatusCode::UNAUTHORIZED, Json(serde_json::json!({"error": "unauthorized"}))))
         }
     }
 }
@@ -594,9 +534,7 @@ async fn require_auth_mw(
 // Handlers
 // ---------------------------------------------------------------------------
 
-async fn handle_generate(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+async fn handle_generate(State(state): State<AppState>) -> impl IntoResponse {
     let mut daemon = state.daemon.lock().await;
     match daemon.load_or_generate_identity().await {
         Ok(id) => {
@@ -611,18 +549,12 @@ async fn handle_generate(
         }
         Err(e) => {
             error!("generate identity failed: {e}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response()
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
         }
     }
 }
 
-async fn handle_current(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+async fn handle_current(State(state): State<AppState>) -> impl IntoResponse {
     let daemon = state.daemon.lock().await;
     match daemon.current_identity() {
         Ok(id) => {
@@ -644,9 +576,7 @@ async fn handle_current(
     }
 }
 
-async fn handle_rotate(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+async fn handle_rotate(State(state): State<AppState>) -> impl IntoResponse {
     let mut daemon = state.daemon.lock().await;
     match daemon.rotate_identity().await {
         Ok(id) => {
@@ -666,9 +596,7 @@ async fn handle_rotate(
     }
 }
 
-async fn handle_certificate(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+async fn handle_certificate(State(state): State<AppState>) -> impl IntoResponse {
     let daemon = state.daemon.lock().await;
     match daemon.current_identity() {
         Ok(id) => {
@@ -720,10 +648,7 @@ struct SignEndpointResponse {
     ml_dsa65_signature: String,
 }
 
-async fn handle_sign(
-    State(state): State<AppState>,
-    Json(req): Json<SignEndpointBody>,
-) -> impl IntoResponse {
+async fn handle_sign(State(state): State<AppState>, Json(req): Json<SignEndpointBody>) -> impl IntoResponse {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     // ---- FIX 2: Size limit ----
@@ -752,7 +677,7 @@ async fn handle_sign(
             )
                 .into_response();
         }
-    }
+    };
 
     // ---- FIX 2: Replay protection (nonce + timestamp) ----
     if req.nonce.trim().is_empty() {
@@ -774,10 +699,7 @@ async fn handle_sign(
         }
     };
 
-    let now_secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
+    let now_secs = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
 
     // Allow ±5 minute clock skew.
     let skew_secs: u64 = 300;
@@ -798,19 +720,15 @@ async fn handle_sign(
     let message_bytes = match hex::decode(&req.message) {
         Ok(m) => m,
         Err(e) => {
-            return (
-                StatusCode::BAD_REQUEST,
-                Json(serde_json::json!({"error": format!("invalid hex message: {e}")})),
-            )
+            return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": format!("invalid hex message: {e}")})))
                 .into_response();
         }
     };
 
     // Construct domain-separated message:
     // domain_sep || op_type || nonce || timestamp || policy_hash || caller_id || message
-    let mut bound_message = Vec::with_capacity(
-        op.domain_sep().len() + 16 + nonce_bytes.len() + 32 + message_bytes.len(),
-    );
+    let mut bound_message =
+        Vec::with_capacity(op.domain_sep().len() + 16 + nonce_bytes.len() + 32 + message_bytes.len());
     bound_message.extend_from_slice(op.domain_sep());
     bound_message.push(b'|');
     bound_message.extend_from_slice(req.op_type.as_bytes());
@@ -819,19 +737,9 @@ async fn handle_sign(
     bound_message.push(b'|');
     bound_message.extend_from_slice(&req.timestamp_secs.to_le_bytes());
     bound_message.push(b'|');
-    bound_message.extend_from_slice(
-        req.policy_hash
-            .as_deref()
-            .unwrap_or("none")
-            .as_bytes(),
-    );
+    bound_message.extend_from_slice(req.policy_hash.as_deref().unwrap_or("none").as_bytes());
     bound_message.push(b'|');
-    bound_message.extend_from_slice(
-        req.caller_id
-            .as_deref()
-            .unwrap_or("unknown")
-            .as_bytes(),
-    );
+    bound_message.extend_from_slice(req.caller_id.as_deref().unwrap_or("unknown").as_bytes());
     bound_message.push(b'|');
     bound_message.extend_from_slice(&message_bytes);
 
@@ -847,18 +755,12 @@ async fn handle_sign(
         }
         Err(e) => {
             error!("sign failed: {e}");
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({"error": e.to_string()})),
-            )
-                .into_response()
+            (StatusCode::INTERNAL_SERVER_ERROR, Json(serde_json::json!({"error": e.to_string()}))).into_response()
         }
     }
 }
 
-async fn handle_health(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+async fn handle_health(State(state): State<AppState>) -> impl IntoResponse {
     let daemon = state.daemon.lock().await;
     let (has_identity, created_at) = match daemon.current_identity() {
         Ok(id) => (true, Some(id.created_at)),

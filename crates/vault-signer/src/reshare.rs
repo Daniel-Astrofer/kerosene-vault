@@ -44,33 +44,20 @@ pub struct KeyReshare {
 
 impl KeyReshare {
     /// Create a new reshare operation.
-    pub fn new(
-        current_key_package: frost::keys::KeyPackage,
-        config: ReshareConfig,
-    ) -> Result<Self, SignerError> {
-        Ok(Self {
-            current_key_package,
-            config,
-        })
+    pub fn new(current_key_package: frost::keys::KeyPackage, config: ReshareConfig) -> Result<Self, SignerError> {
+        Ok(Self { current_key_package, config })
     }
 
     /// Execute the reshare round 1 (generate new shares for new participants).
     ///
     /// Returns a package to send to each new participant.
-    pub fn round1(
-        &self,
-    ) -> Result<BTreeMap<Identifier, frost::keys::dkg::round1::SecretPackage>, SignerError> {
+    pub fn round1(&self) -> Result<BTreeMap<Identifier, frost::keys::dkg::round1::SecretPackage>, SignerError> {
         let mut rng = OsRng;
         let new_n = self.config.new_participants.len() as u16;
         let new_t = self.config.new_min_signers;
 
-        let packages = frost::keys::dkg::round1::part1(
-            *self.current_key_package.identifier(),
-            new_n,
-            new_t,
-            &mut rng,
-        )
-        .map_err(|e| SignerError::RoundError(format!("reshare round1: {e}")))?;
+        let packages = frost::keys::dkg::round1::part1(*self.current_key_package.identifier(), new_n, new_t, &mut rng)
+            .map_err(|e| SignerError::RoundError(format!("reshare round1: {e}")))?;
 
         Ok(BTreeMap::from([(*self.current_key_package.identifier(), packages.0)]))
     }
@@ -109,11 +96,6 @@ mod tests {
         // The group public key changes with new dealer keygen (expected).
         // In a proper reshare, the same group key is preserved.
         // This test verifies the API works, not the cryptographic property.
-        assert!(KeyReshare::verify_new_key(
-            &shares[0],
-            &new_pubkey,
-            &old_pubkey,
-        )
-        .is_ok());
+        assert!(KeyReshare::verify_new_key(&shares[0], &new_pubkey, &old_pubkey,).is_ok());
     }
 }

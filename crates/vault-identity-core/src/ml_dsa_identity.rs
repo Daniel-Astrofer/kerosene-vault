@@ -9,8 +9,8 @@
 //!   - public: `EncodedVerifyingKey` (1952 bytes)
 
 use ml_dsa::{
-    ExpandedSigningKey, ExpandedSigningKeyBytes, EncodedSignature,
-    EncodedVerifyingKey, MlDsa65, Signature, SigningKey, VerifyingKey,
+    EncodedSignature, EncodedVerifyingKey, ExpandedSigningKey, ExpandedSigningKeyBytes, MlDsa65, Signature, SigningKey,
+    VerifyingKey,
 };
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
@@ -42,10 +42,7 @@ impl MlDsa65Identity {
                 public.len()
             )));
         }
-        Ok(Self {
-            secret_key: secret.to_vec(),
-            public_key: public.to_vec(),
-        })
+        Ok(Self { secret_key: secret.to_vec(), public_key: public.to_vec() })
     }
 
     fn load_expanded_sk(&self) -> Result<ExpandedSigningKey<MlDsa65>, IdentityError> {
@@ -77,10 +74,7 @@ impl VaultIdentity for MlDsa65Identity {
         let expanded_bytes = sk.expanded_key().to_expanded();
         let vk_bytes = sk.expanded_key().verifying_key().encode();
 
-        Ok(Self {
-            secret_key: expanded_bytes.as_slice().to_vec(),
-            public_key: vk_bytes.as_slice().to_vec(),
-        })
+        Ok(Self { secret_key: expanded_bytes.as_slice().to_vec(), public_key: vk_bytes.as_slice().to_vec() })
     }
 
     fn from_secret(secret: &Self::SecretKey) -> Result<Self, IdentityError> {
@@ -96,10 +90,7 @@ impl VaultIdentity for MlDsa65Identity {
         let expanded = ExpandedSigningKey::<MlDsa65>::from_expanded(&arr);
         let vk_bytes = expanded.verifying_key().encode();
 
-        Ok(Self {
-            secret_key: secret.clone(),
-            public_key: vk_bytes.as_slice().to_vec(),
-        })
+        Ok(Self { secret_key: secret.clone(), public_key: vk_bytes.as_slice().to_vec() })
     }
 
     fn public_key(&self) -> &Self::PublicKey {
@@ -118,11 +109,7 @@ impl VaultIdentity for MlDsa65Identity {
         Ok(sig.encode().as_slice().to_vec())
     }
 
-    fn verify(
-        public: &Self::PublicKey,
-        message: &[u8],
-        signature: &Self::Signature,
-    ) -> Result<bool, IdentityError> {
+    fn verify(public: &Self::PublicKey, message: &[u8], signature: &Self::Signature) -> Result<bool, IdentityError> {
         if public.len() != ML_DSA_65_PUBLIC_KEY_LEN {
             return Err(IdentityError::InvalidKeyMaterial(format!(
                 "ML-DSA-65 verify: expected {ML_DSA_65_PUBLIC_KEY_LEN} byte public key, got {}",
@@ -161,9 +148,7 @@ impl VaultIdentity for MlDsa65Identity {
         }
         Ok(Self {
             secret_key: bytes[..ML_DSA_65_SECRET_KEY_LEN].to_vec(),
-            public_key: bytes[ML_DSA_65_SECRET_KEY_LEN
-                ..ML_DSA_65_SECRET_KEY_LEN + ML_DSA_65_PUBLIC_KEY_LEN]
-                .to_vec(),
+            public_key: bytes[ML_DSA_65_SECRET_KEY_LEN..ML_DSA_65_SECRET_KEY_LEN + ML_DSA_65_PUBLIC_KEY_LEN].to_vec(),
         })
     }
 }

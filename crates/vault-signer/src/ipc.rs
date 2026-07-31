@@ -24,7 +24,7 @@ const MAX_MESSAGE_SIZE: usize = 1_048_576;
 pub enum SignerRequest {
     /// Create a new signing session.
     CreateSession {
-        message: String, // hex-encoded
+        message: String,            // hex-encoded
         participants: Vec<Vec<u8>>, // identifiers as bytes
         min_signers: u16,
     },
@@ -37,26 +37,16 @@ pub enum SignerRequest {
     ///
     /// `commitments` is a JSON array of `[identifier, SigningCommitments]` pairs
     /// serialized via serde. The identifier is a u16 encoded as JSON number.
-    SubmitCommitments {
-        session_id: String,
-        commitments: serde_json::Value,
-    },
+    SubmitCommitments { session_id: String, commitments: serde_json::Value },
     /// Submit round 2 signature share.
     ///
     /// `share` is a JSON value representing a `(Identifier, SignatureShare)` pair
     /// serialized via serde.
-    SubmitSignatureShare {
-        session_id: String,
-        share: serde_json::Value,
-    },
+    SubmitSignatureShare { session_id: String, share: serde_json::Value },
     /// Get the current aggregated signature.
-    GetSignature {
-        session_id: String,
-    },
+    GetSignature { session_id: String },
     /// Get session status.
-    SessionStatus {
-        session_id: String,
-    },
+    SessionStatus { session_id: String },
     /// Health check.
     Health,
 }
@@ -65,9 +55,7 @@ pub enum SignerRequest {
 #[derive(Debug, Serialize, Deserialize)]
 pub enum SignerResponse {
     /// Session created successfully.
-    SessionCreated {
-        session_id: String,
-    },
+    SessionCreated { session_id: String },
     /// Commitments accepted.
     CommitmentsAccepted,
     /// Key packages installed successfully.
@@ -75,25 +63,13 @@ pub enum SignerResponse {
     /// Signature share accepted.
     SignatureShareAccepted,
     /// Aggregated signature ready.
-    Signature {
-        signature: Vec<u8>,
-    },
+    Signature { signature: Vec<u8> },
     /// Session status.
-    SessionStatus {
-        state: String,
-        commitments_count: usize,
-        shares_count: usize,
-        min_signers: usize,
-    },
+    SessionStatus { state: String, commitments_count: usize, shares_count: usize, min_signers: usize },
     /// Health check response.
-    Health {
-        status: String,
-        active_sessions: usize,
-    },
+    Health { status: String, active_sessions: usize },
     /// Error response.
-    Error {
-        message: String,
-    },
+    Error { message: String },
 }
 
 // ---------------------------------------------------------------------------
@@ -101,8 +77,7 @@ pub enum SignerResponse {
 // ---------------------------------------------------------------------------
 
 fn encode_message(msg: &SignerResponse) -> Result<Vec<u8>, SignerError> {
-    let json = serde_json::to_vec(msg)
-        .map_err(|e| SignerError::Internal(format!("serialization: {e}")))?;
+    let json = serde_json::to_vec(msg).map_err(|e| SignerError::Internal(format!("serialization: {e}")))?;
 
     if json.len() > MAX_MESSAGE_SIZE {
         return Err(SignerError::Internal("message too large".into()));
@@ -123,13 +98,11 @@ fn decode_message(data: &[u8]) -> Result<SignerRequest, SignerError> {
     if len > MAX_MESSAGE_SIZE || 4 + len > data.len() {
         return Err(SignerError::Internal("invalid message length".into()));
     }
-    serde_json::from_slice(&data[4..4 + len])
-        .map_err(|e| SignerError::Internal(format!("deserialization: {e}")))
+    serde_json::from_slice(&data[4..4 + len]).map_err(|e| SignerError::Internal(format!("deserialization: {e}")))
 }
 
 fn encode_request(msg: &SignerRequest) -> Result<Vec<u8>, SignerError> {
-    let json = serde_json::to_vec(msg)
-        .map_err(|e| SignerError::Internal(format!("serialization: {e}")))?;
+    let json = serde_json::to_vec(msg).map_err(|e| SignerError::Internal(format!("serialization: {e}")))?;
     if json.len() > MAX_MESSAGE_SIZE {
         return Err(SignerError::Internal("request too large".into()));
     }
@@ -152,9 +125,7 @@ pub struct SignerIpc {
 impl SignerIpc {
     /// Create a new IPC server at the given socket path.
     pub fn new(socket_path: &str) -> Self {
-        Self {
-            socket_path: socket_path.to_string(),
-        }
+        Self { socket_path: socket_path.to_string() }
     }
 
     /// Start listening for connections (blocking).
@@ -167,8 +138,8 @@ impl SignerIpc {
         // Remove existing socket
         let _ = std::fs::remove_file(&self.socket_path);
 
-        let listener = UnixListener::bind(&self.socket_path)
-            .map_err(|e| SignerError::Internal(format!("bind: {e}")))?;
+        let listener =
+            UnixListener::bind(&self.socket_path).map_err(|e| SignerError::Internal(format!("bind: {e}")))?;
 
         // Set restrictive permissions
         #[cfg(unix)]
@@ -198,43 +169,32 @@ impl SignerIpc {
         Ok(())
     }
 
-    fn handle_connection<F>(
-        mut stream: UnixStream,
-        handler: &F,
-    ) -> Result<(), SignerError>
+    fn handle_connection<F>(mut stream: UnixStream, handler: &F) -> Result<(), SignerError>
     where
         F: Fn(SignerRequest) -> SignerResponse,
     {
         // Read 4-byte length prefix
         let mut len_buf = [0u8; 4];
-        stream
-            .read_exact(&mut len_buf)
-            .map_err(|e| SignerError::Internal(format!("read length: {e}")))?;
+        stream.read_exact(&mut len_buf).map_err(|e| SignerError::Internal(format!("read length: {e}")))?;
 
         let msg_len = u32::from_be_bytes(len_buf) as usize;
         if msg_len > MAX_MESSAGE_SIZE || msg_len == 0 {
-            let response = encode_message(&SignerResponse::Error {
-                message: "invalid message length".into(),
-            })?;
+            let response = encode_message(&SignerResponse::Error { message: "invalid message length".into() })?;
             stream.write_all(&response).ok();
             return Err(SignerError::Internal("invalid message length".into()));
         }
 
         // Read message body
         let mut body = vec![0u8; msg_len];
-        stream
-            .read_exact(&mut body)
-            .map_err(|e| SignerError::Internal(format!("read body: {e}")))?;
+        stream.read_exact(&mut body).map_err(|e| SignerError::Internal(format!("read body: {e}")))?;
 
         // Decode and handle
-        let request: SignerRequest = serde_json::from_slice(&body)
-            .map_err(|e| SignerError::Internal(format!("deserialize: {e}")))?;
+        let request: SignerRequest =
+            serde_json::from_slice(&body).map_err(|e| SignerError::Internal(format!("deserialize: {e}")))?;
 
         let response = handler(request);
         let encoded = encode_message(&response)?;
-        stream
-            .write_all(&encoded)
-            .map_err(|e| SignerError::Internal(format!("write response: {e}")))?;
+        stream.write_all(&encoded).map_err(|e| SignerError::Internal(format!("write response: {e}")))?;
 
         Ok(())
     }
@@ -252,9 +212,7 @@ pub struct SignerClient {
 impl SignerClient {
     /// Create a new client connected to the given socket.
     pub fn new(socket_path: &str) -> Self {
-        Self {
-            socket_path: socket_path.to_string(),
-        }
+        Self { socket_path: socket_path.to_string() }
     }
 
     /// Send a request and receive the response.
@@ -263,15 +221,11 @@ impl SignerClient {
             .map_err(|e| SignerError::Internal(format!("connect: {e}")))?;
 
         let encoded = encode_request(request)?;
-        stream
-            .write_all(&encoded)
-            .map_err(|e| SignerError::Internal(format!("write: {e}")))?;
+        stream.write_all(&encoded).map_err(|e| SignerError::Internal(format!("write: {e}")))?;
 
         // Read response
         let mut len_buf = [0u8; 4];
-        stream
-            .read_exact(&mut len_buf)
-            .map_err(|e| SignerError::Internal(format!("read response length: {e}")))?;
+        stream.read_exact(&mut len_buf).map_err(|e| SignerError::Internal(format!("read response length: {e}")))?;
 
         let msg_len = u32::from_be_bytes(len_buf) as usize;
         if msg_len > MAX_MESSAGE_SIZE || msg_len == 0 {
@@ -279,12 +233,9 @@ impl SignerClient {
         }
 
         let mut body = vec![0u8; msg_len];
-        stream
-            .read_exact(&mut body)
-            .map_err(|e| SignerError::Internal(format!("read response body: {e}")))?;
+        stream.read_exact(&mut body).map_err(|e| SignerError::Internal(format!("read response body: {e}")))?;
 
-        serde_json::from_slice(&body)
-            .map_err(|e| SignerError::Internal(format!("deserialize response: {e}")))
+        serde_json::from_slice(&body).map_err(|e| SignerError::Internal(format!("deserialize response: {e}")))
     }
 }
 
@@ -309,13 +260,8 @@ mod tests {
             let ipc = SignerIpc::new(&server_socket);
             let handler = |req: SignerRequest| -> SignerResponse {
                 match req {
-                    SignerRequest::Health => SignerResponse::Health {
-                        status: "ok".into(),
-                        active_sessions: 0,
-                    },
-                    _ => SignerResponse::Error {
-                        message: "unexpected".into(),
-                    },
+                    SignerRequest::Health => SignerResponse::Health { status: "ok".into(), active_sessions: 0 },
+                    _ => SignerResponse::Error { message: "unexpected".into() },
                 }
             };
             tx.send(()).unwrap();

@@ -43,27 +43,15 @@ impl HybridKeyPair {
     pub fn generate(node_id: impl Into<String>) -> Result<Self, IdentityError> {
         let ed25519 = Ed25519Identity::generate()?;
         let ml_dsa65 = MlDsa65Identity::generate()?;
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
-        Ok(Self {
-            ed25519,
-            ml_dsa65,
-            node_id: node_id.into(),
-            created_at: now,
-            expires_at: 0,
-        })
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+        Ok(Self { ed25519, ml_dsa65, node_id: node_id.into(), created_at: now, expires_at: 0 })
     }
 
     /// Sign a message with both keys, producing a hybrid signature.
     pub fn sign_hybrid(&self, message: &[u8]) -> Result<HybridSignature, IdentityError> {
         let ed_sig = self.ed25519.sign(message)?;
         let ml_sig = self.ml_dsa65.sign(message)?;
-        Ok(HybridSignature {
-            ed25519: ed_sig,
-            ml_dsa65: ml_sig,
-        })
+        Ok(HybridSignature { ed25519: ed_sig, ml_dsa65: ml_sig })
     }
 
     /// Verify a hybrid signature (both components must verify).
@@ -132,13 +120,7 @@ impl HybridKeyPair {
                 .map_err(|_| IdentityError::DeserializationFailed("invalid expires_at".into()))?,
         );
 
-        Ok(Self {
-            ed25519,
-            ml_dsa65,
-            node_id,
-            created_at,
-            expires_at,
-        })
+        Ok(Self { ed25519, ml_dsa65, node_id, created_at, expires_at })
     }
 }
 

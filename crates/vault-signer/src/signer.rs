@@ -93,12 +93,7 @@ impl FrostSigner {
     /// Create a new FROST signer from a key package.
     pub fn new(key_package: KeyPackage, min_signers: u16, total_participants: u16) -> Result<Self, SignerError> {
         let identifier = *key_package.identifier();
-        Ok(Self {
-            key_package,
-            min_signers,
-            total_participants,
-            identifier,
-        })
+        Ok(Self { key_package, min_signers, total_participants, identifier })
     }
 
     /// Get our identifier.
@@ -121,14 +116,8 @@ impl FrostSigner {
     /// These are generated ahead of time and stored for the signing session.
     pub fn preprocess(&self) -> Result<Round1Output, SignerError> {
         let mut rng = OsRng;
-        let (nonces, commitments) = frost::round1::commit(
-            self.key_package.secret_share(),
-            &mut rng,
-        );
-        Ok(Round1Output {
-            commitments,
-            nonces,
-        })
+        let (nonces, commitments) = frost::round1::commit(self.key_package.secret_share(), &mut rng);
+        Ok(Round1Output { commitments, nonces })
     }
 
     /// Sign the message (Round 2).
@@ -141,13 +130,8 @@ impl FrostSigner {
         nonces: &SigningNonces,
         commitments: &BTreeMap<Identifier, SigningCommitments>,
     ) -> Result<SignatureShare, SignerError> {
-        let signer_nonces = frost::round2::sign(
-            &self.key_package,
-            nonces,
-            commitments,
-            message,
-        )
-        .map_err(|e| SignerError::RoundError(format!("round2 sign: {e}")))?;
+        let signer_nonces = frost::round2::sign(&self.key_package, nonces, commitments, message)
+            .map_err(|e| SignerError::RoundError(format!("round2 sign: {e}")))?;
 
         Ok(signer_nonces)
     }
@@ -159,13 +143,8 @@ impl FrostSigner {
         pubkey_package: &frost_secp256k1::keys::PublicKeyPackage,
         message: &[u8],
     ) -> Result<frost_secp256k1::Signature, SignerError> {
-        let group_signature = frost::aggregate(
-            commitments,
-            shares,
-            pubkey_package,
-            message,
-        )
-        .map_err(|e| SignerError::RoundError(format!("aggregate: {e}")))?;
+        let group_signature = frost::aggregate(commitments, shares, pubkey_package, message)
+            .map_err(|e| SignerError::RoundError(format!("aggregate: {e}")))?;
 
         Ok(group_signature)
     }
@@ -176,10 +155,7 @@ impl FrostSigner {
         pubkey_package: &frost_secp256k1::keys::PublicKeyPackage,
         message: &[u8],
     ) -> Result<bool, SignerError> {
-        Ok(pubkey_package
-            .group_public()
-            .verify(message, signature)
-            .is_ok())
+        Ok(pubkey_package.group_public().verify(message, signature).is_ok())
     }
 }
 
@@ -202,19 +178,14 @@ pub mod taproot {
 
     impl TaprootSigner {
         pub fn new(key_package: KeyPackage, min_signers: u16, total_participants: u16) -> Result<Self, SignerError> {
-            Ok(Self {
-                key_package,
-                min_signers,
-                total_participants,
-            })
+            Ok(Self { key_package, min_signers, total_participants })
         }
 
-        pub fn preprocess(&self) -> Result<(frost_tr::round1::SigningNonces, frost_tr::round1::SigningCommitments), SignerError> {
+        pub fn preprocess(
+            &self,
+        ) -> Result<(frost_tr::round1::SigningNonces, frost_tr::round1::SigningCommitments), SignerError> {
             let mut rng = OsRng;
-            let (nonces, commitments) = frost_tr::round1::commit(
-                self.key_package.secret_share(),
-                &mut rng,
-            );
+            let (nonces, commitments) = frost_tr::round1::commit(self.key_package.secret_share(), &mut rng);
             Ok((nonces, commitments))
         }
 
@@ -224,13 +195,8 @@ pub mod taproot {
             nonces: &frost_tr::round1::SigningNonces,
             commitments: &BTreeMap<frost_secp256k1::Identifier, frost_tr::round1::SigningCommitments>,
         ) -> Result<frost_tr::round2::SignatureShare, SignerError> {
-            frost_tr::round2::sign(
-                &self.key_package,
-                nonces,
-                commitments,
-                message,
-            )
-            .map_err(|e| SignerError::RoundError(format!("taproot round2 sign: {e}")))
+            frost_tr::round2::sign(&self.key_package, nonces, commitments, message)
+                .map_err(|e| SignerError::RoundError(format!("taproot round2 sign: {e}")))
         }
 
         pub fn aggregate(
@@ -260,22 +226,12 @@ mod tests {
     use frost_secp256k1::Identifier;
 
     /// Minimal test using trusted dealer keygen (in-process N-party simulation).
-    fn setup_test_signers(
-        n: u16,
-        t: u16,
-    ) -> Result<(Vec<FrostSigner>, PublicKeyPackage), SignerError> {
+    fn setup_test_signers(n: u16, t: u16) -> Result<(Vec<FrostSigner>, PublicKeyPackage), SignerError> {
         let mut rng = OsRng;
-        let (shares, pubkey_package) = frost_secp256k1::keys::generate_with_dealer(
-            n,
-            t,
-            &mut rng,
-        )
-        .map_err(|e| SignerError::InvalidKeyPackage(format!("dealer keygen: {e}")))?;
+        let (shares, pubkey_package) = frost_secp256k1::keys::generate_with_dealer(n, t, &mut rng)
+            .map_err(|e| SignerError::InvalidKeyPackage(format!("dealer keygen: {e}")))?;
 
-        let signers: Result<Vec<_>, _> = shares
-            .into_iter()
-            .map(|share| FrostSigner::new(share, t, n))
-            .collect();
+        let signers: Result<Vec<_>, _> = shares.into_iter().map(|share| FrostSigner::new(share, t, n)).collect();
 
         Ok((signers?, pubkey_package))
     }
@@ -297,9 +253,7 @@ mod tests {
         let message = b"test threshold message";
         let mut all_shares = BTreeMap::new();
         for (i, signer) in signers.iter().enumerate() {
-            let share = signer
-                .sign(message, &round1_outputs[i].nonces, &all_commitments)
-                .unwrap();
+            let share = signer.sign(message, &round1_outputs[i].nonces, &all_commitments).unwrap();
             all_shares.insert(Identifier::try_from((i + 1) as u16).unwrap(), share);
         }
 

@@ -12,6 +12,8 @@
 
 use std::sync::Arc;
 
+use crate::application::{admin_error, resolve_request_id, AdminService};
+use crate::bootstrap::VaultRuntime;
 use axum::body::Body;
 use axum::extract::{Request, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -24,8 +26,6 @@ use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use kerosene_contracts::AdminErrorEnvelopeV1;
 use tower::ServiceExt;
-use crate::application::{admin_error, resolve_request_id, AdminService};
-use crate::bootstrap::VaultRuntime;
 
 /// Shared state for the admin API router.
 #[derive(Clone)]
@@ -42,7 +42,9 @@ const ADMIN_AUTH_HEADER: &str = "X-Vault-Token";
 /// All routes require a valid auth token via `X-Vault-Token` header.
 /// Fails (panics) at construction if no token is configured — fail-closed.
 pub fn build_admin_router(runtime: Arc<VaultRuntime>) -> Router {
-    let auth_token = runtime.config.effective_vault_token()
+    let auth_token = runtime
+        .config
+        .effective_vault_token()
         .expect(
             "FATAL: VAULT_API_TOKEN is required for admin API. \
              The admin socket will NOT start without an auth token (fail-closed).",
@@ -125,60 +127,42 @@ fn admin_error_json(err: AdminErrorEnvelopeV1) -> (StatusCode, Json<AdminErrorEn
 }
 
 /// GET /admin/status — local status and financial readiness.
-async fn admin_status_handler(
-    State(state): State<AdminApiState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+async fn admin_status_handler(State(state): State<AdminApiState>, headers: HeaderMap) -> impl IntoResponse {
     let request_id = extract_request_id(&headers);
     let resp = state.service.status(&request_id);
     (StatusCode::OK, Json(resp))
 }
 
 /// GET /admin/health — health and version.
-async fn admin_health_handler(
-    State(state): State<AdminApiState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+async fn admin_health_handler(State(state): State<AdminApiState>, headers: HeaderMap) -> impl IntoResponse {
     let request_id = extract_request_id(&headers);
     let resp = state.service.health(&request_id);
     (StatusCode::OK, Json(resp))
 }
 
 /// GET /admin/roster — observed roster and quorum.
-async fn admin_roster_handler(
-    State(state): State<AdminApiState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+async fn admin_roster_handler(State(state): State<AdminApiState>, headers: HeaderMap) -> impl IntoResponse {
     let request_id = extract_request_id(&headers);
     let resp = state.service.roster(&request_id);
     (StatusCode::OK, Json(resp))
 }
 
 /// GET /admin/ceremony — ceremony state inspection.
-async fn admin_ceremony_handler(
-    State(state): State<AdminApiState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+async fn admin_ceremony_handler(State(state): State<AdminApiState>, headers: HeaderMap) -> impl IntoResponse {
     let request_id = extract_request_id(&headers);
     let resp = state.service.ceremony(&request_id);
     (StatusCode::OK, Json(resp))
 }
 
 /// GET /admin/compatibility — protocol and release compatibility.
-async fn admin_compatibility_handler(
-    State(state): State<AdminApiState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+async fn admin_compatibility_handler(State(state): State<AdminApiState>, headers: HeaderMap) -> impl IntoResponse {
     let request_id = extract_request_id(&headers);
     let resp = state.service.compatibility(&request_id);
     (StatusCode::OK, Json(resp))
 }
 
 /// GET /admin/audit-reference — audit reference and request ID.
-async fn admin_audit_reference_handler(
-    State(state): State<AdminApiState>,
-    headers: HeaderMap,
-) -> impl IntoResponse {
+async fn admin_audit_reference_handler(State(state): State<AdminApiState>, headers: HeaderMap) -> impl IntoResponse {
     let request_id = extract_request_id(&headers);
     let resp = state.service.audit_reference(&request_id);
     (StatusCode::OK, Json(resp))
@@ -191,10 +175,7 @@ async fn admin_audit_reference_handler(
 /// The socket file's parent directory is created if it does not exist.
 ///
 /// The accept loop runs in a background `tokio::spawn` task.
-pub async fn spawn_admin_unix_socket(
-    runtime: Arc<VaultRuntime>,
-    socket_path: &str,
-) -> Result<(), String> {
+pub async fn spawn_admin_unix_socket(runtime: Arc<VaultRuntime>, socket_path: &str) -> Result<(), String> {
     let path = std::path::Path::new(socket_path);
 
     // Remove stale socket file
@@ -207,12 +188,11 @@ pub async fn spawn_admin_unix_socket(
         std::fs::create_dir_all(parent).map_err(|e| format!("failed to create socket directory {parent:?}: {e}"))?;
     }
 
-    let listener = tokio::net::UnixListener::bind(path)
-        .map_err(|e| format!("failed to bind Unix socket {socket_path}: {e}"))?;
+    let listener =
+        tokio::net::UnixListener::bind(path).map_err(|e| format!("failed to bind Unix socket {socket_path}: {e}"))?;
 
     // Set restrictive permissions: owner-only read/write
-    set_socket_permissions(path)
-        .map_err(|e| format!("failed to set socket permissions on {socket_path}: {e}"))?;
+    set_socket_permissions(path).map_err(|e| format!("failed to set socket permissions on {socket_path}: {e}"))?;
 
     let router = build_admin_router(runtime);
 
@@ -264,9 +244,8 @@ pub async fn spawn_admin_tcp(
     _mtls_config: Option<(&str, &str, &str)>,
 ) -> Result<(), String> {
     let router = build_admin_router(runtime);
-    let listener = tokio::net::TcpListener::bind(addr)
-        .await
-        .map_err(|e| format!("failed to bind admin TCP {addr}: {e}"))?;
+    let listener =
+        tokio::net::TcpListener::bind(addr).await.map_err(|e| format!("failed to bind admin TCP {addr}: {e}"))?;
 
     eprintln!("admin_api=tcp addr={addr}");
 
@@ -299,7 +278,10 @@ pub fn check_dealer_lab_gate(request_id: &str) -> Result<(), (StatusCode, Json<A
 /// Adversarial input validation for admin requests.
 ///
 /// Checks for path traversal, oversized payloads, and other malicious patterns.
-pub fn validate_admin_request_path(path: &str, request_id: &str) -> Result<(), (StatusCode, Json<AdminErrorEnvelopeV1>)> {
+pub fn validate_admin_request_path(
+    path: &str,
+    request_id: &str,
+) -> Result<(), (StatusCode, Json<AdminErrorEnvelopeV1>)> {
     if path.len() > 256 {
         return Err(admin_error_json(admin_error(
             request_id,
@@ -308,18 +290,10 @@ pub fn validate_admin_request_path(path: &str, request_id: &str) -> Result<(), (
         )));
     }
     if path.contains("..") {
-        return Err(admin_error_json(admin_error(
-            request_id,
-            "FORBIDDEN",
-            "path traversal detected",
-        )));
+        return Err(admin_error_json(admin_error(request_id, "FORBIDDEN", "path traversal detected")));
     }
     if path.contains('\0') {
-        return Err(admin_error_json(admin_error(
-            request_id,
-            "FORBIDDEN",
-            "null byte in request path",
-        )));
+        return Err(admin_error_json(admin_error(request_id, "FORBIDDEN", "null byte in request path")));
     }
     Ok(())
 }

@@ -24,15 +24,9 @@ use vault_signer::signer::{FrostSigner, SignerError};
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
-    let socket_path = args
-        .get(1)
-        .cloned()
-        .unwrap_or_else(|| "/run/kerosene/signer.sock".to_string());
+    let socket_path = args.get(1).cloned().unwrap_or_else(|| "/run/kerosene/signer.sock".to_string());
 
-    let store_path = args
-        .get(2)
-        .cloned()
-        .unwrap_or_else(|| "/var/lib/kerosene/signer".to_string());
+    let store_path = args.get(2).cloned().unwrap_or_else(|| "/var/lib/kerosene/signer".to_string());
 
     eprintln!("vault-signer starting");
     eprintln!("  socket: {socket_path}");
@@ -53,9 +47,8 @@ fn main() {
     };
 
     // IPC handler
-    let handler = move |request: SignerRequest| -> SignerResponse {
-        handle_request(request, &session_manager, &key_store)
-    };
+    let handler =
+        move |request: SignerRequest| -> SignerResponse { handle_request(request, &session_manager, &key_store) };
 
     let ipc = SignerIpc::new(&socket_path);
     if let Err(e) = ipc.serve_blocking(handler) {
@@ -73,19 +66,16 @@ struct KeyStore {
 
 impl KeyStore {
     fn new(path: &PathBuf) -> Self {
-        Self {
-            path: path.clone(),
-            pubkey_package: None,
-        }
+        Self { path: path.clone(), pubkey_package: None }
     }
 
     fn load_from_disk(&mut self) -> Result<(), SignerError> {
         let pk_path = self.path.join("pubkey_package.json");
         if pk_path.exists() {
-            let data = std::fs::read_to_string(&pk_path)
-                .map_err(|e| SignerError::Internal(format!("read pubkey: {e}")))?;
-            let pk: frost_secp256k1::keys::PublicKeyPackage = serde_json::from_str(&data)
-                .map_err(|e| SignerError::Internal(format!("deserialize pubkey: {e}")))?;
+            let data =
+                std::fs::read_to_string(&pk_path).map_err(|e| SignerError::Internal(format!("read pubkey: {e}")))?;
+            let pk: frost_secp256k1::keys::PublicKeyPackage =
+                serde_json::from_str(&data).map_err(|e| SignerError::Internal(format!("deserialize pubkey: {e}")))?;
             self.pubkey_package = Some(pk);
             eprintln!("  loaded pubkey package from disk");
         } else {
@@ -99,8 +89,7 @@ impl KeyStore {
             let data = serde_json::to_string_pretty(pk)
                 .map_err(|e| SignerError::Internal(format!("serialize pubkey: {e}")))?;
             let pk_path = self.path.join("pubkey_package.json");
-            std::fs::write(&pk_path, &data)
-                .map_err(|e| SignerError::Internal(format!("write pubkey: {e}")))?;
+            std::fs::write(&pk_path, &data).map_err(|e| SignerError::Internal(format!("write pubkey: {e}")))?;
         }
         Ok(())
     }
@@ -114,21 +103,13 @@ fn handle_request(
     match request {
         SignerRequest::Health => {
             let sessions = session_manager.lock().unwrap().active_count();
-            SignerResponse::Health {
-                status: "ok".into(),
-                active_sessions: sessions,
-            }
+            SignerResponse::Health { status: "ok".into(), active_sessions: sessions }
         }
         SignerRequest::InstallKeyPackages { pubkey_package } => {
             // Deserialize the public key package
-            let pk: frost_secp256k1::keys::PublicKeyPackage = match serde_json::from_value(pubkey_package)
-            {
+            let pk: frost_secp256k1::keys::PublicKeyPackage = match serde_json::from_value(pubkey_package) {
                 Ok(pk) => pk,
-                Err(e) => {
-                    return SignerResponse::Error {
-                        message: format!("invalid pubkey package: {e}"),
-                    }
-                }
+                Err(e) => return SignerResponse::Error { message: format!("invalid pubkey package: {e}") },
             };
 
             let mut ks = key_store.lock().unwrap();
@@ -140,11 +121,7 @@ fn handle_request(
 
             SignerResponse::KeyPackagesInstalled
         }
-        SignerRequest::CreateSession {
-            message,
-            participants,
-            min_signers,
-        } => {
+        SignerRequest::CreateSession { message, participants, min_signers } => {
             let msg_bytes = match hex::decode(&message) {
                 Ok(m) => m,
                 Err(e) => return SignerResponse::Error { message: format!("invalid hex: {e}") },
@@ -169,18 +146,11 @@ fn handle_request(
 
             let mut mgr = session_manager.lock().unwrap();
             match mgr.create_session(msg_bytes, identifiers, min_signers as usize) {
-                Ok(session_id) => SignerResponse::SessionCreated {
-                    session_id: session_id.0,
-                },
-                Err(e) => SignerResponse::Error {
-                    message: e.to_string(),
-                },
+                Ok(session_id) => SignerResponse::SessionCreated { session_id: session_id.0 },
+                Err(e) => SignerResponse::Error { message: e.to_string() },
             }
         }
-        SignerRequest::SubmitCommitments {
-            session_id,
-            commitments,
-        } => {
+        SignerRequest::SubmitCommitments { session_id, commitments } => {
             let mut mgr = session_manager.lock().unwrap();
             let session = match mgr.get_session_mut(&vault_signer::session::SessionId(session_id.clone())) {
                 Ok(s) => s,
@@ -192,41 +162,26 @@ fn handle_request(
             // Example: {"1": {"hiding": [...], "binding": [...]}, "2": {...}}
             let parsed: BTreeMap<u16, SigningCommitments> = match serde_json::from_value(commitments) {
                 Ok(map) => map,
-                Err(e) => {
-                    return SignerResponse::Error {
-                        message: format!("invalid commitments format: {e}"),
-                    }
-                }
+                Err(e) => return SignerResponse::Error { message: format!("invalid commitments format: {e}") },
             };
 
             if parsed.is_empty() {
-                return SignerResponse::Error {
-                    message: "no commitments provided".into(),
-                };
+                return SignerResponse::Error { message: "no commitments provided".into() };
             }
 
             for (id_val, comm) in &parsed {
                 let identifier = match Identifier::try_from(*id_val) {
                     Ok(id) => id,
-                    Err(e) => {
-                        return SignerResponse::Error {
-                            message: format!("invalid identifier {id_val}: {e}"),
-                        }
-                    }
+                    Err(e) => return SignerResponse::Error { message: format!("invalid identifier {id_val}: {e}") },
                 };
                 if let Err(e) = session.add_commitments(identifier, comm.clone()) {
-                    return SignerResponse::Error {
-                        message: format!("add commitment: {e}"),
-                    };
+                    return SignerResponse::Error { message: format!("add commitment: {e}") };
                 }
             }
 
             SignerResponse::CommitmentsAccepted
         }
-        SignerRequest::SubmitSignatureShare {
-            session_id,
-            share,
-        } => {
+        SignerRequest::SubmitSignatureShare { session_id, share } => {
             let mut mgr = session_manager.lock().unwrap();
             let session = match mgr.get_session_mut(&vault_signer::session::SessionId(session_id.clone())) {
                 Ok(s) => s,
@@ -243,26 +198,18 @@ fn handle_request(
 
             let parsed: SharePayload = match serde_json::from_value(share) {
                 Ok(p) => p,
-                Err(e) => {
-                    return SignerResponse::Error {
-                        message: format!("invalid share format: {e}"),
-                    }
-                }
+                Err(e) => return SignerResponse::Error { message: format!("invalid share format: {e}") },
             };
 
             let identifier = match Identifier::try_from(parsed.identifier) {
                 Ok(id) => id,
                 Err(e) => {
-                    return SignerResponse::Error {
-                        message: format!("invalid identifier {}: {e}", parsed.identifier),
-                    }
+                    return SignerResponse::Error { message: format!("invalid identifier {}: {e}", parsed.identifier) }
                 }
             };
 
             if let Err(e) = session.add_signature_share(identifier, parsed.share) {
-                return SignerResponse::Error {
-                    message: format!("add signature share: {e}"),
-                };
+                return SignerResponse::Error { message: format!("add signature share: {e}") };
             }
 
             SignerResponse::SignatureShareAccepted
@@ -275,20 +222,14 @@ fn handle_request(
             };
 
             if session.state != vault_signer::session::SessionState::Complete {
-                return SignerResponse::Error {
-                    message: "session not yet complete".into(),
-                };
+                return SignerResponse::Error { message: "session not yet complete".into() };
             }
 
             // Get the pubkey package from the key store
             let ks = key_store.lock().unwrap();
             let pubkey_package = match &ks.pubkey_package {
                 Some(pk) => pk,
-                None => {
-                    return SignerResponse::Error {
-                        message: "key packages not installed".into(),
-                    }
-                }
+                None => return SignerResponse::Error { message: "key packages not installed".into() },
             };
 
             // Validate that we have enough commitments and shares
@@ -322,17 +263,13 @@ fn handle_request(
                     // Serialize the signature to bytes
                     let sig_bytes = match serde_json::to_vec(&signature) {
                         Ok(b) => b,
-                        Err(e) => return SignerResponse::Error {
-                            message: format!("signature serialization failed: {e}"),
-                        },
+                        Err(e) => {
+                            return SignerResponse::Error { message: format!("signature serialization failed: {e}") }
+                        }
                     };
-                    SignerResponse::Signature {
-                        signature: sig_bytes,
-                    }
+                    SignerResponse::Signature { signature: sig_bytes }
                 }
-                Err(e) => SignerResponse::Error {
-                    message: format!("aggregation failed: {e}"),
-                },
+                Err(e) => SignerResponse::Error { message: format!("aggregation failed: {e}") },
             }
         }
         SignerRequest::SessionStatus { session_id } => {

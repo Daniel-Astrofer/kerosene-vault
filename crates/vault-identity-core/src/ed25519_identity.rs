@@ -27,10 +27,7 @@ impl Ed25519Identity {
         if signing_key.verifying_key() != verifying_key {
             return Err(IdentityError::InvalidKeyMaterial("ed25519 secret/public key mismatch".into()));
         }
-        Ok(Self {
-            secret_bytes: *secret,
-            public_bytes: *public,
-        })
+        Ok(Self { secret_bytes: *secret, public_bytes: *public })
     }
 
     /// Get the raw verifying key bytes.
@@ -53,19 +50,13 @@ impl VaultIdentity for Ed25519Identity {
         let mut rng = rand::rngs::OsRng;
         let signing_key = SigningKey::generate(&mut rng);
         let verifying_key = signing_key.verifying_key();
-        Ok(Self {
-            secret_bytes: signing_key.to_bytes(),
-            public_bytes: verifying_key.to_bytes(),
-        })
+        Ok(Self { secret_bytes: signing_key.to_bytes(), public_bytes: verifying_key.to_bytes() })
     }
 
     fn from_secret(secret: &Self::SecretKey) -> Result<Self, IdentityError> {
         let signing_key = SigningKey::from_bytes(secret);
         let verifying_key = signing_key.verifying_key();
-        Ok(Self {
-            secret_bytes: *secret,
-            public_bytes: verifying_key.to_bytes(),
-        })
+        Ok(Self { secret_bytes: *secret, public_bytes: verifying_key.to_bytes() })
     }
 
     fn public_key(&self) -> &Self::PublicKey {
@@ -114,10 +105,7 @@ impl VaultIdentity for Ed25519Identity {
         if signing_key.verifying_key() != verifying_key {
             return Err(IdentityError::InvalidKeyMaterial("ed25519 key material mismatch".into()));
         }
-        Ok(Self {
-            secret_bytes: secret,
-            public_bytes: public,
-        })
+        Ok(Self { secret_bytes: secret, public_bytes: public })
     }
 }
 

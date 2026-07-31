@@ -43,7 +43,7 @@ mod threshold_state;
 mod tls_mtls_acceptor;
 mod tls_peer_verify;
 
-pub use admin_api::{build_admin_router, spawn_admin_unix_socket, spawn_admin_tcp, validate_admin_request_path};
+pub use admin_api::{build_admin_router, spawn_admin_tcp, spawn_admin_unix_socket, validate_admin_request_path};
 pub use attestation_sim::SimAttestationAdapter;
 pub use attestation_tee::TeeAttestationAdapter;
 pub use audit_keys::MeshAuditKeyAllowlist;

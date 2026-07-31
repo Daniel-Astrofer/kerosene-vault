@@ -9,7 +9,9 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum_server::tls_rustls::RustlsAcceptor;
-use vault_core::adapters::{build_admin_router, build_mtls_server_config, build_router, spawn_admin_unix_socket, PeerCertAcceptor};
+use vault_core::adapters::{
+    build_admin_router, build_mtls_server_config, build_router, spawn_admin_unix_socket, PeerCertAcceptor,
+};
 use vault_core::bootstrap::{AuthMode, VaultConfig, VaultRuntime};
 
 #[tokio::main]
@@ -127,9 +129,7 @@ async fn main() {
 }
 
 fn admin_socket_path() -> Option<PathBuf> {
-    std::env::var_os("VAULT_ADMIN_UNIX_SOCKET")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+    std::env::var_os("VAULT_ADMIN_UNIX_SOCKET").filter(|value| !value.is_empty()).map(PathBuf::from)
 }
 
 #[cfg(unix)]
@@ -151,18 +151,12 @@ async fn serve_admin_socket(
 }
 
 #[cfg(unix)]
-fn remove_stale_admin_socket(
-    path: &Path,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn remove_stale_admin_socket(path: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use std::os::unix::fs::FileTypeExt;
 
     if let Ok(metadata) = std::fs::symlink_metadata(path) {
         if !metadata.file_type().is_socket() {
-            return Err(format!(
-                "refusing to replace non-socket admin path {}",
-                path.display()
-            )
-            .into());
+            return Err(format!("refusing to replace non-socket admin path {}", path.display()).into());
         }
         std::fs::remove_file(path)?;
     }
@@ -183,10 +177,7 @@ mod tests {
 
     #[test]
     fn admin_socket_never_replaces_a_regular_file() {
-        let root = std::env::temp_dir().join(format!(
-            "kerosene-vault-admin-test-{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("kerosene-vault-admin-test-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("vault-admin.sock");
         std::fs::write(&path, b"do not replace").unwrap();

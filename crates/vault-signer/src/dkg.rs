@@ -49,31 +49,19 @@ pub struct DkgParticipant {
 impl DkgParticipant {
     /// Create a new DKG participant.
     pub fn new(identifier: Identifier, min_signers: u16, max_signers: u16) -> Self {
-        Self {
-            identifier,
-            min_signers,
-            max_signers,
-            round1_secret: None,
-        }
+        Self { identifier, min_signers, max_signers, round1_secret: None }
     }
 
     /// Execute DKG round 1.
     pub fn round1(&mut self) -> Result<DkgRound1Output, SignerError> {
         let mut rng = OsRng;
-        let (secret, public) = frost::keys::dkg::round1::part1(
-            self.identifier,
-            self.max_signers,
-            self.min_signers,
-            &mut rng,
-        )
-        .map_err(|e| SignerError::RoundError(format!("dkg round1 part1: {e}")))?;
+        let (secret, public) =
+            frost::keys::dkg::round1::part1(self.identifier, self.max_signers, self.min_signers, &mut rng)
+                .map_err(|e| SignerError::RoundError(format!("dkg round1 part1: {e}")))?;
 
         self.round1_secret = Some(secret.clone());
 
-        Ok(DkgRound1Output {
-            secret_package: secret,
-            public_package: public,
-        })
+        Ok(DkgRound1Output { secret_package: secret, public_package: public })
     }
 
     /// Execute DKG round 2.
@@ -81,21 +69,12 @@ impl DkgParticipant {
         &self,
         all_public_packages: &BTreeMap<Identifier, frost::keys::dkg::round1::PublicPackage>,
     ) -> Result<DkgRound2Output, SignerError> {
-        let secret = self
-            .round1_secret
-            .as_ref()
-            .ok_or_else(|| SignerError::Internal("round1 not executed".into()))?;
+        let secret = self.round1_secret.as_ref().ok_or_else(|| SignerError::Internal("round1 not executed".into()))?;
 
-        let (round2_secret, proof) = frost::keys::dkg::part2(
-            secret,
-            all_public_packages,
-        )
-        .map_err(|e| SignerError::RoundError(format!("dkg round2 part2: {e}")))?;
+        let (round2_secret, proof) = frost::keys::dkg::part2(secret, all_public_packages)
+            .map_err(|e| SignerError::RoundError(format!("dkg round2 part2: {e}")))?;
 
-        Ok(DkgRound2Output {
-            secret_package: round2_secret,
-            proof,
-        })
+        Ok(DkgRound2Output { secret_package: round2_secret, proof })
     }
 
     /// Finalize DKG, producing the key package and public key package.
@@ -105,17 +84,11 @@ impl DkgParticipant {
         all_round1_publics: &BTreeMap<Identifier, frost::keys::dkg::round1::PublicPackage>,
         all_round2_publics: &BTreeMap<Identifier, frost::keys::dkg::round2::PublicPackage>,
     ) -> Result<DkgResult, SignerError> {
-        let (key_package, pubkey_package, _proof) = frost::keys::dkg::part3(
-            round2_secret,
-            all_round1_publics,
-            all_round2_publics,
-        )
-        .map_err(|e| SignerError::RoundError(format!("dkg finalize part3: {e}")))?;
+        let (key_package, pubkey_package, _proof) =
+            frost::keys::dkg::part3(round2_secret, all_round1_publics, all_round2_publics)
+                .map_err(|e| SignerError::RoundError(format!("dkg finalize part3: {e}")))?;
 
-        Ok(DkgResult {
-            key_package,
-            pubkey_package,
-        })
+        Ok(DkgResult { key_package, pubkey_package })
     }
 }
 
@@ -130,24 +103,17 @@ impl DistributedKeyGeneration {
     /// Initialize DKG with the given number of participants and threshold.
     pub fn new(max_signers: u16, min_signers: u16) -> Result<Self, SignerError> {
         if min_signers > max_signers || min_signers < 2 {
-            return Err(SignerError::InvalidKeyPackage(format!(
-                "invalid threshold: t={min_signers}, n={max_signers}"
-            )));
+            return Err(SignerError::InvalidKeyPackage(format!("invalid threshold: t={min_signers}, n={max_signers}")));
         }
 
         let participants: Vec<_> = (1..=max_signers)
             .map(|i| {
-                let id = Identifier::try_from(i)
-                    .expect("valid identifier");
+                let id = Identifier::try_from(i).expect("valid identifier");
                 DkgParticipant::new(id, min_signers, max_signers)
             })
             .collect();
 
-        Ok(Self {
-            participants,
-            max_signers,
-            min_signers,
-        })
+        Ok(Self { participants, max_signers, min_signers })
     }
 
     /// Run the full DKG protocol in-process (all participants local).
@@ -174,20 +140,14 @@ impl DistributedKeyGeneration {
             // Construct PublicPackage from the proof bytes via new()
             round2_publics.insert(
                 p.identifier,
-                frost::keys::dkg::round2::PublicPackage::new(
-                    proof.proof_of_possession().clone(),
-                ),
+                frost::keys::dkg::round2::PublicPackage::new(proof.proof_of_possession().clone()),
             );
         }
 
         // Finalize: each participant produces their key package
         let mut results = Vec::new();
         for (i, p) in self.participants.iter().enumerate() {
-            let result = p.finalize(
-                &round2_outputs[i].secret_package,
-                &round1_publics,
-                &round2_publics,
-            )?;
+            let result = p.finalize(&round2_outputs[i].secret_package, &round1_publics, &round2_publics)?;
             results.push(result);
         }
 
@@ -218,23 +178,14 @@ mod tests {
         let mut nonces_list = Vec::new();
 
         for i in 0..3 {
-            let (nonces, comm) = frost::round1::commit(
-                results[i].key_package.secret_share(),
-                &mut rng,
-            );
+            let (nonces, comm) = frost::round1::commit(results[i].key_package.secret_share(), &mut rng);
             commitments.insert(*results[i].key_package.identifier(), comm);
             nonces_list.push((*results[i].key_package.identifier(), nonces));
         }
 
         let mut shares = BTreeMap::new();
         for (id, nonces) in &nonces_list {
-            let share = frost::round2::sign(
-                &results[0].key_package,
-                nonces,
-                &commitments,
-                message,
-            )
-            .unwrap();
+            let share = frost::round2::sign(&results[0].key_package, nonces, &commitments, message).unwrap();
             shares.insert(*id, share);
         }
 
