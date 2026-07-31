@@ -1,12 +1,18 @@
+//! Thin binary wrapper — delegates all logic to `vault_core`.
+//!
+//! The full vault implementation now lives in `crates/vault-core/`.
+//! This entry point calls `vault_core::bootstrap::VaultRuntime::build()`
+//! and starts the Axum HTTP server.
+
 use std::net::SocketAddr;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use axum_server::tls_rustls::RustlsAcceptor;
-use kerosene_vault::adapters::{
-    build_admin_router, build_mtls_server_config, build_router, PeerCertAcceptor,
+use vault_core::adapters::{
+    build_admin_router, build_mtls_server_config, build_router, spawn_admin_unix_socket, PeerCertAcceptor,
 };
-use kerosene_vault::bootstrap::{AuthMode, VaultConfig, VaultRuntime};
+use vault_core::bootstrap::{AuthMode, VaultConfig, VaultRuntime};
 
 #[tokio::main]
 async fn main() {
@@ -30,7 +36,7 @@ async fn main() {
 
     let group = runtime.threshold.group();
     eprintln!(
-        "kerosene-vault lab-p0 node={} listen={} tier={} tee_available={} attestation={} ceremony={} stub={} n={} t={} online={} timelock_scale={} hardened={} open_economy={} bitcoin={} auth={}",
+        "kerosene-vault node={} listen={} tier={} tee_available={} attestation={} ceremony={} stub={} n={} t={} online={} timelock_scale={} hardened={} open_economy={} bitcoin={} auth={}",
         runtime.config.node_id,
         runtime.config.listen_addr,
         runtime.config.node_tier.as_str(),
@@ -47,6 +53,21 @@ async fn main() {
         runtime.config.bitcoin_network.as_str(),
         runtime.config.auth_mode.as_str()
     );
+
+    // --- Admin API socket ---
+    if let Some(ref admin_socket) = runtime.config.admin_unix_socket_path {
+        match spawn_admin_unix_socket(runtime.clone(), admin_socket).await {
+            Ok(()) => {
+                eprintln!("admin_api=unix socket_path={admin_socket}");
+            }
+            Err(e) => {
+                eprintln!("admin_api error: failed to start Unix socket listener: {e}");
+                std::process::exit(1);
+            }
+        }
+    } else {
+        eprintln!("admin_api=disabled (set VAULT_ADMIN_UNIX_SOCKET to enable)");
+    }
 
     let app = build_router(runtime.clone());
     if let Some(socket_path) = admin_socket_path() {
@@ -68,8 +89,7 @@ async fn main() {
                     std::process::exit(1);
                 }
             };
-            let server_config = match build_mtls_server_config(Path::new(cert), Path::new(key), Path::new(ca))
-            {
+            let server_config = match build_mtls_server_config(Path::new(cert), Path::new(key), Path::new(ca)) {
                 Ok(c) => c,
                 Err(e) => {
                     eprintln!("mTLS config error: {e}");
@@ -77,7 +97,6 @@ async fn main() {
                 }
             };
             let rustls_config = axum_server::tls_rustls::RustlsConfig::from_config(server_config);
-            // Inject verified client leaf into request extensions for SPIFFE→role binding.
             let acceptor = PeerCertAcceptor::new(RustlsAcceptor::new(rustls_config));
             let addr: SocketAddr = match listen_addr.parse() {
                 Ok(a) => a,
@@ -87,11 +106,7 @@ async fn main() {
                 }
             };
             eprintln!("tls=mtls (client cert required; SPIFFE principal binding on)");
-            if let Err(e) = axum_server::bind(addr)
-                .acceptor(acceptor)
-                .serve(app.into_make_service())
-                .await
-            {
+            if let Err(e) = axum_server::bind(addr).acceptor(acceptor).serve(app.into_make_service()).await {
                 eprintln!("server error: {e}");
                 std::process::exit(1);
             }
@@ -114,9 +129,7 @@ async fn main() {
 }
 
 fn admin_socket_path() -> Option<PathBuf> {
-    std::env::var_os("VAULT_ADMIN_UNIX_SOCKET")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+    std::env::var_os("VAULT_ADMIN_UNIX_SOCKET").filter(|value| !value.is_empty()).map(PathBuf::from)
 }
 
 #[cfg(unix)]
@@ -138,18 +151,12 @@ async fn serve_admin_socket(
 }
 
 #[cfg(unix)]
-fn remove_stale_admin_socket(
-    path: &Path,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn remove_stale_admin_socket(path: &Path) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     use std::os::unix::fs::FileTypeExt;
 
     if let Ok(metadata) = std::fs::symlink_metadata(path) {
         if !metadata.file_type().is_socket() {
-            return Err(format!(
-                "refusing to replace non-socket admin path {}",
-                path.display()
-            )
-            .into());
+            return Err(format!("refusing to replace non-socket admin path {}", path.display()).into());
         }
         std::fs::remove_file(path)?;
     }
@@ -170,10 +177,7 @@ mod tests {
 
     #[test]
     fn admin_socket_never_replaces_a_regular_file() {
-        let root = std::env::temp_dir().join(format!(
-            "kerosene-vault-admin-test-{}",
-            std::process::id()
-        ));
+        let root = std::env::temp_dir().join(format!("kerosene-vault-admin-test-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let path = root.join("vault-admin.sock");
         std::fs::write(&path, b"do not replace").unwrap();

@@ -10,9 +10,7 @@ fn health_ready_when_peers_present() {
     peers
         .upsert_sync(PeerInfo {
             id: NodeId::new("vault-2").unwrap(),
-            endpoint: PeerEndpoint {
-                address: "vault-2:7701".into(),
-            },
+            endpoint: PeerEndpoint { address: "vault-2:7701".into() },
         })
         .unwrap();
     let attestation = Arc::new(SimAttestationAdapter::new(b"lab"));
@@ -28,10 +26,7 @@ fn health_ready_when_peers_present() {
     assert_eq!(health.status, HealthStatus::Ready);
     assert_eq!(health.attestation_mode, AttestationMode::Sim.as_str());
     assert!(health.genesis_roster.is_empty());
-    assert_eq!(
-        health.peer_reachability,
-        kerosene_vault::domain::PeerReachability::DirectoryOnly
-    );
+    assert_eq!(health.peer_reachability, kerosene_vault::domain::PeerReachability::DirectoryOnly);
     assert!(health.peers_reachable.is_none());
     assert!(health.local_ready);
     assert!(!health.financial_ready);
@@ -76,12 +71,7 @@ fn ping_peer_verifies_sim_quote() {
     let peers = Arc::new(InMemoryPeerDirectory::new());
     let peer_id = NodeId::new("vault-2").unwrap();
     peers
-        .upsert_sync(PeerInfo {
-            id: peer_id.clone(),
-            endpoint: PeerEndpoint {
-                address: "vault-2:7701".into(),
-            },
-        })
+        .upsert_sync(PeerInfo { id: peer_id.clone(), endpoint: PeerEndpoint { address: "vault-2:7701".into() } })
         .unwrap();
     let attestation = Arc::new(SimAttestationAdapter::new(b"lab"));
     let clock = Arc::new(SystemClock);
@@ -162,11 +152,9 @@ fn sim_forbidden_when_refuse_sim() {
         transport: kerosene_vault::adapters::VaultTransport::Clearnet,
         peer_http: kerosene_vault::adapters::PeerHttpSettings::clearnet_defaults(),
         clearnet_publish: false,
+        admin_unix_socket_path: None,
     };
-    assert_eq!(
-        cfg.validate_attestation_policy(),
-        Err(DomainError::SimAttestationForbidden)
-    );
+    assert_eq!(cfg.validate_attestation_policy(), Err(DomainError::SimAttestationForbidden));
     cfg.refuse_sim = false;
     cfg.hardened = false;
     assert!(cfg.validate_attestation_policy().is_ok());

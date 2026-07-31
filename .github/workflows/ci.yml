@@ -19,7 +19,7 @@ jobs:
     uses: Daniel-Astrofer/.github/.github/workflows/rust-ci.yml@2552ff2125c2d72accebe93804b8e139a52ded13
     with:
       production-features: production
-      enforce-format: false
+      enforce-format: true
 
   security:
     uses: Daniel-Astrofer/.github/.github/workflows/security-scan.yml@2552ff2125c2d72accebe93804b8e139a52ded13

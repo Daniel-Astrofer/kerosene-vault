@@ -1,0 +1,43 @@
+[package]
+name = "vault-signer"
+version = "0.1.0"
+edition = "2021"
+description = "Kerosene vault FROST signing daemon — NO network dependencies"
+license = "UNLICENSED"
+publish = false
+
+[[bin]]
+name = "vault-signer"
+path = "src/main.rs"
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+# Local crate deps
+vault-identity-core = { path = "../vault-identity-core" }
+
+# FROST signing
+frost-secp256k1 = { version = "3", features = ["serde"] }
+frost-secp256k1-tr = { version = "3", features = ["serde"] }
+
+# Tokio — sync only (no net features)
+tokio = { version = "1", default-features = false, features = ["rt", "macros", "sync", "io-util"] }
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Crypto
+sha2 = "0.10"
+rand = "0.8"
+
+# Security
+zeroize = { version = "1", features = ["zeroize_derive"] }
+secrecy = "0.10"
+
+# Unix socket (minimal)
+hex = "0.4"
+
+[dev-dependencies]
+tempfile = "3"

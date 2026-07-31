@@ -16,8 +16,7 @@
 use kerosene_vault::adapters::HybridEnvelopeAdapter;
 use kerosene_vault::application::ports::HybridEnvelopePort;
 use kerosene_vault::domain::{
-    DayEpoch, DomainError, HybridContext, HybridEnvelope, HybridKeyMaterial,
-    IntentSignature, NodeId,
+    DayEpoch, DomainError, HybridContext, HybridEnvelope, HybridKeyMaterial, IntentSignature, NodeId,
 };
 
 // ═══════════════════════════════════════════════════════════════════
@@ -83,17 +82,11 @@ fn strip_ml_dsa_signature_from_intent() {
     sig.ml_dsa65_signature.clear(); // attacker strips PQ sig
 
     let result = sig.validate_stub(true); // require_pq=true in production
-    assert!(
-        result.is_err(),
-        "ML-DSA-65 signature stripped but intent was accepted — FAIL CLOSED violation"
-    );
+    assert!(result.is_err(), "ML-DSA-65 signature stripped but intent was accepted — FAIL CLOSED violation");
 
     let err = result.unwrap_err();
     let msg = err.to_string().to_lowercase();
-    assert!(
-        msg.contains("ml-dsa") || msg.contains("missing"),
-        "Wrong error: expected ML-DSA rejection, got: {err}"
-    );
+    assert!(msg.contains("ml-dsa") || msg.contains("missing"), "Wrong error: expected ML-DSA rejection, got: {err}");
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -109,10 +102,7 @@ fn strip_ml_kem_ciphertext_from_envelope() {
     envelope.kem_ciphertext.clear(); // attacker strips PQ KEM
 
     let result = envelope.validate_header();
-    assert!(
-        result.is_err(),
-        "ML-KEM ciphertext stripped but envelope passed validation — FAIL CLOSED violation"
-    );
+    assert!(result.is_err(), "ML-KEM ciphertext stripped but envelope passed validation — FAIL CLOSED violation");
 
     let err = result.unwrap_err();
     let msg = err.to_string().to_lowercase();
@@ -135,10 +125,7 @@ fn suite_downgrade_classical_only_in_hybrid_context() {
     envelope.suite_id = "classical-only-x25519-aes256gcm".to_string();
 
     let result = envelope.validate_header();
-    assert!(
-        result.is_err(),
-        "Classical-only suite downgrade accepted — FAIL CLOSED violation"
-    );
+    assert!(result.is_err(), "Classical-only suite downgrade accepted — FAIL CLOSED violation");
 
     let err = result.unwrap_err();
     let msg = err.to_string().to_lowercase();
@@ -167,18 +154,12 @@ fn key_substitution_replace_ml_dsa_key_id() {
     let recomputed = IntentSignature::compute_canonical_hash(
         format!("intent-{}-{}", sig.ed25519_key_id, sig.ml_dsa_key_id).as_bytes(),
     );
-    assert_ne!(
-        sig.canonical_hash, recomputed,
-        "Key ID substitution should change canonical_hash"
-    );
+    assert_ne!(sig.canonical_hash, recomputed, "Key ID substitution should change canonical_hash");
 
     // In production (require_pq=true), sig passes stub validation but
     // full crypto verification would reject. The stub validates presence only.
     // This test verifies the hash binding mechanism is present.
-    assert_ne!(
-        original_id, sig.ml_dsa_key_id,
-        "Key ID was not actually changed by the substitution"
-    );
+    assert_ne!(original_id, sig.ml_dsa_key_id, "Key ID was not actually changed by the substitution");
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -210,10 +191,7 @@ fn replay_cross_epoch_resubmit_old_envelope() {
         }
         Err(e) => {
             let msg = e.to_string();
-            assert!(
-                msg.contains("epoch") || msg.contains("stale"),
-                "Replay acceptance or wrong error: {e}"
-            );
+            assert!(msg.contains("epoch") || msg.contains("stale"), "Replay acceptance or wrong error: {e}");
         }
         Ok(_) => {
             panic!("Cross-epoch replay accepted — FAIL CLOSED violation");
@@ -269,24 +247,15 @@ fn downgrade_classical_only_force_pq_disabled() {
     let mut stripped = sig.clone();
     stripped.ml_dsa65_signature.clear();
     let classical_result = stripped.validate_stub(false);
-    assert!(
-        classical_result.is_ok(),
-        "Stub validation: classical-only accepted when require_pq=false (lab mode)"
-    );
+    assert!(classical_result.is_ok(), "Stub validation: classical-only accepted when require_pq=false (lab mode)");
 
     // Production must reject the same stripped sig:
     let production_result = stripped.validate_stub(true);
-    assert!(
-        production_result.is_err(),
-        "Production must reject classical-only — FAIL CLOSED violation"
-    );
+    assert!(production_result.is_err(), "Production must reject classical-only — FAIL CLOSED violation");
 
     // Verify the error explicitly mentions ML-DSA
     let err = production_result.unwrap_err().to_string().to_lowercase();
-    assert!(
-        err.contains("ml-dsa") || err.contains("missing"),
-        "Production rejection didn't mention ML-DSA: {err}"
-    );
+    assert!(err.contains("ml-dsa") || err.contains("missing"), "Production rejection didn't mention ML-DSA: {err}");
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -304,7 +273,8 @@ fn ciphertext_corruption_flip_one_byte() {
     envelope.kem_ciphertext[0] ^= 0x01;
 
     // Domain validation passes (non-empty, correct length)
-    assert!(envelope.validate_header().is_ok(),
+    assert!(
+        envelope.validate_header().is_ok(),
         "Header validation passes — corruption is detected later in crypto ops"
     );
 
@@ -342,10 +312,7 @@ fn signature_over_wrong_transcript() {
     let hash_payload_b = IntentSignature::compute_canonical_hash(b"payload-B");
 
     // The two hashes must differ for distinct payloads
-    assert_ne!(
-        hash_payload_a, hash_payload_b,
-        "SHA-384 collision: different payloads produced same hash"
-    );
+    assert_ne!(hash_payload_a, hash_payload_b, "SHA-384 collision: different payloads produced same hash");
 
     let sig = IntentSignature {
         ed25519_signature: [0xAA; 64],
@@ -356,10 +323,7 @@ fn signature_over_wrong_transcript() {
     };
 
     // Submitting with payload B → hash mismatch
-    assert_ne!(
-        sig.canonical_hash, hash_payload_b,
-        "Signature hash should not match wrong transcript"
-    );
+    assert_ne!(sig.canonical_hash, hash_payload_b, "Signature hash should not match wrong transcript");
 
     // In full verification: both Ed25519 and ML-DSA-65 verify() would
     // check against canonical_hash and fail on mismatch.
@@ -421,10 +385,7 @@ fn constitution_rollback_load_old_version() {
     };
 
     // v1 current_protocol_version < v2 current_protocol_version
-    assert!(
-        v1.current_protocol_version < v2.current_protocol_version,
-        "Old constitution has lower protocol version"
-    );
+    assert!(v1.current_protocol_version < v2.current_protocol_version, "Old constitution has lower protocol version");
     // Rollback detection: v2.min_protocol_version > v1.current_protocol_version
     // means v1 is below minimum acceptable version.
     assert!(
@@ -496,10 +457,7 @@ fn rng_failure_detection_constant_detectable() {
     let mut envelope = valid_envelope();
     envelope.sender_eph_pk = [0u8; 32];
     let result = envelope.validate_header();
-    assert!(
-        result.is_err(),
-        "All-zero sender_eph_pk (RNG failure) must be rejected"
-    );
+    assert!(result.is_err(), "All-zero sender_eph_pk (RNG failure) must be rejected");
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -640,10 +598,7 @@ fn dos_large_pq_message_over_100kb() {
         + normal.kem_ciphertext.len()
         + normal.classical_signature.len()
         + normal.pq_signature.len();
-    assert!(
-        normal_size < 100_000,
-        "Normal envelope size = {normal_size} bytes (should be under 100KB)"
-    );
+    assert!(normal_size < 100_000, "Normal envelope size = {normal_size} bytes (should be under 100KB)");
 
     // Attack: 200KB ciphertext payload
     let mut large = valid_envelope();
@@ -652,16 +607,11 @@ fn dos_large_pq_message_over_100kb() {
         + large.kem_ciphertext.len()
         + large.classical_signature.len()
         + large.pq_signature.len();
-    assert!(large_size > 100_000,
-        "Attack envelope must exceed 100KB for this test"
-    );
+    assert!(large_size > 100_000, "Attack envelope must exceed 100KB for this test");
 
     // Domain validation doesn't check size limits (adapter responsibility).
     // validate_header passes for oversized — size limits are in rate limiter.
-    assert!(
-        large.validate_header().is_ok(),
-        "validate_header passes — size limits are in adapter layer"
-    );
+    assert!(large.validate_header().is_ok(), "validate_header passes — size limits are in adapter layer");
 
     // The rate limiter (SlidingWindowLimiter) enforces payload size caps.
     // This test documents that rate-limit enforcement is needed.
@@ -689,10 +639,7 @@ fn zeroize_secrets_after_drop() {
     drop(material);
 
     // The clone retains values (not dropped yet).
-    assert!(
-        clone.ss_classical.iter().any(|&b| b != 0),
-        "Clone should retain secret values"
-    );
+    assert!(clone.ss_classical.iter().any(|&b| b != 0), "Clone should retain secret values");
 
     // After dropping the clone:
     drop(clone);
@@ -764,14 +711,10 @@ fn version_mismatch_updated_vault_talks_to_old() {
     );
 
     // Peer with protocol_version < min_protocol_version → rejected
-    assert!(
-        old.current_protocol_version < updated.current_protocol_version,
-        "Old vault has lower protocol version"
-    );
+    assert!(old.current_protocol_version < updated.current_protocol_version, "Old vault has lower protocol version");
     // Updated vault detects mismatch and rejects with clear error.
     assert_ne!(
-        old.current_protocol_version,
-        updated.current_protocol_version,
+        old.current_protocol_version, updated.current_protocol_version,
         "Version mismatch must result in rejection"
     );
 }
